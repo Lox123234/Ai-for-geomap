@@ -1,5 +1,6 @@
 #include "PhotoModel.h"
 #include <QDir>
+#include <QFileInfo>
 #include <QUrl>
 
 PhotoModel::PhotoModel(QObject *parent) : QAbstractListModel(parent) {}
@@ -25,6 +26,7 @@ QVariant PhotoModel::data(const QModelIndex &index, int role) const
     case CameraRole: return (p.cameraMake + " " + p.cameraModel).trimmed();
     case TakenAtRole: return p.takenAt;
     case IdRole: return p.id;
+    case ThumbRole: return QUrl(QStringLiteral("image://thumbs/") + QFileInfo(p.file).fileName());
     default: return {};
     }
 }
@@ -36,7 +38,8 @@ QHash<int, QByteArray> PhotoModel::roleNames() const
         {WidthRole, "photoWidth"}, {HeightRole, "photoHeight"},
         {HasGpsRole, "photoHasGps"}, {LatitudeRole, "photoLatitude"},
         {LongitudeRole, "photoLongitude"}, {CameraRole, "photoCamera"},
-        {TakenAtRole, "photoTakenAt"}, {IdRole, "photoId"}
+        {TakenAtRole, "photoTakenAt"}, {IdRole, "photoId"},
+        {ThumbRole, "photoThumb"}
     };
 }
 
@@ -53,6 +56,15 @@ void PhotoModel::append(const Photo &photo)
     const int row = m_photos.size();
     beginInsertRows({}, row, row);
     m_photos.append(photo);
+    endInsertRows();
+}
+
+void PhotoModel::append(const QVector<Photo> &photos)
+{
+    if (photos.isEmpty()) return;
+    const int row = m_photos.size();
+    beginInsertRows({}, row, row + int(photos.size()) - 1);
+    m_photos.append(photos);
     endInsertRows();
 }
 

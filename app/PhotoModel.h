@@ -29,7 +29,8 @@ class PhotoModel final : public QAbstractListModel
 public:
     enum Roles {
         NameRole = Qt::UserRole + 1, UrlRole, WidthRole, HeightRole,
-        HasGpsRole, LatitudeRole, LongitudeRole, CameraRole, TakenAtRole, IdRole
+        HasGpsRole, LatitudeRole, LongitudeRole, CameraRole, TakenAtRole, IdRole,
+        ThumbRole      // image://thumbs/<file>, served from the project's thumbnail cache
     };
     explicit PhotoModel(QObject *parent = nullptr);
     int rowCount(const QModelIndex &parent = {}) const override;
@@ -37,6 +38,7 @@ public:
     QHash<int, QByteArray> roleNames() const override;
     void resetPhotos(const QVector<Photo> &photos, const QString &baseDirectory);
     void append(const Photo &photo);
+    void append(const QVector<Photo> &photos);
     bool erase(int row);
     Photo at(int row) const;
     QVariantMap details(int row) const;

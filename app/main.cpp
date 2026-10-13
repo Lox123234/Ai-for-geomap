@@ -1,22 +1,46 @@
+#include <QCommandLineParser>
+#include <QDir>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
 #include <QIcon>
 #include <QScreen>
+#include <QSettings>
 #include <QWindow>
 #include "ProjectManager.h"
+#include "ThumbnailProvider.h"
 
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
     QCoreApplication::setOrganizationName("GeoMapAI");
     QCoreApplication::setApplicationName("GeoMap AI");
-    QCoreApplication::setApplicationVersion("0.1.0");
+    QCoreApplication::setApplicationVersion(QStringLiteral(GEOMAP_VERSION));
     QQuickStyle::setStyle("Basic");
+
+    QCommandLineParser parser;
+    parser.setApplicationDescription(QStringLiteral("GeoMap AI — UAV photo projects"));
+    parser.addHelpOption();
+    parser.addVersionOption();
+    const QCommandLineOption settingsDir(QStringLiteral("settings-dir"),
+        QStringLiteral("Store settings in <dir>/GeoMap AI.ini instead of the user profile."),
+        QStringLiteral("dir"));
+    parser.addOption(settingsDir);
+    parser.process(app);
+    if (parser.isSet(settingsDir)) {
+        // Must precede the first QSettings use (ProjectManager reads recent projects).
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
+                           QDir(parser.value(settingsDir)).absolutePath());
+    }
 
     ProjectManager projects;
     QQmlApplicationEngine engine;
+    auto *thumbnails = new ThumbnailProvider;   // owned by the engine
+    QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, thumbnails,
+                     [thumbnails](const QString &directory) { thumbnails->setProjectDirectory(directory); });
+    engine.addImageProvider(QStringLiteral("thumbs"), thumbnails);
     engine.rootContext()->setContextProperty("projects", &projects);
     engine.loadFromModule("GeoMapAI", "Main");
     if (engine.rootObjects().isEmpty())

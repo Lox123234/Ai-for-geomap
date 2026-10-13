@@ -1,6 +1,7 @@
 #include <QtTest>
 #include <QDir>
 #include <QDirIterator>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
 #include <QImageReader>
@@ -8,9 +9,11 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJSEngine>
+#include <QLockFile>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QUrl>
 #include <cmath>
 #include "../app/ProjectManager.h"
@@ -61,6 +64,31 @@ bool copyTree(const QString &from, const QString &to)
     return true;
 }
 QString photoFile(const ProjectManager &pm) { return pm.selectedPhoto().value("url").toUrl().toLocalFile(); }
+// Imports run on a worker thread; results arrive through the GUI-thread event loop.
+bool finishImport(ProjectManager &pm)
+{
+    if (!pm.busy()) return true;
+    QSignalSpy finished(&pm, &ProjectManager::importFinished);
+    return finished.wait(60000);
+}
+// Larger JPEGs so an import takes long enough to observe and cancel.
+QStringList makeBatch(const QString &dir, int count, int width = 1600, int height = 1200)
+{
+    if (!QDir().mkpath(dir)) return {};
+    QStringList files;
+    QImage image(width, height, QImage::Format_RGB32);
+    for (int i = 0; i < count; ++i) {
+        image.fill(QColor::fromHsv((i * 37) % 360, 160, 200));
+        const QString file = QStringLiteral("%1/DJI_%2.JPG").arg(dir).arg(i, 4, 10, QLatin1Char('0'));
+        if (!image.save(file, "JPG", 90)) return {};
+        files.append(file);
+    }
+    return files;
+}
+int fileCount(const QString &dir)
+{
+    return int(QDir(dir).entryList(QDir::Files).size());
+}
 } // namespace
 
 // Stand-in for QtQuick.Dialogs FileDialog: exposes selectedFiles as list<url>.
@@ -149,20 +177,29 @@ private slots:
         const QString dir = pm.projectPath();
 
         pm.importFiles(urls(sources));
+        QVERIFY(finishImport(pm));
         QCOMPARE(pm.photoCount(), 3);
         QCOMPARE(pm.gpsCount(), 1);
         QCOMPARE(pm.selectedIndex(), 0);
         QCOMPARE(pm.geoPoints().size(), 1);
+        QCOMPARE(pm.statusMessage(), QStringLiteral("Импортировано: 3. Пропущено: 0."));
 
         pm.importFiles(urls(sources));                  // same originals again
+        QVERIFY(finishImport(pm));
         QCOMPARE(pm.photoCount(), 3);
+        QCOMPARE(pm.statusMessage(), QStringLiteral("Импортировано: 0. Пропущено: 3 (уже в проекте — 3)."));
+        QCOMPARE(pm.importIssues().size(), 3);
 
         // The QML delegates rely on these role names.
         const QHash<int, QByteArray> roles = pm.photoModel()->roleNames();
-        for (const char *role : {"photoName", "photoUrl", "photoWidth", "photoHeight", "photoHasGps"})
+        for (const char *role : {"photoName", "photoUrl", "photoWidth", "photoHeight", "photoHasGps", "photoThumb"})
             QVERIFY2(roles.values().contains(role), role);
         const QModelIndex first = pm.photoModel()->index(0, 0);
         QCOMPARE(first.data(roles.key("photoName")).toString(), QStringLiteral("Снимок с GPS.jpg"));
+        const QString thumb = first.data(roles.key("photoThumb")).toUrl().toString();
+        QVERIFY2(thumb.startsWith("image://thumbs/") && thumb.endsWith(".jpg"), qUtf8Printable(thumb));
+        // Thumbnails are prepared during the import, one per photo.
+        QCOMPARE(fileCount(dir + "/cache/thumbs"), 3);
 
         QVariantMap photo = pm.selectedPhoto();
         QCOMPARE(photo.value("width").toInt(), 16);
@@ -223,6 +260,7 @@ private slots:
         engine.globalObject().setProperty("photoDialog", engine.newQObject(&dialog));
         const QJSValue result = engine.evaluate("projects.importFiles(photoDialog.selectedFiles)");
         QVERIFY2(!result.isError(), qUtf8Printable(result.toString()));
+        QVERIFY(finishImport(pm));
         QCOMPARE(pm.photoCount(), 3);
     }
 
@@ -238,6 +276,7 @@ private slots:
             ProjectManager pm;
             QVERIFY(pm.createProject(dirUrl(tmp.path()), "Survey"));
             pm.importFiles(urls(sources));
+            QVERIFY(finishImport(pm));
             QCOMPARE(pm.photoCount(), 3);
             original = pm.projectPath();
         }
@@ -272,7 +311,10 @@ private slots:
         ProjectManager pm;
         QVERIFY(pm.createProject(dirUrl(tmp.path()), "Survey"));
         pm.importFiles(urls(sources));
+        QVERIFY(finishImport(pm));
         QCOMPARE(pm.photoCount(), 3);
+        const QString thumbs = pm.projectPath() + "/cache/thumbs";
+        QCOMPARE(fileCount(thumbs), 3);
 
         while (pm.photoCount() > 0) {
             pm.selectPhoto(0);
@@ -282,6 +324,7 @@ private slots:
             QVERIFY2(pm.removeSelectedPhoto(), qUtf8Printable(pm.statusMessage()));
             QVERIFY(!QFileInfo::exists(copy));
         }
+        QCOMPARE(fileCount(thumbs), 0);                 // thumbnails go with their photos
         QCOMPARE(pm.selectedIndex(), -1);
         QVERIFY(!pm.removeSelectedPhoto());             // nothing selected
         for (const QString &source : sources) QVERIFY(QFileInfo::exists(source));
@@ -309,8 +352,12 @@ private slots:
         ProjectManager pm;
         QVERIFY(pm.createProject(dirUrl(tmp.path()), "Survey"));
         pm.importFiles(urls(broken + QStringList{tmp.filePath("missing.jpg")}));
+        QVERIFY(finishImport(pm));
         QCOMPARE(pm.photoCount(), 0);
-        QCOMPARE(pm.statusMessage(), QStringLiteral("Импортировано: 0. Пропущено: 6."));
+        QCOMPARE(pm.statusMessage(),
+                 QStringLiteral("Импортировано: 0. Пропущено: 6 (повреждённых или нечитаемых — 5, неподдерживаемых — 1)."));
+        QCOMPARE(pm.importIssues().size(), 6);
+        QVERIFY(pm.importIssues().join('\n').contains(QStringLiteral("битый.jpg — файл повреждён или не читается")));
         QVERIFY(QDir(pm.projectPath() + "/photos").isEmpty());
         QVERIFY(!pm.busy());
 
@@ -397,11 +444,14 @@ private slots:
         QVERIFY(pm.createProject(dirUrl(flight), QStringLiteral("Проект")));
 
         pm.importFolder(dirUrl(flight + "/raw"));
+        QVERIFY(finishImport(pm));
         QCOMPARE(pm.photoCount(), 3);
 
         // The parent folder also contains the project with its own copies.
         pm.importFolder(dirUrl(flight));
+        QVERIFY(finishImport(pm));
         QCOMPARE(pm.photoCount(), 3);
+        QCOMPARE(pm.statusMessage(), QStringLiteral("Импортировано: 0. Пропущено: 3 (уже в проекте — 3)."));
 
         QSignalSpy errors(&pm, &ProjectManager::errorOccurred);
         pm.importFolder(dirUrl(pm.projectPath()));
@@ -409,6 +459,162 @@ private slots:
         pm.importFolder(dirUrl(tmp.filePath("missing")));
         QCOMPARE(errors.count(), 3);
         QCOMPARE(pm.photoCount(), 3);
+    }
+
+    void importKeepsEventLoopResponsive()
+    {
+        // Stage A acceptance: the GUI thread keeps serving events while 120 photos import.
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        QCOMPARE(makeBatch(tmp.filePath("flight"), 120).size(), 120);
+        ProjectManager pm;
+        QVERIFY(pm.createProject(dirUrl(tmp.path()), "Survey"));
+        QSignalSpy progress(&pm, &ProjectManager::importProgressChanged);
+        QSignalSpy photos(&pm, &ProjectManager::photosChanged);
+
+        QElapsedTimer clock;
+        qint64 lastTick = 0;
+        qint64 maxGap = 0;
+        QTimer timer;
+        timer.setInterval(10);
+        QObject::connect(&timer, &QTimer::timeout, &timer, [&] {
+            const qint64 now = clock.elapsed();
+            maxGap = qMax(maxGap, now - lastTick);
+            lastTick = now;
+        });
+        pm.importFolder(dirUrl(tmp.filePath("flight")));
+        QVERIFY(pm.busy());                             // returns at once; work continues
+        clock.start();
+        timer.start();
+        QVERIFY(finishImport(pm));
+        timer.stop();
+        const qint64 total = clock.elapsed();
+
+        QCOMPARE(pm.photoCount(), 120);
+        QCOMPARE(readManifest(pm.projectPath()).value("photos").toArray().size(), 120);
+        QVERIFY2(maxGap < 250, qPrintable(QStringLiteral("GUI thread stalled for %1 ms").arg(maxGap)));
+        QVERIFY(progress.count() > 2);
+        QVERIFY(photos.count() > 1);                    // photos appear while importing
+        qInfo("120 photos imported in %lld ms; longest GUI-thread gap %lld ms", total, maxGap);
+    }
+
+    void cancelKeepsProjectConsistent()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        QCOMPARE(makeBatch(tmp.filePath("flight"), 200).size(), 200);
+        ProjectManager pm;
+        QVERIFY(pm.createProject(dirUrl(tmp.path()), "Survey"));
+        const QString dir = pm.projectPath();
+        const auto connection = QObject::connect(&pm, &ProjectManager::importProgressChanged, &pm, [&pm] {
+            if (pm.importProcessed() >= 5) pm.cancelImport();
+        });
+        pm.importFolder(dirUrl(tmp.filePath("flight")));
+        QVERIFY(finishImport(pm));
+        QObject::disconnect(connection);
+
+        const int imported = pm.photoCount();
+        QVERIFY2(imported >= 5 && imported < 200, qPrintable(QString::number(imported)));
+        QCOMPARE(pm.statusMessage(), QStringLiteral("Импорт отменён. Импортировано: %1 из 200.").arg(imported));
+        // Every copied file is registered; nothing is half-written or orphaned.
+        QCOMPARE(fileCount(dir + "/photos"), imported);
+        QCOMPARE(fileCount(dir + "/cache/thumbs"), imported);
+        QCOMPARE(readManifest(dir).value("photos").toArray().size(), imported);
+
+        // The project stays usable: importing again adds only the rest.
+        pm.importFolder(dirUrl(tmp.filePath("flight")));
+        QVERIFY(finishImport(pm));
+        QCOMPARE(pm.photoCount(), 200);
+        QCOMPARE(pm.statusMessage(),
+                 QStringLiteral("Импортировано: %1. Пропущено: %2 (уже в проекте — %2).").arg(200 - imported).arg(imported));
+    }
+
+    void closingDuringImportKeepsCopiedPhotos()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        QCOMPARE(makeBatch(tmp.filePath("flight"), 200).size(), 200);
+        QString dir;
+        {
+            ProjectManager pm;
+            QVERIFY(pm.createProject(dirUrl(tmp.path()), "Survey"));
+            dir = pm.projectPath();
+            pm.importFolder(dirUrl(tmp.filePath("flight")));
+            QTRY_VERIFY_WITH_TIMEOUT(pm.photoCount() >= 3, 30000);
+        }   // window closed mid-import: cancel, wait, record what was copied
+        const int onDisk = fileCount(dir + "/photos");
+        QVERIFY2(onDisk >= 3 && onDisk < 200, qPrintable(QString::number(onDisk)));
+        QCOMPARE(readManifest(dir).value("photos").toArray().size(), onDisk);
+        QVERIFY(!QFileInfo::exists(dir + "/geomap.lock"));
+    }
+
+    void projectDirectoryIsAnnouncedBeforeModelReset()
+    {
+        // Delegates of the reset model request thumbnails at once; the image provider
+        // must already know the new project then (blank thumbnails otherwise).
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        ProjectManager pm;
+        QVERIFY(pm.createProject(dirUrl(tmp.path()), "Order"));
+        const QString dir = pm.projectPath();
+        pm.closeProject();
+
+        QStringList events;
+        QObject::connect(&pm, &ProjectManager::projectDirectoryChanged, &pm,
+                         [&events](const QString &d) { events << "dir:" + d; });
+        QObject::connect(pm.photoModel(), &QAbstractItemModel::modelAboutToBeReset, &pm,
+                         [&events] { events << "reset"; });
+        QVERIFY(pm.openProject(dirUrl(dir)));
+        pm.closeProject();
+        QCOMPARE(events, QStringList({"dir:" + dir, "reset", "dir:", "reset"}));
+    }
+
+    void secondWriterIsLockedOut()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        ProjectManager first;
+        ProjectManager second;              // stands in for a second GeoMap AI window
+        QVERIFY(first.createProject(dirUrl(tmp.path()), "Shared"));
+        const QString dir = first.projectPath();
+        QVERIFY(QFileInfo::exists(dir + "/geomap.lock"));
+
+        QSignalSpy errors(&second, &ProjectManager::errorOccurred);
+        QVERIFY(!second.openProject(dirUrl(dir)));
+        QCOMPARE(errors.count(), 1);
+        QVERIFY(errors.at(0).at(0).toString().contains(QStringLiteral("уже открыт")));
+        QVERIFY(!second.hasProject());
+
+        QVERIFY(first.openProject(dirUrl(dir)));        // reopening in the owning window works
+        first.closeProject();
+        QVERIFY(!QFileInfo::exists(dir + "/geomap.lock"));
+        QVERIFY(second.openProject(dirUrl(dir)));
+    }
+
+    void staleLockOfCrashedProcessIsReplaced()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        QString dir;
+        {
+            ProjectManager pm;
+            QVERIFY(pm.createProject(dirUrl(tmp.path()), "Crashed"));
+            dir = pm.projectPath();
+        }
+        // A lock file in QLockFile's own format whose owner process no longer exists.
+        QByteArray contents;
+        {
+            QLockFile probe(tmp.filePath("probe.lock"));
+            QVERIFY(probe.tryLock(0));
+            QFile file(tmp.filePath("probe.lock"));
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            contents = file.readAll();
+        }
+        contents.replace(0, contents.indexOf('\n'), "2147483644");
+        QVERIFY(writeFile(dir + "/geomap.lock", contents));
+
+        ProjectManager pm;
+        QVERIFY2(pm.openProject(dirUrl(dir)), qUtf8Printable(pm.statusMessage()));
     }
 };
 

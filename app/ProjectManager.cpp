@@ -1,23 +1,24 @@
 #include "ProjectManager.h"
-#include "ExifReader.h"
+#include "ProjectFormat.h"
+#include "ThumbnailCache.h"
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
-#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLockFile>
 #include <QSaveFile>
 #include <QSettings>
-#include <QUuid>
 #include <QUrl>
-#include <QSet>
 #include <cmath>
 
 namespace {
-constexpr auto ManifestFile = "geomap.json";
+using ProjectFormat::ManifestFile;
+// Manifest checkpoints while a long import runs, so a crash loses little.
+constexpr qint64 ImportCheckpointMs = 2000;
 QString now() { return QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs); }
 QString normalizedName(QString name)
 {
@@ -28,11 +29,6 @@ QString normalizedName(QString name)
     while (name.endsWith('.') || name.endsWith(' ')) name.chop(1);
     if (name == "." || name == "..") name.clear();
     return name.left(80);
-}
-bool supported(const QString &path)
-{
-    static const QSet<QString> suffixes = {"jpg", "jpeg", "png", "tif", "tiff"};
-    return suffixes.contains(QFileInfo(path).suffix().toLower());
 }
 QJsonObject serialize(const Photo &p)
 {
@@ -76,6 +72,39 @@ ProjectManager::ProjectManager(QObject *parent) : QObject(parent), m_photos(this
     QSettings settings;
     m_recentProjects = settings.value("recentProjects").toStringList();
     m_recentProjects.removeDuplicates();
+}
+
+ProjectManager::~ProjectManager()
+{
+    // Closing the window during an import: keep and record what was copied so far.
+    if (m_import) {
+        m_import->cancel();
+        m_import->wait();
+        collectImportResults();
+        writeProject();
+    }
+}
+
+bool ProjectManager::acquireLock(const QString &path, std::unique_ptr<QLockFile> &lock)
+{
+    if (m_lock && QDir(path).canonicalPath() == QDir(m_projectPath).canonicalPath()) {
+        lock = std::move(m_lock);   // reopening the project this process already holds
+        return true;
+    }
+    auto candidate = std::make_unique<QLockFile>(QDir(path).filePath(ProjectFormat::LockFile));
+    // Held for the whole session; locks of crashed processes are still detected as stale.
+    candidate->setStaleLockTime(0);
+    if (candidate->tryLock(0)) {
+        lock = std::move(candidate);
+        return true;
+    }
+    if (candidate->error() == QLockFile::LockFailedError) {
+        error(QStringLiteral("Проект уже открыт в другом окне GeoMap AI. Закройте его там и повторите."));
+        return false;
+    }
+    // No write access (e.g. read-only media): viewing stays possible, writes report errors.
+    lock.reset();
+    return true;
 }
 
 void ProjectManager::setBusy(bool value)
@@ -146,7 +175,11 @@ bool ProjectManager::createProject(const QUrl &parentDirectory, const QString &n
         error(QStringLiteral("Не удалось сохранить новый проект."));
         return false;
     }
-    m_projectPath = QDir(path).absolutePath();
+    std::unique_ptr<QLockFile> lock;
+    if (!acquireLock(path, lock)) return false;
+    m_lock = std::move(lock);
+    clearImportIssues();
+    setProjectPath(QDir(path).absolutePath());
     m_projectName = dirname;
     m_createdAt = created;
     m_photos.resetPhotos({}, m_projectPath);
@@ -194,20 +227,23 @@ bool ProjectManager::openProject(const QUrl &projectDirectory)
         if (!v.isObject()) continue;
         Photo p = deserialize(v.toObject());
         // Only allow files within project/photos; never trust arbitrary JSON paths.
-        const QString prefix = QStringLiteral("photos/");
-        if (!p.file.startsWith(prefix) || p.file.mid(prefix.size()).contains('/')
-            || p.file.contains('\\') || p.file.contains("..")) continue;
+        if (!ProjectFormat::isSafePhotoFile(p.file)) continue;
         if (!QFileInfo::exists(QDir(path).filePath(p.file))) continue;
         list.append(p);
     }
-    m_projectPath = path;
+    std::unique_ptr<QLockFile> lock;
+    if (!acquireLock(path, lock)) return false;
+    m_lock = std::move(lock);
+    clearImportIssues();
+    setProjectPath(path);
     m_projectName = root.value("name").toString(QFileInfo(path).fileName());
     m_createdAt = root.value("createdAt").toString();
     m_photos.resetPhotos(list, path);
     m_selectedIndex = list.isEmpty() ? -1 : 0;
     updateRecents(path);
     emit projectChanged(); emit photosChanged(); emit selectionChanged();
-    updateStatus(QStringLiteral("Проект открыт: ") + m_projectName);
+    updateStatus(m_lock ? QStringLiteral("Проект открыт: ") + m_projectName
+                        : QStringLiteral("Проект открыт без блокировки (нет прав на запись в папку): ") + m_projectName);
     return true;
 }
 
@@ -240,7 +276,10 @@ bool ProjectManager::saveProject()
 void ProjectManager::closeProject()
 {
     if (m_busy || !hasProject()) return;
-    m_projectPath.clear(); m_projectName.clear(); m_createdAt.clear();
+    m_lock.reset();
+    clearImportIssues();
+    setProjectPath({});
+    m_projectName.clear(); m_createdAt.clear();
     m_photos.resetPhotos({}, {});
     m_selectedIndex = -1;
     emit projectChanged(); emit photosChanged(); emit selectionChanged();
@@ -271,18 +310,10 @@ void ProjectManager::importFolder(const QUrl &folder)
         error(QStringLiteral("Выберите папку с исходными фотографиями, а не папку проекта."));
         return;
     }
-    QStringList paths;
-    // Entries share the canonical root, so they can be matched against the canonical
-    // project prefix. Qt paths always use '/', unlike QDir::separator() on Windows.
-    QDirIterator it(path, QDir::Files | QDir::Readable, QDirIterator::Subdirectories);
-    const QString currentProjectPrefix = QDir(m_projectPath).canonicalPath() + QLatin1Char('/');
-    while (it.hasNext()) {
-        const QString file = it.next();
-        if (file.startsWith(currentProjectPrefix)) continue;
-        if (supported(file)) paths.append(file);
-        if (paths.size() >= 10000) break;
-    }
-    importPaths(paths);
+    if (m_busy) return;
+    ImportJob::Request request;
+    request.folder = path;     // scanned on the worker thread
+    startImport(std::move(request));
 }
 
 void ProjectManager::importPaths(const QStringList &files)
@@ -290,54 +321,105 @@ void ProjectManager::importPaths(const QStringList &files)
     if (!hasProject()) { error(QStringLiteral("Сначала создайте или откройте проект.")); return; }
     if (m_busy) return;
     if (files.isEmpty()) { updateStatus(QStringLiteral("Нет файлов для импорта.")); return; }
+    ImportJob::Request request;
+    request.files = files;
+    startImport(std::move(request));
+}
+
+void ProjectManager::startImport(ImportJob::Request request)
+{
+    request.projectDir = QDir(m_projectPath).canonicalPath();
+    for (const Photo &p : m_photos.photos()) request.knownSources.insert(p.sourcePath);
+    m_import = new ImportJob(std::move(request), this);
+    connect(m_import, &ImportJob::resultsAvailable, this, &ProjectManager::collectImportResults);
+    connect(m_import, &ImportJob::progressChanged, this, [this] {
+        if (!m_import) return;
+        m_importProgress = m_import->progress();
+        emit importProgressChanged();
+    });
+    connect(m_import, &ImportJob::finished, this, &ProjectManager::finishImport);
+    m_importProgress = {};
+    m_importIssues.clear();
+    emit importIssuesChanged();
+    emit importProgressChanged();
+    m_lastCheckpoint.start();
     setBusy(true);
-    int imported = 0, rejected = 0;
-    const QString imagesDir = QDir(m_projectPath).filePath("photos");
-    QSet<QString> sources;
-    for (const Photo &p : m_photos.photos()) sources.insert(p.sourcePath);
-    for (const QString &path : files) {
-        const QFileInfo info(path);
-        if (!info.isFile() || !supported(path) || sources.contains(info.canonicalFilePath())) {
-            ++rejected; continue;
-        }
-        const ImageMetadata metadata = ExifReader::read(path);
-        if (!metadata.valid) { ++rejected; continue; }
-        const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        const QString relative = QStringLiteral("photos/") + id + "." + info.suffix().toLower();
-        const QString target = QDir(m_projectPath).filePath(relative);
-        if (!QFile::copy(path, target)) {
-            ++rejected; continue;
-        }
-        // The copy inherits the read-only attribute of camera/SD-card originals on Windows;
-        // the project owns its copy and must be able to delete it.
-        QFile::setPermissions(target, QFile::permissions(target) | QFileDevice::WriteOwner | QFileDevice::WriteUser);
-        Photo p;
-        p.id = id;
-        p.file = relative;
-        p.name = info.fileName();
-        p.sourcePath = info.canonicalFilePath();
-        p.cameraMake = metadata.cameraMake;
-        p.cameraModel = metadata.cameraModel;
-        p.takenAt = metadata.dateTime;
-        p.bytes = info.size();
-        p.width = metadata.width;
-        p.height = metadata.height;
-        p.hasGps = metadata.hasGps;
-        p.latitude = metadata.latitude;
-        p.longitude = metadata.longitude;
-        m_photos.append(p);
-        sources.insert(p.sourcePath);
-        ++imported;
-    }
-    if (m_selectedIndex == -1 && photoCount() > 0) {
+    updateStatus(QStringLiteral("Импорт выполняется…"));
+    m_import->start();
+}
+
+void ProjectManager::collectImportResults()
+{
+    if (!m_import) return;
+    const QVector<Photo> photos = m_import->takeResults();
+    if (photos.isEmpty()) return;
+    m_photos.append(photos);
+    if (m_selectedIndex == -1) {
         m_selectedIndex = 0;
         emit selectionChanged();
     }
-    const bool saved = writeProject();
     emit photosChanged();
+    if (m_lastCheckpoint.elapsed() >= ImportCheckpointMs) {
+        writeProject();
+        m_lastCheckpoint.restart();
+    }
+}
+
+void ProjectManager::finishImport()
+{
+    if (!m_import) return;
+    collectImportResults();
+    const ImportJob::Progress p = m_import->progress();
+    const bool cancelled = m_import->isCancelled();
+    const QString failure = m_import->failure();
+    m_importIssues = m_import->issues();
+    m_import->deleteLater();
+    m_import = nullptr;
+    m_importProgress = p;
+    const bool saved = writeProject();
     setBusy(false);
-    if (!saved) error(QStringLiteral("Файлы импортированы, но не удалось записать geomap.json — проверьте доступ к диску."));
-    else updateStatus(QStringLiteral("Импортировано: %1. Пропущено: %2.").arg(imported).arg(rejected));
+    emit importProgressChanged();
+    emit importIssuesChanged();
+
+    QStringList reasons;
+    if (p.unreadable) reasons << QStringLiteral("повреждённых или нечитаемых — %1").arg(p.unreadable);
+    if (p.duplicates) reasons << QStringLiteral("уже в проекте — %1").arg(p.duplicates);
+    if (p.unsupported) reasons << QStringLiteral("неподдерживаемых — %1").arg(p.unsupported);
+    if (p.copyFailed) reasons << QStringLiteral("ошибок копирования — %1").arg(p.copyFailed);
+    QString skipped = QStringLiteral("Пропущено: %1").arg(p.skipped());
+    if (!reasons.isEmpty()) skipped += QStringLiteral(" (%1)").arg(reasons.join(QStringLiteral(", ")));
+    QString summary = cancelled
+        ? QStringLiteral("Импорт отменён. Импортировано: %1 из %2.").arg(p.imported).arg(p.total)
+        : QStringLiteral("Импортировано: %1. %2.").arg(p.imported).arg(skipped);
+    if (cancelled && p.skipped()) summary += QLatin1Char(' ') + skipped + QLatin1Char('.');
+    if (p.truncated) summary += QStringLiteral(" В папке больше %1 снимков: импортированы первые %1.").arg(p.total);
+    if (!cancelled && p.total == 0 && p.skipped() == 0) summary = QStringLiteral("Нет файлов для импорта.");
+
+    if (!failure.isEmpty()) error(failure);
+    else if (!saved) error(QStringLiteral("Файлы импортированы, но не удалось записать geomap.json — проверьте доступ к диску."));
+    else updateStatus(summary);
+    emit importFinished();
+}
+
+void ProjectManager::clearImportIssues()
+{
+    // The report belongs to the last import of the project that is being left.
+    if (m_importIssues.isEmpty()) return;
+    m_importIssues.clear();
+    emit importIssuesChanged();
+}
+
+void ProjectManager::setProjectPath(const QString &path)
+{
+    m_projectPath = path;
+    emit projectDirectoryChanged(path);
+}
+
+void ProjectManager::cancelImport()
+{
+    if (!m_import || m_import->isCancelled()) return;
+    m_import->cancel();
+    emit importProgressChanged();
 }
 
 void ProjectManager::selectPhoto(int index)
@@ -358,6 +440,7 @@ bool ProjectManager::removeSelectedPhoto()
         error(QStringLiteral("Не удалось удалить фотографию из проекта."));
         return false;
     }
+    QFile::remove(ThumbnailCache::thumbnailPath(m_projectPath, p.file));
     m_photos.erase(m_selectedIndex);
     m_selectedIndex = photoCount() ? qMin(m_selectedIndex, photoCount() - 1) : -1;
     emit selectionChanged(); emit photosChanged();

@@ -102,11 +102,12 @@ ApplicationWindow {
         }
     }
 
-    Shortcut { sequence: StandardKey.New; onActivated: createDialog.open() }
-    Shortcut { sequence: StandardKey.Open; onActivated: openProjectDialog.open() }
-    Shortcut { sequence: StandardKey.Save; onActivated: projects.saveProject() }
-    Shortcut { sequence: "Ctrl+W"; onActivated: projects.closeProject() }
-    Shortcut { sequence: "Ctrl+I"; onActivated: { if (projects.hasProject) photoDialog.open() } }
+    // Project commands are unavailable while an import is running.
+    Shortcut { sequence: StandardKey.New; enabled: !projects.busy; onActivated: createDialog.open() }
+    Shortcut { sequence: StandardKey.Open; enabled: !projects.busy; onActivated: openProjectDialog.open() }
+    Shortcut { sequence: StandardKey.Save; enabled: !projects.busy; onActivated: projects.saveProject() }
+    Shortcut { sequence: "Ctrl+W"; enabled: !projects.busy; onActivated: projects.closeProject() }
+    Shortcut { sequence: "Ctrl+I"; enabled: projects.hasProject && !projects.busy; onActivated: photoDialog.open() }
 
     Connections {
         target: projects
@@ -123,6 +124,9 @@ ApplicationWindow {
         function onSelectionChanged() {
             window.imageZoom = 1.0
             gpsCanvas.requestPaint()
+        }
+        function onImportFinished() {
+            if (window.closeAfterImport) window.close()
         }
     }
 
@@ -246,6 +250,58 @@ ApplicationWindow {
         onAccepted: projects.removeSelectedPhoto()
     }
 
+    Dialog {
+        id: issuesDialog
+        title: "Пропущенные при импорте файлы"
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        width: Math.min(820, window.width - 80)
+        height: Math.min(520, window.height - 80)
+        background: Rectangle { color: "#202936"; border.color: "#566176"; radius: 12 }
+        contentItem: ListView {
+            clip: true
+            model: projects.importIssues
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            delegate: Label {
+                required property string modelData
+                width: ListView.view.width - 12
+                text: modelData
+                wrapMode: Text.WrapAnywhere
+                color: window.white; font.pixelSize: 12
+                topPadding: 3; bottomPadding: 3
+            }
+        }
+        standardButtons: Dialog.Close
+    }
+
+    // Closing during an import: stop it first, keep what was copied, then quit.
+    property bool closeAfterImport: false
+    onClosing: function(close) {
+        if (projects.busy) {
+            close.accepted = false
+            closeDuringImportDialog.open()
+        }
+    }
+    Dialog {
+        id: closeDuringImportDialog
+        title: "Импорт ещё выполняется"
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        width: 430
+        background: Rectangle { color: "#202936"; border.color: "#566176"; radius: 12 }
+        contentItem: Label {
+            text: "Остановить импорт и закрыть программу? Уже скопированные снимки останутся в проекте."
+            color: window.white
+            wrapMode: Text.Wrap
+            padding: 22
+        }
+        standardButtons: Dialog.Yes | Dialog.Cancel
+        onAccepted: {
+            window.closeAfterImport = true
+            projects.cancelImport()
+        }
+    }
+
     // Application header
     header: Rectangle {
         height: 64
@@ -279,8 +335,8 @@ ApplicationWindow {
                 Layout.maximumWidth: 250
             }
             Item { Layout.fillWidth: true }
-            FlatButton { text: "+ Новый проект"; compact: true; onClicked: createDialog.open() }
-            FlatButton { text: "Открыть"; compact: true; onClicked: openProjectDialog.open() }
+            FlatButton { text: "+ Новый проект"; compact: true; enabled: !projects.busy; onClicked: createDialog.open() }
+            FlatButton { text: "Открыть"; compact: true; enabled: !projects.busy; onClicked: openProjectDialog.open() }
             FlatButton { text: "Сохранить"; compact: true; enabled: projects.hasProject && !projects.busy; onClicked: projects.saveProject() }
             Rectangle { width: 1; height: 28; color: window.line }
             Rectangle {
@@ -364,7 +420,7 @@ ApplicationWindow {
                     delegate: Rectangle {
                         required property int index
                         required property string photoName
-                        required property url photoUrl
+                        required property url photoThumb
                         required property bool photoHasGps
                         required property int photoWidth
                         required property int photoHeight
@@ -379,15 +435,15 @@ ApplicationWindow {
                             spacing: 10
                             Rectangle {
                                 width: 78; height: 54; radius: 5; color: "#111b25"; clip: true
+                                // Pre-rotated preview from the project's thumbnail cache.
                                 Image {
                                     anchors.fill: parent
-                                    source: photoUrl
+                                    source: photoThumb
                                     sourceSize.width: 156
                                     sourceSize.height: 108
                                     fillMode: Image.PreserveAspectCrop
                                     asynchronous: true
                                     cache: true
-                                    autoTransform: true
                                 }
                             }
                             ColumnLayout {
@@ -530,8 +586,8 @@ ApplicationWindow {
                         RowLayout {
                             Layout.alignment: Qt.AlignHCenter
                             Layout.topMargin: 8
-                            FlatButton { text: "Добавить фотографии"; emphasis: true; onClicked: photoDialog.open() }
-                            FlatButton { text: "Импортировать папку"; onClicked: photoFolderDialog.open() }
+                            FlatButton { text: "Добавить фотографии"; emphasis: true; enabled: !projects.busy; onClicked: photoDialog.open() }
+                            FlatButton { text: "Импортировать папку"; enabled: !projects.busy; onClicked: photoFolderDialog.open() }
                         }
                     }
 
@@ -682,15 +738,15 @@ ApplicationWindow {
                         model: projects.photoModel
                         delegate: Rectangle {
                             required property int index
-                            required property url photoUrl
+                            required property url photoThumb
                             width: 132; height: 90
                             radius: 7; color: "#202b37"; clip: true
                             border.color: index === projects.selectedIndex ? "#6ac9ff" : "#3a4554"
                             border.width: index === projects.selectedIndex ? 2 : 1
                             Image {
                                 anchors.fill: parent; anchors.margins: 3
-                                source: photoUrl; sourceSize.width: 264; sourceSize.height: 180
-                                fillMode: Image.PreserveAspectCrop; asynchronous: true; autoTransform: true
+                                source: photoThumb; sourceSize.width: 264; sourceSize.height: 180
+                                fillMode: Image.PreserveAspectCrop; asynchronous: true
                             }
                             MouseArea { anchors.fill: parent; onClicked: projects.selectPhoto(index) }
                         }
@@ -774,8 +830,48 @@ ApplicationWindow {
             anchors.rightMargin: 16
             spacing: 8
             Rectangle { width: 7; height: 7; radius: 4; color: projects.busy ? "#f5c77a" : "#61cea7" }
-            Label { text: projects.busy ? "Импорт выполняется" : projects.statusMessage; color: "#a9b9ca"; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true }
-            Label { text: "OFFLINE  /  OPEN SOURCE  /  v0.1.0"; color: "#71849a"; font.pixelSize: 10; font.letterSpacing: 0.6 }
+            Label {
+                visible: !projects.busy
+                text: projects.statusMessage
+                color: "#a9b9ca"; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true
+            }
+            // Background import: real per-file progress reported by the worker.
+            RowLayout {
+                visible: projects.busy
+                Layout.fillWidth: true
+                spacing: 10
+                Label {
+                    text: projects.importCancelling ? "Отмена импорта…"
+                        : projects.importScanning ? "Поиск снимков… найдено " + projects.importTotal
+                        : "Импорт " + projects.importProcessed + " из " + projects.importTotal
+                    color: "#e2edfa"; font.pixelSize: 11
+                }
+                Rectangle {
+                    visible: !projects.importScanning && projects.importTotal > 0
+                    Layout.preferredWidth: 220
+                    height: 6; radius: 3; color: "#26303b"
+                    Rectangle {
+                        width: parent.width * Math.min(1, projects.importProcessed / Math.max(1, projects.importTotal))
+                        height: parent.height; radius: 3; color: window.accent
+                    }
+                }
+                Label {
+                    text: projects.importCurrentFile
+                    color: "#8d9aaa"; font.pixelSize: 11; elide: Text.ElideMiddle; Layout.fillWidth: true
+                }
+                FlatButton {
+                    text: "Отменить импорт"; compact: true; implicitHeight: 24
+                    enabled: !projects.importCancelling
+                    onClicked: projects.cancelImport()
+                }
+            }
+            FlatButton {
+                visible: !projects.busy && projects.importIssues.length > 0
+                text: "Пропущенные файлы: " + projects.importIssues.length
+                compact: true; implicitHeight: 24
+                onClicked: issuesDialog.open()
+            }
+            Label { text: "OFFLINE  /  OPEN SOURCE  /  v" + Qt.application.version; color: "#71849a"; font.pixelSize: 10; font.letterSpacing: 0.6 }
         }
     }
 }

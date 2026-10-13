@@ -7,11 +7,17 @@
     CMake Visual Studio generator. Default: "Visual Studio 17 2022".
 .PARAMETER SkipTests
     Do not run ctest after the build.
+.PARAMETER OutDir
+    Deployment folder. Default: dist\GeoMapAI. It is recreated on every run.
+.PARAMETER Zip
+    Also pack the deployment folder into GeoMapAI-<version>-win64.zip next to it.
 #>
 param(
     [string]$QtDir,
     [string]$Generator = 'Visual Studio 17 2022',
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [string]$OutDir,
+    [switch]$Zip
 )
 
 $ErrorActionPreference = 'Stop'
@@ -84,9 +90,15 @@ try {
 
     $exe = Join-Path $root 'build\Release\GeoMapAI.exe'
     if (!(Test-Path $exe)) { throw "Executable missing: $exe" }
-    $out = Join-Path $root 'dist\GeoMapAI'
-    # dist\GeoMapAI is generated output only; start clean so no stale DLLs remain.
-    if (Test-Path $out) { Remove-Item -Recurse -Force $out }
+    $out = if ($OutDir) { [IO.Path]::GetFullPath($OutDir) } else { Join-Path $root 'dist\GeoMapAI' }
+    # The deployment folder is generated output only; start clean so no stale DLLs remain.
+    # Never wipe a folder that is not a previous deployment (e.g. a mistyped -OutDir).
+    if (Test-Path $out) {
+        if ((Get-ChildItem $out -Force | Select-Object -First 1) -and !(Test-Path (Join-Path $out 'GeoMapAI.exe'))) {
+            throw "Refusing to clear $out : it does not look like a GeoMap AI deployment."
+        }
+        Remove-Item -Recurse -Force $out
+    }
     New-Item -ItemType Directory -Force -Path $out | Out-Null
     Copy-Item $exe (Join-Path $out 'GeoMapAI.exe') -Force
 
@@ -104,6 +116,14 @@ try {
         Write-Host "MSVC runtime: $($redist.FullName)"
     } else {
         Write-Warning 'MSVC runtime DLLs not found; target PCs will need the VC++ 2015-2022 x64 Redistributable.'
+    }
+
+    if ($Zip) {
+        $cmake = Get-Content (Join-Path $root 'CMakeLists.txt') -Raw
+        if ($cmake -notmatch 'project\(GeoMapAI VERSION ([0-9.]+)') { throw 'Project version not found in CMakeLists.txt' }
+        $archive = Join-Path (Split-Path -Parent $out) "GeoMapAI-$($Matches[1])-win64.zip"
+        Compress-Archive -Path $out -DestinationPath $archive -Force
+        Write-Host "Archive: $archive"
     }
 
     Write-Host "Ready: $(Join-Path $out 'GeoMapAI.exe')" -ForegroundColor Green
