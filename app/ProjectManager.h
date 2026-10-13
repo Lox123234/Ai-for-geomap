@@ -68,6 +68,9 @@ public:
     Q_INVOKABLE void cancelImport();
     Q_INVOKABLE void selectPhoto(int index);
     Q_INVOKABLE bool removeSelectedPhoto();
+    // A list read through a QML property stays bound to it: every element access calls
+    // geoPoints() again (O(n) each). Loops must take this detached copy instead.
+    Q_INVOKABLE QVariantList geoPointsSnapshot() const { return geoPoints(); }
     Q_INVOKABLE void revealProject() const;
     Q_INVOKABLE QString displayPath(const QUrl &url) const;
 

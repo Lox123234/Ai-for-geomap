@@ -49,6 +49,7 @@ src/core/ProjectFormat       file names and path rules of the project folder
 3. `QSaveFile` replaces manifests atomically.
 4. Long-running work (import, folder scan, thumbnail generation) does not run on the GUI thread.
 5. Location scatter plots are not presented as GIS basemaps.
+6. QML never iterates a list *property* of a C++ object: in Qt 6 such a list stays bound to the property and every element access calls the getter again (measured: 201 getter calls for a 100-element loop). Loops take a detached copy from a `Q_INVOKABLE` method (`geoPointsSnapshot()`), and canvases repaint only while visible.
 
 ## Extension seam for v0.2
 

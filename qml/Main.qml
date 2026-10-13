@@ -115,15 +115,17 @@ ApplicationWindow {
             window.lastError = message
             errorDialog.open()
         }
+        // The GPS canvas paints on the GUI thread; repaint it only while it is shown
+        // (it repaints itself when it becomes visible).
         function onProjectChanged() {
             window.activeView = 0
             window.imageZoom = 1.0
-            gpsCanvas.requestPaint()
+            if (gpsCanvas.visible) gpsCanvas.requestPaint()
         }
-        function onPhotosChanged() { gpsCanvas.requestPaint() }
+        function onPhotosChanged() { if (gpsCanvas.visible) gpsCanvas.requestPaint() }
         function onSelectionChanged() {
             window.imageZoom = 1.0
-            gpsCanvas.requestPaint()
+            if (gpsCanvas.visible) gpsCanvas.requestPaint()
         }
         function onImportFinished() {
             if (window.closeAfterImport) window.close()
@@ -673,6 +675,7 @@ ApplicationWindow {
                                     onHeightChanged: requestPaint()
                                     onVisibleChanged: requestPaint()
                                     onPaint: {
+                                        if (!visible) return
                                         var ctx = getContext("2d")
                                         ctx.clearRect(0, 0, width, height)
                                         ctx.strokeStyle = "#263d4a"
@@ -681,7 +684,7 @@ ApplicationWindow {
                                             ctx.beginPath(); ctx.moveTo(g * width / 10, 0); ctx.lineTo(g * width / 10, height); ctx.stroke()
                                             ctx.beginPath(); ctx.moveTo(0, g * height / 10); ctx.lineTo(width, g * height / 10); ctx.stroke()
                                         }
-                                        var pts = projects.geoPoints
+                                        var pts = projects.geoPointsSnapshot()   // one O(n) copy, see ProjectManager.h
                                         if (!pts || pts.length === 0) return
                                         var minLat = pts[0].latitude, maxLat = minLat
                                         var minLon = pts[0].longitude, maxLon = minLon
