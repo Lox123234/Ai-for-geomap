@@ -16,7 +16,7 @@ jobs:
     name: Windows x64 (MSVC)
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -32,7 +32,7 @@ jobs:
 
       - name: Upload portable build
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: GeoMapAI-windows-x64
           path: dist/GeoMapAI-*-win64.zip
@@ -42,7 +42,7 @@ jobs:
     name: Linux x64 (GCC)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y ninja-build libgl1-mesa-dev libxkbcommon-dev

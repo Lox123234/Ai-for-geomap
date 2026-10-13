@@ -34,9 +34,11 @@ target_compile_definitions(GeoMapAI PRIVATE GEOMAP_VERSION="${PROJECT_VERSION}")
 
 set_source_files_properties(qml/Main.qml PROPERTIES QT_RESOURCE_ALIAS Main.qml)
 
+# The module directory would otherwise be <build>/GeoMapAI, the path of the Linux executable.
 qt_add_qml_module(GeoMapAI
     URI GeoMapAI
     VERSION 1.0
+    OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/qml/GeoMapAI
     QML_FILES qml/Main.qml
 )
 
