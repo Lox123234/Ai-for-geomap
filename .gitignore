@@ -1,0 +1,28 @@
+# CMake / IDE
+build/
+build-*/
+cmake-build-*/
+dist/
+CMakeUserPresets.json
+.cache/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Binary artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.app/
+*.obj
+*.o
+
+# Generated local projects & data
+*.geomap-backup
+.local-projects/
+
+# OS
+.DS_Store
+Thumbs.db
