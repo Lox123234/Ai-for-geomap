@@ -113,11 +113,6 @@ QByteArray extractExif(const QString &path)
         file.read(2);
         // JPEG metadata is before image data. Limit search to 8 MiB.
         while (file.pos() < 8 * 1024 * 1024 && !file.atEnd()) {
-            const char b = file.getChar(nullptr) ? '\0' : '\0'; // unused; use read below
-            Q_UNUSED(b)
-            break;
-        }
-        while (file.pos() < 8 * 1024 * 1024 && !file.atEnd()) {
             const QByteArray lead = file.read(1);
             if (lead.size() != 1) break;
             if (uchar(lead[0]) != 0xff) break;

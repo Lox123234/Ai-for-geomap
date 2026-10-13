@@ -12,6 +12,20 @@ ApplicationWindow {
     minimumHeight: 720
     title: projects.hasProject ? projects.projectName + " — GeoMap AI" : "GeoMap AI"
     color: "#11151b"
+    // Basic-style parts that are not restyled below (Dialog title, DialogButtonBox,
+    // standard buttons, scroll bars) take their colors from the palette.
+    palette {
+        window: "#202936"
+        windowText: "#e5f0fb"
+        base: "#121b26"
+        text: "#ecf2fa"
+        button: "#283341"
+        buttonText: "#dce8f5"
+        highlight: "#56b6f7"
+        highlightedText: "#0c1c29"
+        mid: "#56667a"
+        dark: "#8d9aaa"
+    }
 
     readonly property color bg: "#11151b"
     readonly property color surface: "#191f28"
@@ -23,6 +37,9 @@ ApplicationWindow {
     property int activeView: 0   // 0 photo viewer, 1 geo coverage
     property real imageZoom: 1.0
     property string lastError: ""
+    // Set only when the user confirms a folder: FolderDialog.selectedFolder already
+    // holds the dialog's start folder as soon as it opens, even if it is cancelled.
+    property url newProjectFolder: ""
 
     function prettyBytes(b) {
         if (b === undefined || b === null) return "—"
@@ -124,7 +141,10 @@ ApplicationWindow {
     FolderDialog {
         id: projectLocationDialog
         title: "Где сохранить новый проект?"
-        onAccepted: projectLocation.text = selectedFolder.toString().replace(/^file:\/\//, "")
+        onAccepted: {
+            window.newProjectFolder = selectedFolder
+            projectLocation.text = projects.displayPath(selectedFolder)
+        }
     }
     FolderDialog {
         id: openProjectDialog
@@ -174,17 +194,20 @@ ApplicationWindow {
                 FlatButton { text: "Обзор"; onClicked: projectLocationDialog.open() }
             }
         }
-        footer: RowLayout {
-            spacing: 10
+        // Layouts have no padding properties; Control provides them around the row.
+        footer: Control {
             leftPadding: 24; rightPadding: 24; topPadding: 14; bottomPadding: 18
-            Item { Layout.fillWidth: true }
-            FlatButton { text: "Отмена"; onClicked: createDialog.close() }
-            FlatButton {
-                text: "Создать"
-                emphasis: true
-                enabled: projectNameField.text.trim().length > 0 && projectLocationDialog.selectedFolder.toString().length > 0
-                onClicked: {
-                    if (projects.createProject(projectLocationDialog.selectedFolder, projectNameField.text)) createDialog.close()
+            contentItem: RowLayout {
+                spacing: 10
+                Item { Layout.fillWidth: true }
+                FlatButton { text: "Отмена"; onClicked: createDialog.close() }
+                FlatButton {
+                    text: "Создать"
+                    emphasis: true
+                    enabled: projectNameField.text.trim().length > 0 && window.newProjectFolder.toString().length > 0
+                    onClicked: {
+                        if (projects.createProject(window.newProjectFolder, projectNameField.text)) createDialog.close()
+                    }
                 }
             }
         }
@@ -686,27 +709,38 @@ ApplicationWindow {
                 anchors.fill: parent
                 anchors.margins: 17
                 spacing: 15
-                SectionTitle { text: "ИНСПЕКТОР" }
-                Rectangle { Layout.fillWidth: true; height: 1; color: window.line }
-                SectionTitle { text: "ПРОЕКТ" }
-                DetailLine { field: "Название"; value: projects.hasProject ? projects.projectName : "—"; Layout.fillWidth: true }
-                DetailLine { field: "Снимков"; value: projects.photoCount.toString(); Layout.fillWidth: true }
-                DetailLine { field: "С геометками"; value: projects.gpsCount.toString(); Layout.fillWidth: true }
-                Rectangle { Layout.fillWidth: true; height: 1; color: window.line }
-                SectionTitle { text: "ВЫБРАННЫЙ СНИМОК" }
-                DetailLine { field: "Имя файла"; value: projects.selectedPhoto.name || "—"; Layout.fillWidth: true }
-                DetailLine { field: "Размер"; value: projects.selectedPhoto.width ? projects.selectedPhoto.width + " × " + projects.selectedPhoto.height : "—"; Layout.fillWidth: true }
-                DetailLine { field: "Объём"; value: projects.selectedIndex >= 0 ? window.prettyBytes(projects.selectedPhoto.bytes) : "—"; Layout.fillWidth: true }
-                DetailLine { field: "Камера"; value: projects.selectedPhoto.camera || "—"; Layout.fillWidth: true }
-                DetailLine { field: "Дата съёмки (EXIF)"; value: projects.selectedPhoto.takenAt || "—"; Layout.fillWidth: true }
-                DetailLine {
-                    field: "GPS координаты"
-                    value: projects.selectedPhoto.hasGps
-                        ? window.coord(projects.selectedPhoto.latitude) + "\n" + window.coord(projects.selectedPhoto.longitude)
-                        : "Не обнаружены"
+                // Details scroll on short screens (e.g. 1920x1080 at 125 %) so the actions stay visible.
+                ScrollView {
+                    id: inspectorScroll
                     Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    contentWidth: availableWidth
+                    clip: true
+                    ColumnLayout {
+                        width: inspectorScroll.availableWidth
+                        spacing: 15
+                        SectionTitle { text: "ИНСПЕКТОР" }
+                        Rectangle { Layout.fillWidth: true; height: 1; color: window.line }
+                        SectionTitle { text: "ПРОЕКТ" }
+                        DetailLine { field: "Название"; value: projects.hasProject ? projects.projectName : "—"; Layout.fillWidth: true }
+                        DetailLine { field: "Снимков"; value: projects.photoCount.toString(); Layout.fillWidth: true }
+                        DetailLine { field: "С геометками"; value: projects.gpsCount.toString(); Layout.fillWidth: true }
+                        Rectangle { Layout.fillWidth: true; height: 1; color: window.line }
+                        SectionTitle { text: "ВЫБРАННЫЙ СНИМОК" }
+                        DetailLine { field: "Имя файла"; value: projects.selectedPhoto.name || "—"; Layout.fillWidth: true }
+                        DetailLine { field: "Размер"; value: projects.selectedPhoto.width ? projects.selectedPhoto.width + " × " + projects.selectedPhoto.height : "—"; Layout.fillWidth: true }
+                        DetailLine { field: "Объём"; value: projects.selectedIndex >= 0 ? window.prettyBytes(projects.selectedPhoto.bytes) : "—"; Layout.fillWidth: true }
+                        DetailLine { field: "Камера"; value: projects.selectedPhoto.camera || "—"; Layout.fillWidth: true }
+                        DetailLine { field: "Дата съёмки (EXIF)"; value: projects.selectedPhoto.takenAt || "—"; Layout.fillWidth: true }
+                        DetailLine {
+                            field: "GPS координаты"
+                            value: projects.selectedPhoto.hasGps
+                                ? window.coord(projects.selectedPhoto.latitude) + "\n" + window.coord(projects.selectedPhoto.longitude)
+                                : "Не обнаружены"
+                            Layout.fillWidth: true
+                        }
+                    }
                 }
-                Item { Layout.fillHeight: true }
                 FlatButton {
                     Layout.fillWidth: true
                     text: "Открыть папку проекта"

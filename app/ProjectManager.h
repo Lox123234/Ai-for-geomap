@@ -41,11 +41,14 @@ public:
     Q_INVOKABLE bool openRecent(const QString &directory);
     Q_INVOKABLE bool saveProject();
     Q_INVOKABLE void closeProject();
-    Q_INVOKABLE void importFiles(const QVariantList &files);
+    // QList<QUrl> matches FileDialog.selectedFiles; a QVariantList parameter receives
+    // each url double-wrapped (QVariant(QVariant(QUrl))) from QML in Qt 6.8.
+    Q_INVOKABLE void importFiles(const QList<QUrl> &files);
     Q_INVOKABLE void importFolder(const QUrl &folder);
     Q_INVOKABLE void selectPhoto(int index);
     Q_INVOKABLE bool removeSelectedPhoto();
     Q_INVOKABLE void revealProject() const;
+    Q_INVOKABLE QString displayPath(const QUrl &url) const;
 
 signals:
     void projectChanged();

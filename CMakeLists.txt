@@ -43,10 +43,31 @@ if(BUILD_TESTING)
     if(Qt6Test_FOUND)
         qt_add_executable(GeoMapAITests
             tests/test_exif.cpp
+            tests/TestImages.h
             app/ExifReader.h
             app/ExifReader.cpp
         )
         target_link_libraries(GeoMapAITests PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
         add_test(NAME GeoMapAITests COMMAND GeoMapAITests)
+
+        qt_add_executable(GeoMapAIProjectTests
+            tests/test_project.cpp
+            tests/TestImages.h
+            app/ProjectManager.h
+            app/ProjectManager.cpp
+            app/PhotoModel.h
+            app/PhotoModel.cpp
+            app/ExifReader.h
+            app/ExifReader.cpp
+        )
+        target_link_libraries(GeoMapAIProjectTests PRIVATE Qt6::Core Qt6::Gui Qt6::Qml Qt6::Test)
+        add_test(NAME GeoMapAIProjectTests COMMAND GeoMapAIProjectTests)
+
+        # On Windows the test executables are not deployed; let them find the Qt DLLs
+        # (ENVIRONMENT_MODIFICATION needs CMake 3.22+; with 3.21 put <Qt>\bin on PATH).
+        if(WIN32)
+            set_tests_properties(GeoMapAITests GeoMapAIProjectTests PROPERTIES
+                ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+        endif()
     endif()
 endif()

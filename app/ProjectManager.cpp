@@ -247,11 +247,10 @@ void ProjectManager::closeProject()
     updateStatus(QStringLiteral("Проект закрыт."));
 }
 
-void ProjectManager::importFiles(const QVariantList &files)
+void ProjectManager::importFiles(const QList<QUrl> &files)
 {
     QStringList paths;
-    for (const QVariant &value : files) {
-        const QUrl url = value.toUrl();
+    for (const QUrl &url : files) {
         if (url.isLocalFile()) paths.append(url.toLocalFile());
     }
     importPaths(paths);
@@ -260,16 +259,23 @@ void ProjectManager::importFiles(const QVariantList &files)
 void ProjectManager::importFolder(const QUrl &folder)
 {
     if (!folder.isLocalFile() || !hasProject()) return;
-    const QString path = folder.toLocalFile();
+    // Canonical root: empty for a missing folder (QDirIterator("") would walk the CWD).
+    const QString path = QDir(folder.toLocalFile()).canonicalPath();
+    if (path.isEmpty()) {
+        error(QStringLiteral("Папка не найдена: ") + QDir::toNativeSeparators(folder.toLocalFile()));
+        return;
+    }
     // Avoid recursively importing already-copied photos from the active project.
-    if (QDir(path).canonicalPath() == QDir(m_projectPath).canonicalPath()
-        || QDir(path).canonicalPath() == QDir(QDir(m_projectPath).filePath("photos")).canonicalPath()) {
+    if (path == QDir(m_projectPath).canonicalPath()
+        || path == QDir(QDir(m_projectPath).filePath("photos")).canonicalPath()) {
         error(QStringLiteral("Выберите папку с исходными фотографиями, а не папку проекта."));
         return;
     }
     QStringList paths;
+    // Entries share the canonical root, so they can be matched against the canonical
+    // project prefix. Qt paths always use '/', unlike QDir::separator() on Windows.
     QDirIterator it(path, QDir::Files | QDir::Readable, QDirIterator::Subdirectories);
-    const QString currentProjectPrefix = QDir(m_projectPath).canonicalPath() + QDir::separator();
+    const QString currentProjectPrefix = QDir(m_projectPath).canonicalPath() + QLatin1Char('/');
     while (it.hasNext()) {
         const QString file = it.next();
         if (file.startsWith(currentProjectPrefix)) continue;
@@ -298,9 +304,13 @@ void ProjectManager::importPaths(const QStringList &files)
         if (!metadata.valid) { ++rejected; continue; }
         const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         const QString relative = QStringLiteral("photos/") + id + "." + info.suffix().toLower();
-        if (!QFile::copy(path, QDir(m_projectPath).filePath(relative))) {
+        const QString target = QDir(m_projectPath).filePath(relative);
+        if (!QFile::copy(path, target)) {
             ++rejected; continue;
         }
+        // The copy inherits the read-only attribute of camera/SD-card originals on Windows;
+        // the project owns its copy and must be able to delete it.
+        QFile::setPermissions(target, QFile::permissions(target) | QFileDevice::WriteOwner | QFileDevice::WriteUser);
         Photo p;
         p.id = id;
         p.file = relative;
@@ -341,7 +351,10 @@ bool ProjectManager::removeSelectedPhoto()
 {
     if (!hasProject() || m_busy || m_selectedIndex < 0) return false;
     const Photo p = m_photos.at(m_selectedIndex);
-    if (!QFile::remove(QDir(m_projectPath).filePath(p.file))) {
+    const QString file = QDir(m_projectPath).filePath(p.file);
+    // Projects from earlier builds may hold read-only copies; only the copy is touched.
+    QFile::setPermissions(file, QFile::permissions(file) | QFileDevice::WriteOwner | QFileDevice::WriteUser);
+    if (!QFile::remove(file)) {
         error(QStringLiteral("Не удалось удалить фотографию из проекта."));
         return false;
     }
@@ -377,4 +390,10 @@ QVariantList ProjectManager::geoPoints() const
 void ProjectManager::revealProject() const
 {
     if (hasProject()) QDesktopServices::openUrl(QUrl::fromLocalFile(m_projectPath));
+}
+
+QString ProjectManager::displayPath(const QUrl &url) const
+{
+    // Decoded native path ("C:\Съёмки"), not "/C:/%D0%A1..." from string-mangling the URL.
+    return QDir::toNativeSeparators(url.toLocalFile());
 }
