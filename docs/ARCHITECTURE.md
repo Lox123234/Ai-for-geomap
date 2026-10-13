@@ -1,24 +1,55 @@
-# Architecture — GeoMap AI 0.1
+# Architecture — GeoMap AI 0.1.1
 
 ## Process
 
-Single native Qt process. C++ (`ProjectManager`, `PhotoModel`, `ExifReader`) handles files and persistence. Qt Quick/QML draws the interface. There is no browser, local HTTP service, Python interpreter, sign-in or telemetry.
+Single native Qt process. C++ handles files, persistence and background work; Qt Quick/QML draws the interface. There is no browser, local HTTP service, Python interpreter, sign-in or telemetry.
 
-## Modules
+## Layers and targets
 
-- `ProjectManager`: project lifecycle, import, portable JSON persistence, recent projects and selection
-- `PhotoModel`: `QAbstractListModel` exposing filename, thumbnail URL, camera, GPS and dimensions to QML
-- `ExifReader`: metadata parser for standard JPEG APP1 and TIFF images; guarded offsets and counts to avoid accidental out-of-range metadata reads
-- `qml/Main.qml`: editor shell, sidebar, image view, GPS scatter plot, inspector, dialogs, shortcuts
+```text
+qml/Main.qml                 UI (QML)
+app/main.cpp                 composition root: QML engine, image provider, settings
+app/ThumbnailProvider        image://thumbs for QML (Qt Quick)
+------------------------------------------------------------- GeoMapCore (static library, no QML)
+app/ProjectManager           project lifecycle, selection, import orchestration, persistence
+app/PhotoModel               QAbstractListModel for the photo list
+app/ExifReader               bounded JPEG APP1 / TIFF IFD metadata parser
+src/import/ImportJob         worker-thread import: scan, dedupe, metadata, copy, thumbnail
+src/import/ThumbnailCache    <project>/cache/thumbs previews (thread-safe functions)
+src/core/ProjectFormat       file names and path rules of the project folder
+```
+
+`GeoMapCore` is linked by the app and by the three test executables; it depends on Qt Core and Gui only. The layout evolves towards the `src/core`, `src/import`, `src/processing`, … structure of the master specification; the remaining `app/` classes move there when they are next reworked.
+
+## Threads
+
+| Thread | Work |
+| --- | --- |
+| GUI | QML, `ProjectManager`, model updates, manifest writes |
+| `GeoMapImport` (one per import) | folder scan, duplicate check, free-space check, EXIF, copy, thumbnail |
+| Thumbnail pool (`idealThreadCount / 2`, min 2) | cache lookups and missing thumbnails requested by QML |
+| QML pixmap reader / render thread | Qt Quick internals (full-size preview decoding) |
+
+`ImportJob` never touches the model. It publishes results into a mutex-protected buffer and raises `resultsAvailable` once until the GUI thread drains it with `takeResults()`; progress is throttled to ~10 updates per second. Cancellation is checked between files, so a file is either fully copied and registered or not copied at all. `ProjectManager` appends batches to the model, writes manifest checkpoints every 2 s, and on finish writes the manifest and reports per-reason skip counts. Destroying `ProjectManager` during an import (window closed) cancels, joins the worker and records everything copied.
+
+## Thumbnails
+
+`ImportJob` creates the thumbnail of each photo before publishing it, so new list rows show it at once. QML requests `image://thumbs/<file>`; `ThumbnailProvider` resolves the name inside `<project>/photos` only (unsafe names are rejected by `ProjectFormat::isSafePhotoFile`) and loads or rebuilds the cached JPEG on its pool. Responses follow Qt's `imageresponseprovider` pattern: the runnable reports through a queued signal, so a response the engine deleted is just disconnected.
+
+`ProjectManager::projectDirectoryChanged` is emitted **before** the photo model resets, so the delegates created by the reset already resolve thumbnails in the new project.
+
+## Project lock
+
+`geomap.lock` (`QLockFile`, no time-based staleness) is held while a project is open. A second process fails to open the project with a message; locks of dead processes are replaced. Read-only locations open without a lock.
 
 ## Invariants
 
-1. Imported images live in `photos/` under the project directory.
-2. Manifest paths to images must be simple `photos/<file>` relative paths; external/parent traversal paths are rejected on load.
+1. Imported images live in `photos/` under the project directory; originals are never modified or removed.
+2. Manifest paths to images must be `photos/<name>`; anything else is ignored on load.
 3. `QSaveFile` replaces manifests atomically.
-4. The original source is not removed by deleting an imported photo.
+4. Long-running work (import, folder scan, thumbnail generation) does not run on the GUI thread.
 5. Location scatter plots are not presented as GIS basemaps.
 
 ## Extension seam for v0.2
 
-Introduce an `IProcessingEngine` interface independent of Qt UI. A worker/task manager will coordinate photos -> reconstruction output, progress messages, cancellation and logs. Build a local ODM adapter in a separate process/container when available. GeoMap AI itself must remain useful without ODM installed.
+Introduce an `IProcessingEngine` interface independent of the UI, a job queue with persisted states, and an ODM adapter running as a separate process/container (see `docs/ROADMAP.md`, stage B). GeoMap AI must remain useful without ODM installed.
