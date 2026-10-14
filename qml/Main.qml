@@ -3,38 +3,47 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
 
+// Main window of the professional workspace: menu bar and toolbar built from the command
+// registry, project tree and photos on the left, the active view in the centre (photos, map,
+// processing, GPS scheme; 3D is planned), properties on the right, jobs and journal at the
+// bottom, status bar. Every menu item, toolbar button and shortcut runs runCommand(id).
 ApplicationWindow {
     id: window
+    objectName: "mainWindow"
     visible: true
-    width: 1500
-    height: 900
-    minimumWidth: 1100
-    minimumHeight: 720
+    width: 1600
+    height: 940
+    minimumWidth: 1180
+    minimumHeight: 660
     title: projects.hasProject ? projects.projectName + " — GeoMap AI" : "GeoMap AI"
-    color: "#11151b"
-    // Basic-style parts that are not restyled below (Dialog title, DialogButtonBox,
-    // standard buttons, scroll bars) take their colors from the palette.
+    color: Theme.bg
+    // Basic-style parts that are not restyled (Dialog title, DialogButtonBox, standard buttons,
+    // scroll bars, spin boxes) take their colours from the palette.
     palette {
-        window: "#202936"
-        windowText: "#e5f0fb"
-        base: "#121b26"
-        text: "#ecf2fa"
-        button: "#283341"
-        buttonText: "#dce8f5"
-        highlight: "#56b6f7"
-        highlightedText: "#0c1c29"
-        mid: "#56667a"
-        dark: "#8d9aaa"
+        window: Theme.panel
+        windowText: Theme.text
+        base: Theme.field
+        text: Theme.text
+        button: "#2A303B"
+        buttonText: Theme.text
+        highlight: Theme.accent
+        highlightedText: "#FFFFFF"
+        mid: "#4A5464"
+        dark: Theme.muted
+        light: "#3A4250"
+        toolTipBase: "#2A303B"
+        toolTipText: Theme.text
     }
 
-    readonly property color bg: "#11151b"
-    readonly property color surface: "#191f28"
-    readonly property color surface2: "#202835"
-    readonly property color line: "#303b4b"
-    readonly property color muted: "#8d9aaa"
-    readonly property color white: "#ecf2fa"
-    readonly property color accent: "#56b6f7"
-    property int activeView: 0   // 0 photo viewer, 1 geo coverage
+    // Colours used by the processing view (kept from 0.2, now from the theme).
+    readonly property color bg: Theme.bg
+    readonly property color surface: Theme.panel
+    readonly property color surface2: "#262C37"
+    readonly property color line: Theme.line
+    readonly property color muted: Theme.muted
+    readonly property color white: Theme.text
+    readonly property color accent: Theme.accent
+    property int activeView: 0   // 0 photo viewer, 1 GPS scheme, 2 processing, 3 map
     property real imageZoom: 1.0
     property string lastError: ""
     property string lastNotice: ""
@@ -55,6 +64,12 @@ ApplicationWindow {
     // Confirmations before stopping a running job (closing the window or the project).
     property bool closeConfirmed: false
     property var pendingProjectAction: null
+    // Workspace layout (persisted in WorkspaceState).
+    property bool showLeft: true
+    property bool showRight: true
+    property bool showBottom: true
+    property bool photosShown: true
+    property string transientMessage: ""
 
     onSelectedJobIdChanged: refreshJob()
 
@@ -65,11 +80,11 @@ ApplicationWindow {
     }
     function stateColor(state) {
         switch (state) {
-        case "completed": return "#82d7b7"
-        case "failed": return "#f4a6a6"
-        case "running": case "preparing": return "#56b6f7"
-        case "cancelling": case "cancelled": case "interrupted": return "#f5cf7c"
-        default: return "#8d9aaa"
+        case "completed": return Theme.good
+        case "failed": return Theme.bad
+        case "running": case "preparing": return "#7FB3F0"
+        case "cancelling": case "cancelled": case "interrupted": return Theme.warn
+        default: return Theme.muted
         }
     }
     function refreshPreflight() {
@@ -115,36 +130,508 @@ ApplicationWindow {
         window.pendingProjectAction = action
         stopProcessingDialog.open()
     }
+    function showError(text) { window.lastError = text; errorDialog.open() }
+    function showNotice(text) { window.lastNotice = text; noticeDialog.open() }
+    function flash(text) { window.transientMessage = text; transientTimer.restart() }
 
-    function prettyBytes(b) {
-        if (b === undefined || b === null) return "—"
-        if (b < 1024) return b + " B"
-        if (b < 1048576) return (b / 1024).toFixed(1) + " KB"
-        if (b < 1073741824) return (b / 1048576).toFixed(1) + " MB"
-        return (b / 1073741824).toFixed(2) + " GB"
+    // ------------------------------------------------------------------ commands
+    // Availability of a command in the current state (menu items, toolbar, shortcuts).
+    function commandEnabled(id) {
+        var has = projects.hasProject, idle = !projects.busy, map = has && gis.crsDefined
+        switch (id) {
+        case "file.new": case "file.open": return idle
+        case "file.recent": return idle && projects.recentProjects.length > 0
+        case "file.save": case "file.close": return has && idle
+        case "import.photos": case "import.folder": case "project.addPhotos": return has && idle
+        case "import.data": case "import.orthophoto": case "import.dem": case "import.vector": return has
+        case "export.map": return map && !gis.exporting
+        case "export.drawings": return has && gis.drawingCount > 0
+        case "edit.undo": return has && gis.canUndo
+        case "edit.redo": return has && gis.canRedo
+        case "edit.delete": return window.activeView === 3 ? gis.hasSelection : (window.activeView === 0 && projects.selectedIndex >= 0 && idle)
+        case "edit.deselect": return gis.hasSelection
+        case "edit.geometry": case "tool.select": case "tool.pan": case "tool.ruler": case "tool.area":
+        case "tool.point": case "tool.line": case "tool.polygon": case "tool.vertices": return map
+        case "project.removePhoto": return projects.selectedIndex >= 0 && idle
+        case "project.crs": case "project.reveal": return has
+        case "proc.analyze": case "proc.align": case "proc.denseCloud": case "proc.mesh": case "proc.texture":
+        case "proc.dsm": case "proc.dtm": case "proc.orthophoto": case "proc.queue": case "proc.setup": case "proc.classify": return has
+        case "proc.start": return has && idle && processing.environmentChecked && processing.engineAvailable
+        case "proc.stop": return processing.active
+        case "view.photo": case "view.map": case "view.processing": case "view.gps": case "view.reset":
+        case "view.cameras": case "view.dem": return has
+        case "view.hillshade": return window.activeView === 3 && mapController.details.type === "raster"
+                                      && mapController.details.style !== undefined && mapController.details.style.mode === "single"
+        case "file.exit": case "edit.preferences": case "view.panelProject": case "view.panelProperties": case "view.panelLog":
+        case "view.resetLayout": case "help.docs": case "help.shortcuts": case "help.environment": case "help.gpu":
+        case "help.versions": case "help.licenses": case "help.bugReport": case "help.about": return true
+        }
+        return false
     }
-    function coord(x) { return Number(x).toFixed(6) + "°" }
+    // Checked state for views, tools, panels and toggles.
+    function commandChecked(id) {
+        if (!projects.hasProject && (id.indexOf("view.") === 0 || id.indexOf("tool.") === 0) && id.indexOf("view.panel") !== 0) return false
+        switch (id) {
+        case "view.photo": return window.activeView === 0
+        case "view.gps": return window.activeView === 1
+        case "view.processing": return window.activeView === 2
+        case "view.map": return window.activeView === 3
+        case "tool.pan": return window.activeView === 3 && gis.tool === "pan"
+        case "tool.select": case "edit.geometry": case "tool.vertices": return window.activeView === 3 && gis.tool === "edit"
+        case "tool.ruler": return window.activeView === 3 && gis.tool === "length"
+        case "tool.area": return window.activeView === 3 && gis.tool === "area"
+        case "tool.point": return window.activeView === 3 && gis.tool === "point"
+        case "tool.line": return window.activeView === 3 && gis.tool === "line"
+        case "tool.polygon": return window.activeView === 3 && gis.tool === "polygon"
+        case "view.panelProject": return window.showLeft
+        case "view.panelProperties": return window.showRight
+        case "view.panelLog": return window.showBottom
+        case "view.cameras": return window.photosShown
+        case "view.hillshade": return mapController.details.style !== undefined && mapController.details.style.hillshade === true
+        }
+        return false
+    }
+    function setTool(tool) { window.activeView = 3; gis.tool = tool }
+    function openProcessing(profile) {
+        window.activeView = 2
+        if (profile) window.profileId = profile
+        window.refreshPreflight()
+    }
+    function startProcessing() {
+        window.activeView = 2
+        window.refreshPreflight()
+        if (window.preflightResult.ok !== true) {
+            window.showError("Запуск недоступен: см. предварительную проверку во вкладке «Обработка».")
+            return
+        }
+        var id = processing.startJob(window.profileId, extraOptionsField.text, window.optionValues)
+        if (id.length > 0) window.selectedJobId = id
+    }
+    function stopProcessing() {
+        var id = processing.activeJobId.length > 0 ? processing.activeJobId : window.selectedJobId
+        if (id.length > 0) processing.cancelJob(id)
+    }
+    // Adds a result of the processing to the map (once) and shows it.
+    function showResultOnMap(path) {
+        var id = gis.layerIdForSource(path)
+        if (id.length === 0) {
+            var error = gis.addLayerFile(path)
+            if (error.length > 0) { window.showError(error); return }
+            id = gis.layerIdForSource(path)
+        }
+        window.activeView = 3
+        if (id.length > 0) { gis.selectedLayer = id; gis.zoomToLayer(id) }
+    }
+    function showDem() {
+        var dem = projectTree.result("dsm")
+        if (dem.path === undefined) dem = projectTree.result("dtm")
+        if (dem.path === undefined) {
+            window.showNotice("В проекте нет модели высот. Постройте DSM (Обработка → Построение DSM) или добавьте файл: Файл → Импорт DEM/DSM/DTM.")
+            return
+        }
+        window.showResultOnMap(dem.path)
+    }
+    function openDoc(name) {
+        var path = name.length > 0 ? appInfo.docPath(name) : appInfo.docsDirectory
+        if (path.length === 0 || !appInfo.openPath(path))
+            window.showError("Документация не найдена рядом с программой (папка docs).")
+    }
+    function resetLayout() {
+        workspace.clear()
+        window.showLeft = true
+        window.showRight = true
+        window.showBottom = true
+        bottomPanel.collapsed = false
+        leftPanel.SplitView.preferredWidth = Theme.leftWidth
+        rightPanel.SplitView.preferredWidth = Theme.rightWidth
+        bottomPanel.SplitView.preferredHeight = Theme.bottomHeight
+        treePanel.SplitView.preferredHeight = 300
+        mapLayersPanel.SplitView.preferredHeight = 330
+        window.flash("Расположение панелей сброшено")
+    }
+    function saveLayout() {
+        workspace.setValue("rootSplit", rootSplit.saveState())
+        workspace.setValue("mainSplit", mainSplit.saveState())
+        workspace.setValue("leftSplit", leftSplit.saveState())
+        workspace.setValue("mapRightSplit", mapRightSplit.saveState())
+        workspace.setValue("showLeft", window.showLeft)
+        workspace.setValue("showRight", window.showRight)
+        workspace.setValue("showBottom", window.showBottom)
+        workspace.setValue("bottomCollapsed", bottomPanel.collapsed)
+        workspace.setValue("maximized", window.visibility === Window.Maximized)
+        if (window.visibility === Window.Windowed) workspace.setValue("geometry", Qt.rect(window.x, window.y, window.width, window.height))
+    }
+    function flag(key, fallback) {
+        var v = workspace.value(key, fallback)
+        return v === true || v === "true"
+    }
+    function restoreLayout() {
+        window.showLeft = flag("showLeft", true)
+        window.showRight = flag("showRight", true)
+        window.showBottom = flag("showBottom", true)
+        bottomPanel.collapsed = flag("bottomCollapsed", false)
+        var states = { rootSplit: rootSplit, mainSplit: mainSplit, leftSplit: leftSplit, mapRightSplit: mapRightSplit }
+        for (var key in states)
+            if (workspace.contains(key)) states[key].restoreState(workspace.value(key))
+        if (workspace.contains("geometry")) {
+            var g = workspace.value("geometry")
+            if (g.width >= window.minimumWidth && g.height >= window.minimumHeight) {
+                window.width = g.width; window.height = g.height
+                window.x = g.x; window.y = g.y
+            }
+        }
+        if (flag("maximized", false)) window.showMaximized()
+    }
 
-    component DetailLine: ColumnLayout {
-        id: detailLine
-        property string field: ""
-        property string value: "—"
-        spacing: 5
-        Label { text: detailLine.field; color: "#8897a9"; font.pixelSize: 11 }
-        Label {
-            text: detailLine.value && detailLine.value.length > 0 ? detailLine.value : "—"
-            color: "#e4edf9"; font.pixelSize: 12
-            wrapMode: Text.WrapAnywhere
-            Layout.fillWidth: true
+    // Handlers of the ready commands; commandEnabled() decides when they may run.
+    readonly property var handlers: ({
+        "file.new": function() { createDialog.open() },
+        "file.open": function() { openProjectDialog.open() },
+        "file.save": function() { projects.saveProject() },
+        "file.close": function() { window.guardProcessing(function() { projects.closeProject() }) },
+        "file.exit": function() { window.close() },
+        "import.photos": function() { photoDialog.open() },
+        "import.folder": function() { photoFolderDialog.open() },
+        "import.data": function() { window.activeView = 3; mapController.addLayer("data", "Импорт геоданных") },
+        "import.orthophoto": function() { window.activeView = 3; mapController.addLayer("raster", "Импорт ортофотоплана") },
+        "import.dem": function() { window.activeView = 3; mapController.addLayer("raster", "Импорт DEM/DSM/DTM") },
+        "import.vector": function() { window.activeView = 3; mapController.addLayer("vector", "Импорт векторных данных") },
+        "export.map": function() { window.activeView = 3; mapController.exportMap() },
+        "export.drawings": function() { mapController.exportDrawings() },
+        "edit.undo": function() { gis.undo() },
+        "edit.redo": function() { gis.redo() },
+        "edit.delete": function() { if (window.activeView === 3) gis.deleteSelected(); else deleteDialog.open() },
+        "edit.deselect": function() { gis.clearSelection() },
+        "edit.geometry": function() { window.setTool("edit") },
+        "edit.preferences": function() { shortcutsDialog.open() },
+        "project.addPhotos": function() { photoDialog.open() },
+        "project.removePhoto": function() { deleteDialog.open() },
+        "project.crs": function() { window.activeView = 3; mapController.chooseMapCrs() },
+        "project.reveal": function() { projects.revealProject() },
+        "proc.analyze": function() { window.openProcessing("") },
+        "proc.align": function() { window.openProcessing("align") },
+        "proc.denseCloud": function() { window.openProcessing("balanced") },
+        "proc.mesh": function() { window.openProcessing("balanced") },
+        "proc.texture": function() { window.openProcessing("balanced") },
+        "proc.dsm": function() { window.openProcessing("balanced") },
+        "proc.dtm": function() { window.openProcessing("high") },
+        "proc.orthophoto": function() { window.openProcessing("fast") },
+        "proc.queue": function() { window.activeView = 2 },
+        "proc.setup": function() { window.openProcessing(""); window.showOptions = true },
+        "proc.classify": function() { window.openProcessing(""); window.showOptions = true },
+        "proc.start": function() { window.startProcessing() },
+        "proc.stop": function() { window.stopProcessing() },
+        "view.photo": function() { window.activeView = 0 },
+        "view.gps": function() { window.activeView = 1 },
+        "view.processing": function() { window.activeView = 2 },
+        "view.map": function() { window.activeView = 3 },
+        "view.dem": function() { window.showDem() },
+        "view.hillshade": function() { gis.setLayerStyle(mapController.details.id, { hillshade: !(mapController.details.style.hillshade === true) }) },
+        "view.cameras": function() { gis.setLayerVisible("photos", !window.photosShown) },
+        "view.reset": function() { if (window.activeView === 3) gis.zoomToAll(); else window.imageZoom = 1.0 },
+        "view.panelProject": function() { window.showLeft = !window.showLeft },
+        "view.panelProperties": function() { window.showRight = !window.showRight },
+        "view.panelLog": function() { window.showBottom = !window.showBottom },
+        "view.resetLayout": function() { window.resetLayout() },
+        "tool.select": function() { window.setTool("edit") },
+        "tool.vertices": function() { window.setTool("edit") },
+        "tool.pan": function() { window.setTool("pan") },
+        "tool.ruler": function() { window.setTool("length") },
+        "tool.area": function() { window.setTool("area") },
+        "tool.point": function() { window.setTool("point") },
+        "tool.line": function() { window.setTool("line") },
+        "tool.polygon": function() { window.setTool("polygon") },
+        "help.docs": function() { window.openDoc("") },
+        "help.shortcuts": function() { shortcutsDialog.open() },
+        "help.environment": function() { processing.checkEnvironment(); environmentDialog.open() },
+        "help.gpu": function() { gpuDialog.open() },
+        "help.versions": function() { aboutDialog.open() },
+        "help.licenses": function() { window.openDoc("DEPENDENCIES.md") },
+        "help.bugReport": function() {
+            if (appInfo.openLogDirectory())
+                window.showNotice("Открыта папка журналов программы. Приложите файл geomap-<дата>.log к описанию ошибки; при ошибке обработки — также log.txt из папки задания.")
+            else window.showError("Не удалось открыть папку журналов: " + appInfo.logDirectory)
+        },
+        "help.about": function() { aboutDialog.open() }
+    })
+    // Runs a command if it is ready and enabled; returns whether it ran.
+    function runCommand(id) {
+        if (!commands.isReady(id)) { window.flash(commands.title(id) + ": " + commands.unavailableReason(id)); return false }
+        var handler = window.handlers[id]
+        if (typeof handler !== "function" || !window.commandEnabled(id)) return false
+        handler()
+        return true
+    }
+    // Ready commands without a handler (must stay empty; checked by the UI test).
+    function unhandledCommands() {
+        var missing = [], ids = commands.ids()
+        for (var i = 0; i < ids.length; ++i)
+            if (commands.isReady(ids[i]) && commands.command(ids[i]).kind !== "recent" && typeof window.handlers[ids[i]] !== "function")
+                missing.push(ids[i])
+        return missing
+    }
+
+    // ------------------------------------------------------------------ project tree
+    function selectTreeItem(item) {
+        if (item.kind === "layer") gis.selectedLayer = item.payload
+        else if (item.kind === "job") window.selectedJobId = item.payload
+        if (!item.available && item.status) window.flash(item.title + ": " + item.status)
+    }
+    function openJob(id) { window.activeView = 2; window.selectedJobId = id }
+    function openTreeItem(item) {
+        switch (item.kind) {
+        case "project": case "photos": window.activeView = 0; return
+        case "orthophoto": case "dsm": case "dtm": if (item.available) window.showResultOnMap(item.payload); return
+        case "pointcloud": case "mesh": case "report": if (item.available) processing.openOutput(item.jobId, item.file); return
+        case "layers": window.activeView = 3; return
+        case "layer": window.activeView = 3; gis.selectedLayer = item.payload; gis.zoomToLayer(item.payload); return
+        case "jobs": window.activeView = 2; return
+        case "job": window.openJob(item.payload); return
+        }
+        if (!item.available && item.status) window.flash(item.title + ": " + item.status)
+    }
+    function treeActions(item) {
+        if (!item || !item.kind) return []
+        switch (item.kind) {
+        case "project": return [{ id: "reveal", title: "Открыть папку проекта" }, { id: "close", title: "Закрыть проект" }]
+        case "photos": return [{ id: "open", title: "Открыть просмотр снимков" }, { id: "import", title: "Импорт фотографий…" }]
+        case "orthophoto": case "dsm": case "dtm":
+            return item.available ? [{ id: "open", title: "Показать на карте" }, { id: "external", title: "Открыть во внешней программе" },
+                                     { id: "folder", title: "Открыть папку задания" }] : [{ id: "none", title: item.status, enabled: false }]
+        case "pointcloud": case "mesh": case "report":
+            return item.available ? [{ id: "external", title: "Открыть во внешней программе" }, { id: "folder", title: "Открыть папку задания" }]
+                                  : [{ id: "none", title: item.status, enabled: false }]
+        case "layers": return [{ id: "add", title: "Импорт геоданных…" }]
+        case "layer": return [{ id: "zoom", title: "Показать слой целиком" }, { id: "toggle", title: "Показать / скрыть" },
+                              { id: "remove", title: "Убрать с карты", enabled: item.payload !== "photos" && item.payload !== "drawings" }]
+        case "job": return [{ id: "open", title: "Открыть задание" }, { id: "folder", title: "Открыть папку задания" }]
+        }
+        return item.available ? [] : [{ id: "none", title: item.status || "Недоступно", enabled: false }]
+    }
+    function runTreeAction(action, item) {
+        switch (action) {
+        case "open": window.openTreeItem(item); break
+        case "reveal": window.runCommand("project.reveal"); break
+        case "close": window.runCommand("file.close"); break
+        case "import": window.runCommand("import.photos"); break
+        case "add": window.runCommand("import.data"); break
+        case "external": processing.openOutput(item.jobId, item.file); break
+        case "folder": processing.revealJob(item.kind === "job" ? item.payload : item.jobId); break
+        case "zoom": window.activeView = 3; gis.zoomToLayer(item.payload); break
+        case "toggle": gis.setLayerVisible(item.payload, !(gis.layerDetails(item.payload).visible === true)); break
+        case "remove": gis.removeLayer(item.payload); break
         }
     }
 
-    // Project commands are unavailable while an import is running.
-    Shortcut { sequence: StandardKey.New; enabled: !projects.busy; onActivated: createDialog.open() }
-    Shortcut { sequence: StandardKey.Open; enabled: !projects.busy; onActivated: openProjectDialog.open() }
-    Shortcut { sequence: StandardKey.Save; enabled: !projects.busy; onActivated: projects.saveProject() }
-    Shortcut { sequence: "Ctrl+W"; enabled: !projects.busy; onActivated: window.guardProcessing(function() { projects.closeProject() }) }
-    Shortcut { sequence: "Ctrl+I"; enabled: projects.hasProject && !projects.busy; onActivated: photoDialog.open() }
+    Timer { id: transientTimer; interval: 6000; onTriggered: window.transientMessage = "" }
+
+    // Shortcuts of all commands (user-configurable in "Горячие клавиши").
+    Instantiator {
+        model: commands.ids()
+        delegate: Shortcut {
+            required property string modelData
+            sequence: commands.revision >= 0 ? commands.shortcut(modelData) : ""
+            enabled: sequence.length > 0 && commands.isReady(modelData) && window.commandEnabled(modelData)
+            autoRepeat: false
+            onActivated: window.runCommand(modelData)
+        }
+    }
+
+    // Menu bar: built once from the registry (items keep their bindings to the window state).
+    menuBar: MenuBar {
+        id: mainMenuBar
+        background: Rectangle {
+            implicitHeight: Theme.menuHeight
+            color: Theme.toolbar
+            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line }
+        }
+        delegate: MenuBarItem {
+            id: menuBarItem
+            implicitHeight: Theme.menuHeight
+            leftPadding: 10; rightPadding: 10
+            contentItem: Text {
+                text: menuBarItem.text.replace("&", "")
+                color: menuBarItem.highlighted ? "#FFFFFF" : Theme.text
+                font.pixelSize: 12
+                verticalAlignment: Text.AlignVCenter
+            }
+            background: Rectangle { color: menuBarItem.highlighted ? Theme.accent : "transparent" }
+        }
+    }
+    Component {
+        id: menuComponent
+        Menu {
+            topPadding: 4; bottomPadding: 4
+            background: Rectangle { implicitWidth: 280; color: Theme.toolbar; border.color: Theme.line; radius: 4 }
+        }
+    }
+    Component { id: menuItemComponent; CommandMenuItem {} }
+    Component {
+        id: separatorComponent
+        MenuSeparator {
+            topPadding: 3; bottomPadding: 3
+            contentItem: Rectangle { implicitHeight: 1; color: Theme.line }
+        }
+    }
+    Component {
+        id: recentMenuComponent
+        Menu {
+            id: recentMenu
+            title: commands.title("file.recent")
+            enabled: window.commandEnabled("file.recent")
+            topPadding: 4; bottomPadding: 4
+            background: Rectangle { implicitWidth: 420; color: Theme.toolbar; border.color: Theme.line; radius: 4 }
+            Instantiator {
+                model: projects.recentProjects
+                delegate: MenuItem {
+                    required property string modelData
+                    text: modelData
+                    implicitHeight: 26
+                    onTriggered: { var path = modelData; window.guardProcessing(function() { projects.openRecent(path) }) }
+                }
+                onObjectAdded: (index, object) => recentMenu.insertItem(index, object)
+                onObjectRemoved: (index, object) => recentMenu.removeItem(object)
+            }
+        }
+    }
+    function menuAt(index) { return mainMenuBar.menuAt(index) }
+    function buildMenus() {
+        var menus = commands.menus
+        for (var i = 0; i < menus.length; ++i) {
+            var menu = menuComponent.createObject(mainMenuBar, { title: menus[i].title })
+            var items = menus[i].items
+            var widest = 260
+            for (var k = 0; k < items.length; ++k) {
+                // Items are created inside the menu's list so that they belong to the scene at once.
+                if (items[k] === "-") menu.addItem(separatorComponent.createObject(menu.contentItem))
+                else if (items[k] === "file.recent") menu.addMenu(recentMenuComponent.createObject(menu))
+                else {
+                    var item = menuItemComponent.createObject(menu.contentItem, { commandId: items[k], host: window })
+                    widest = Math.max(widest, item.implicitWidth)
+                    menu.addItem(item)
+                }
+            }
+            menu.width = widest + menu.leftPadding + menu.rightPadding
+            mainMenuBar.addMenu(menu)
+        }
+    }
+    Component.onCompleted: {
+        buildMenus()
+        restoreLayout()
+        // Without a saved layout, a window larger than the screen (e.g. 1920x1080 at 125 %) is maximized.
+        if (!workspace.contains("geometry") && !flag("maximized", false)
+            && (window.width > Screen.desktopAvailableWidth || window.height > Screen.desktopAvailableHeight))
+            window.showMaximized()
+    }
+
+    header: MainToolBar { host: window }
+
+    MapController {
+        id: mapController
+        onErrorMessage: function(text) { window.showError(text) }
+        onNoticeMessage: function(text) { window.showNotice(text) }
+    }
+    Connections {
+        target: gis
+        function onLayersChanged() { window.photosShown = gis.layerDetails("photos").visible !== false }
+    }
+    Connections {
+        target: gis.layerModel
+        function onDataChanged() { window.photosShown = gis.layerDetails("photos").visible !== false }
+    }
+
+    ShortcutsDialog { id: shortcutsDialog; host: window; parent: Overlay.overlay; anchors.centerIn: parent }
+
+    Dialog {
+        id: aboutDialog
+        title: "О GeoMap AI"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        width: 520
+        background: Rectangle { color: Theme.panel; border.color: Theme.line; radius: 8 }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Label { text: "GeoMap AI " + appInfo.version; color: Theme.text; font.pixelSize: 18; font.bold: true }
+            Label { text: "Открытая настольная программа для фотограмметрии и ГИС. Исходный код — MIT."; color: Theme.muted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.line; Layout.topMargin: 6; Layout.bottomMargin: 6 }
+            Label { text: "Qt " + appInfo.qtVersion; color: Theme.text; font.pixelSize: 12 }
+            Label { text: gis.gisVersion; color: Theme.text; font.pixelSize: 12 }
+            Label { text: "Движок обработки: " + processing.engineName + " " + processing.engineVersion
+                          + (processing.environmentChecked ? " · " + (processing.engineAvailable ? "доступен" : "недоступен") : " · окружение не проверено")
+                    color: Theme.text; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            Label { text: "Сторонние компоненты сохраняют свои лицензии: Справка → Библиотеки и лицензии."; color: Theme.faint; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.topMargin: 6 }
+        }
+        standardButtons: Dialog.Close
+    }
+    Dialog {
+        id: environmentDialog
+        title: "Проверка окружения"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        width: 600
+        background: Rectangle { color: Theme.panel; border.color: Theme.line; radius: 8 }
+        contentItem: ColumnLayout {
+            spacing: 6
+            SectionTitle { text: "ОБРАБОТКА" }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap
+                text: processing.checkingEnvironment ? "Проверка…" : processing.environmentChecked ? processing.environmentSummary : "Не проверено"
+                color: processing.engineAvailable ? Theme.good : Theme.warn; font.pixelSize: 12
+            }
+            Repeater {
+                model: processing.environmentProblems
+                delegate: Label { required property string modelData; text: "✕ " + modelData; color: Theme.bad; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            }
+            Repeater {
+                model: processing.environmentWarnings
+                delegate: Label { required property string modelData; text: "⚠ " + modelData; color: Theme.warn; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            }
+            SectionTitle { text: "ГИС"; Layout.topMargin: 8 }
+            Label { text: gis.gisVersion; color: Theme.text; font.pixelSize: 12 }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap
+                text: gis.problems.length > 0 ? "⚠ " + gis.problems.join("\n⚠ ") : "Данные PROJ и GDAL найдены, сеть не используется."
+                color: gis.problems.length > 0 ? Theme.bad : Theme.good; font.pixelSize: 11
+            }
+        }
+        standardButtons: Dialog.Close
+    }
+    Dialog {
+        id: gpuDialog
+        title: "Диагностика GPU"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        width: 560
+        background: Rectangle { color: Theme.panel; border.color: Theme.line; radius: 8 }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Label {
+                text: "Интерфейс рисуется через: " + (GraphicsInfo.api === GraphicsInfo.Direct3D11 ? "Direct3D 11"
+                    : GraphicsInfo.api === GraphicsInfo.Direct3D12 ? "Direct3D 12"
+                    : GraphicsInfo.api === GraphicsInfo.OpenGL ? "OpenGL"
+                    : GraphicsInfo.api === GraphicsInfo.Vulkan ? "Vulkan"
+                    : GraphicsInfo.api === GraphicsInfo.Software ? "программный рендерер (без GPU)" : "другой API")
+                color: Theme.text; font.pixelSize: 12
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap
+                text: !processing.environmentChecked ? "GPU для обработки: окружение ещё не проверено (Справка → Проверка окружения)."
+                    : processing.gpuName.length > 0 ? "GPU для обработки (SIFT в OpenDroneMap): " + processing.gpuName
+                    : "GPU NVIDIA для обработки не найден: OpenDroneMap использует CPU."
+                color: Theme.text; font.pixelSize: 12
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap
+                text: "Подробная диагностика (VRAM, драйверы) и ограничения памяти — этап F."
+                color: Theme.faint; font.pixelSize: 11
+            }
+        }
+        standardButtons: Dialog.Close
+    }
+
 
     Connections {
         target: projects
@@ -376,6 +863,7 @@ ApplicationWindow {
             close.accepted = false
             closeDuringProcessingDialog.open()
         }
+        if (close.accepted) window.saveLayout()
     }
     Dialog {
         id: closeDuringProcessingDialog
@@ -471,251 +959,119 @@ ApplicationWindow {
         }
     }
 
-    // Application header
-    header: Rectangle {
-        height: 64
-        color: "#171d26"
-        border.color: window.line
-        RowLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 22
-            anchors.rightMargin: 20
-            spacing: 14
-            Rectangle {
-                width: 34; height: 34; radius: 10
-                color: "#1d3e56"
-                border.color: "#3876a0"
-                Text {
-                    anchors.centerIn: parent
-                    text: "G"; font.pixelSize: 20; font.bold: true; color: "#75ceff"
-                }
-            }
-            ColumnLayout {
-                spacing: 1
-                Label { text: "GEOMAP AI"; font.bold: true; font.letterSpacing: 2; font.pixelSize: 14; color: window.white }
-                Label { text: "PHOTOGRAMMETRY WORKSPACE"; font.pixelSize: 9; font.letterSpacing: 1.3; color: window.muted }
-            }
-            Rectangle { width: 1; height: 30; color: window.line; Layout.leftMargin: 14; Layout.rightMargin: 4 }
-            Label {
-                text: projects.hasProject ? projects.projectName : "Проект не открыт"
-                font.pixelSize: 13
-                color: "#b7c6d8"
-                elide: Text.ElideMiddle
-                Layout.maximumWidth: 250
-            }
-            Item { Layout.fillWidth: true }
-            FlatButton { text: "+ Новый проект"; compact: true; enabled: !projects.busy; onClicked: createDialog.open() }
-            FlatButton { text: "Открыть"; compact: true; enabled: !projects.busy; onClicked: openProjectDialog.open() }
-            FlatButton { text: "Сохранить"; compact: true; enabled: projects.hasProject && !projects.busy; onClicked: projects.saveProject() }
-            Rectangle { width: 1; height: 28; color: window.line }
-            Rectangle {
-                implicitWidth: versionBadge.implicitWidth + 24; height: 28; radius: 7
-                color: "#1b3230"
-                border.color: "#305c51"
-                Label {
-                    id: versionBadge
-                    anchors.centerIn: parent
-                    text: "LOCAL  •  " + Qt.application.version.split(".").slice(0, 2).join(".")
-                    color: "#82d7b7"; font.pixelSize: 10; font.bold: true
-                }
-            }
+    // A tab of the centre area, bound to a view command.
+    component ViewTab: ToolButton {
+        id: tab
+        required property string commandId
+        readonly property bool active: window.commandChecked(commandId)
+        text: commands.title(commandId)
+        icon.source: Theme.icon(commands.icon(commandId))
+        icon.width: 16
+        icon.height: 16
+        display: AbstractButton.TextBesideIcon
+        enabled: commands.isReady(commandId) && window.commandEnabled(commandId)
+        font.pixelSize: 12
+        implicitHeight: 32
+        leftPadding: 10; rightPadding: 12
+        focusPolicy: Qt.NoFocus
+        palette.windowText: tab.active ? "#FFFFFF" : Theme.text
+        opacity: enabled ? 1.0 : 0.4
+        HoverHandler { id: tabHover }
+        ToolTip.visible: tabHover.hovered
+        ToolTip.delay: 500
+        ToolTip.text: commands.revision >= 0 ? commands.tooltip(commandId) : ""
+        onClicked: window.runCommand(commandId)
+        background: Rectangle {
+            color: tab.active ? Theme.accentSoft : tabHover.hovered && tab.enabled ? Theme.hover : "transparent"
+            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 2; color: Theme.accent; visible: tab.active }
         }
     }
+    component PanelHandle: Rectangle {
+        implicitWidth: 4
+        implicitHeight: 4
+        color: SplitHandle.pressed ? Theme.accent : SplitHandle.hovered ? "#3E4756" : Theme.bg
+    }
 
-    RowLayout {
+    SplitView {
+        id: rootSplit
         anchors.fill: parent
-        spacing: 0
+        orientation: Qt.Vertical
+        handle: PanelHandle {}
 
-        // Left: project tree and photo list
-        Rectangle {
-            Layout.preferredWidth: 292
-            Layout.fillHeight: true
-            color: window.surface
-            border.color: window.line
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 16
-                spacing: 11
-                RowLayout {
-                    Layout.fillWidth: true
-                    SectionTitle { text: "ПРОЕКТ" }
-                    Item { Layout.fillWidth: true }
-                    Label { text: projects.hasProject ? "АКТИВЕН" : "НЕ ОТКРЫТ"; color: projects.hasProject ? "#74cba7" : window.muted; font.pixelSize: 10 }
-                }
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 68
-                    radius: 9
-                    color: "#202a37"
-                    border.color: "#354459"
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        spacing: 9
-                        Rectangle {
-                            width: 36; height: 36; radius: 8; color: "#294863"
-                            Label { anchors.centerIn: parent; text: "▣"; color: "#80cfff"; font.pixelSize: 19 }
-                        }
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 4
-                            Label {
-                                text: projects.hasProject ? projects.projectName : "Нет проекта"
-                                Layout.fillWidth: true; elide: Text.ElideRight
-                                font.bold: true; font.pixelSize: 12; color: window.white
-                            }
-                            Label {
-                                text: projects.hasProject ? projects.photoCount + " фотографий" : "Создайте или откройте"
-                                color: window.muted; font.pixelSize: 11
-                            }
-                        }
+        SplitView {
+            id: mainSplit
+            SplitView.fillHeight: true
+            orientation: Qt.Horizontal
+            handle: PanelHandle {}
+
+            // Left: project tree and photos
+            Rectangle {
+                id: leftPanel
+                visible: window.showLeft
+                SplitView.preferredWidth: Theme.leftWidth
+                SplitView.minimumWidth: 200
+                SplitView.maximumWidth: 560
+                color: Theme.panel
+                SplitView {
+                    id: leftSplit
+                    anchors.fill: parent
+                    orientation: Qt.Vertical
+                    handle: PanelHandle {}
+                    ProjectTreePanel {
+                        id: treePanel
+                        host: window
+                        SplitView.preferredHeight: 300
+                        SplitView.minimumHeight: 120
                     }
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    FlatButton { text: "+ Файлы"; Layout.fillWidth: true; enabled: projects.hasProject && !projects.busy; onClicked: photoDialog.open() }
-                    FlatButton { text: "+ Папка"; Layout.fillWidth: true; enabled: projects.hasProject && !projects.busy; onClicked: photoFolderDialog.open() }
-                }
-                Rectangle { Layout.fillWidth: true; height: 1; color: window.line; Layout.topMargin: 5; Layout.bottomMargin: 6 }
-                RowLayout {
-                    Layout.fillWidth: true
-                    SectionTitle { text: "ФОТОГРАФИИ" }
-                    Item { Layout.fillWidth: true }
-                    Label { text: projects.photoCount.toString(); font.pixelSize: 11; color: window.muted }
-                }
-                ListView {
-                    id: photoList
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    spacing: 5
-                    model: projects.photoModel
-                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-                    delegate: Rectangle {
-                        required property int index
-                        required property string photoName
-                        required property url photoThumb
-                        required property bool photoHasGps
-                        required property int photoWidth
-                        required property int photoHeight
-                        width: photoList.width - 8
-                        height: 72
-                        radius: 9
-                        color: projects.selectedIndex === index ? "#25465f" : (photoMouse.containsMouse ? "#263341" : "transparent")
-                        border.color: projects.selectedIndex === index ? "#4e95c2" : "transparent"
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.margins: 8
-                            spacing: 10
-                            Rectangle {
-                                width: 78; height: 54; radius: 5; color: "#111b25"; clip: true
-                                // Pre-rotated preview from the project's thumbnail cache.
-                                Image {
-                                    anchors.fill: parent
-                                    source: photoThumb
-                                    sourceSize.width: 156
-                                    sourceSize.height: 108
-                                    fillMode: Image.PreserveAspectCrop
-                                    asynchronous: true
-                                    cache: true
-                                }
-                            }
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 4
-                                Label {
-                                    text: photoName
-                                    Layout.fillWidth: true
-                                    elide: Text.ElideMiddle
-                                    color: window.white; font.pixelSize: 11; font.bold: true
-                                }
-                                Label { text: photoWidth + " × " + photoHeight; color: window.muted; font.pixelSize: 10 }
-                                Label { text: photoHasGps ? "● GPS" : "○ Без GPS"; color: photoHasGps ? "#7bd0b1" : "#8c99a8"; font.pixelSize: 10 }
-                            }
-                        }
-                        MouseArea {
-                            id: photoMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            onClicked: { projects.selectPhoto(index); window.activeView = 0 }
-                        }
+                    PhotoListPanel {
+                        host: window
+                        SplitView.fillHeight: true
+                        SplitView.minimumHeight: 100
                     }
-                    Label {
-                        anchors.centerIn: parent
-                        visible: projects.hasProject && projects.photoCount === 0
-                        text: "Список пуст\n\nДобавьте снимки с БПЛА"
-                        horizontalAlignment: Text.AlignHCenter
-                        color: window.muted; font.pixelSize: 12
-                    }
-                }
-                Rectangle { Layout.fillWidth: true; height: 1; color: window.line }
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 8
-                    Label { text: "GPS снимков"; color: window.muted; font.pixelSize: 11 }
-                    Item { Layout.fillWidth: true }
-                    Label { text: projects.gpsCount + " / " + projects.photoCount; color: "#a8dbd0"; font.pixelSize: 11; font.bold: true }
                 }
             }
-        }
 
-        // Center workspace
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            color: window.bg
-            ColumnLayout {
-                anchors.fill: parent
-                spacing: 0
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 55
-                    color: "#151b24"
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: 18
-                        anchors.rightMargin: 18
-                        spacing: 8
-                        FlatButton {
-                            text: "▣  Снимки"; compact: true
-                            emphasis: window.activeView === 0
-                            enabled: projects.hasProject
-                            onClicked: window.activeView = 0
-                        }
-                        FlatButton {
-                            text: "⌖  GPS-обзор"; compact: true
-                            emphasis: window.activeView === 1
-                            enabled: projects.hasProject
-                            onClicked: window.activeView = 1
-                        }
-                        FlatButton {
-                            text: "▦  Карта"; compact: true
-                            emphasis: window.activeView === 3
-                            enabled: projects.hasProject
-                            onClicked: window.activeView = 3
-                        }
-                        FlatButton {
-                            text: "◈  Обработка"; compact: true
-                            emphasis: window.activeView === 2
-                            enabled: projects.hasProject
-                            onClicked: window.activeView = 2
-                        }
-                        Item { Layout.fillWidth: true }
-                        Label {
-                            text: window.activeView === 0 ? (projects.photoCount ? "ПРОСМОТР ФОТОГРАФИЙ" : "ПУСТОЙ ПРОЕКТ")
-                                : window.activeView === 1 ? "СХЕМА GPS-ТОЧЕК · БЕЗ ПОДЛОЖКИ"
-                                : window.activeView === 3 ? "КАРТА · " + (gis.crsDefined ? gis.crsLabel.toUpperCase() : "CRS НЕ ЗАДАН")
-                                : "ФОТОГРАММЕТРИЯ · " + processing.engineName.toUpperCase()
-                            color: window.muted; font.pixelSize: 10; font.letterSpacing: 0.7
+            // Centre: view tabs and the active view
+            Rectangle {
+                id: centerArea
+                SplitView.fillWidth: true
+                SplitView.minimumWidth: 480
+                color: window.bg
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 0
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: 34
+                        color: Theme.panel
+                        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line }
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 4
+                            anchors.rightMargin: 12
+                            spacing: 0
+                            ViewTab { commandId: "view.photo" }
+                            ViewTab { commandId: "view.map" }
+                            ViewTab { commandId: "view.3d" }
+                            ViewTab { commandId: "view.processing" }
+                            ViewTab { commandId: "view.gps" }
+                            Item { Layout.fillWidth: true }
+                            Label {
+                                text: !projects.hasProject ? "" : window.activeView === 0 ? (projects.photoCount ? "ПРОСМОТР ФОТОГРАФИЙ" : "ПУСТОЙ ПРОЕКТ")
+                                    : window.activeView === 1 ? "СХЕМА GPS-ТОЧЕК · НЕ КАРТА"
+                                    : window.activeView === 3 ? "КАРТА · " + (gis.crsDefined ? gis.crsLabel.toUpperCase() : "CRS НЕ ЗАДАН")
+                                    : "ФОТОГРАММЕТРИЯ · " + processing.engineName.toUpperCase()
+                                color: Theme.muted; font.pixelSize: 10; font.letterSpacing: 0.7
+                                elide: Text.ElideRight
+                                Layout.maximumWidth: centerArea.width * 0.45
+                            }
                         }
                     }
-                }
-                Rectangle { Layout.fillWidth: true; height: 1; color: window.line }
 
-                Item {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
                     // No project dashboard
                     ColumnLayout {
                         anchors.centerIn: parent
@@ -909,15 +1265,13 @@ ApplicationWindow {
                             }
                         }
                     }
-
-                    // GIS map: layers, tools, measurements (MapWorkspace.qml).
-                    MapWorkspace {
+                    // GIS map (MapCanvas.qml); layers and properties are in the right panel.
+                    MapCanvas {
                         anchors.fill: parent
                         visible: projects.hasProject && window.activeView === 3
-                        onErrorMessage: function(text) { window.lastError = text; errorDialog.open() }
-                        onNoticeMessage: function(text) { window.lastNotice = text; noticeDialog.open() }
+                        host: window
+                        controller: mapController
                     }
-
                     // Processing: environment, new job, job history and details. Everything shown
                     // comes from the engine (stages, log, files); there is no estimated percentage.
                     Item {
@@ -1545,11 +1899,7 @@ ApplicationWindow {
                                                         FlatButton {
                                                             text: "На карту"; compact: true; implicitHeight: 28
                                                             visible: ["orthophoto", "dsm", "dtm"].indexOf(outputRow.modelData.kind) >= 0
-                                                            onClicked: {
-                                                                var error = gis.addLayerFile(outputRow.modelData.path)
-                                                                if (error.length > 0) { window.lastError = error; errorDialog.open() }
-                                                                else window.activeView = 3
-                                                            }
+                                                            onClicked: window.showResultOnMap(outputRow.modelData.path)
                                                         }
                                                         FlatButton {
                                                             text: "Открыть"; compact: true; implicitHeight: 28
@@ -1649,7 +1999,7 @@ ApplicationWindow {
                             }
                         }
                     }
-                }
+                    }
 
                 // Bottom photo strip
                 Rectangle {
@@ -1682,116 +2032,134 @@ ApplicationWindow {
                         }
                     }
                 }
+                }
+            }
+
+            // Right: properties of the active view
+            Rectangle {
+                id: rightPanel
+                visible: window.showRight
+                SplitView.preferredWidth: Theme.rightWidth
+                SplitView.minimumWidth: 240
+                SplitView.maximumWidth: 600
+                color: Theme.panel
+                PhotoInspector {
+                    anchors.fill: parent
+                    visible: !projects.hasProject || window.activeView === 0 || window.activeView === 1
+                    host: window
+                }
+                SplitView {
+                    id: mapRightSplit
+                    anchors.fill: parent
+                    visible: projects.hasProject && window.activeView === 3
+                    orientation: Qt.Vertical
+                    handle: PanelHandle {}
+                    MapLayersPanel {
+                        id: mapLayersPanel
+                        controller: mapController
+                        SplitView.preferredHeight: 330
+                        SplitView.minimumHeight: 140
+                    }
+                    MapLayerProperties {
+                        controller: mapController
+                        SplitView.fillHeight: true
+                        SplitView.minimumHeight: 140
+                    }
+                }
+                // Processing: engine state and the selected job
+                ColumnLayout {
+                    anchors.fill: parent
+                    visible: projects.hasProject && window.activeView === 2
+                    spacing: 0
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: Theme.panelHeader
+                        color: Theme.toolbar
+                        SectionTitle { anchors.verticalCenter: parent.verticalCenter; x: 10; text: "СОСТОЯНИЕ ОБРАБОТКИ" }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.margins: 12
+                        spacing: 8
+                        Label { text: "Движок"; color: Theme.muted; font.pixelSize: 10 }
+                        Label {
+                            Layout.fillWidth: true; wrapMode: Text.Wrap
+                            text: processing.engineName + " " + processing.engineVersion + "\n"
+                                + (processing.checkingEnvironment ? "проверка…" : processing.environmentChecked
+                                   ? (processing.engineAvailable ? "доступен · " + processing.environmentSummary : "недоступен") : "не проверен")
+                            color: processing.engineAvailable ? Theme.good : Theme.warn; font.pixelSize: 11
+                        }
+                        Label { text: "Профиль"; color: Theme.muted; font.pixelSize: 10 }
+                        Label { text: window.profileTitle(window.profileId); color: Theme.text; font.pixelSize: 12 }
+                        Label { text: "Выбранное задание"; color: Theme.muted; font.pixelSize: 10; Layout.topMargin: 6 }
+                        Label {
+                            Layout.fillWidth: true; wrapMode: Text.Wrap
+                            text: window.jobInfo.id === undefined ? "—"
+                                : window.jobInfo.id + "\n" + window.jobInfo.profileTitle + " · " + window.jobInfo.stateText
+                                  + (window.jobInfo.stageIndex > 0 ? "\nэтап " + window.jobInfo.stageIndex + " из " + window.jobInfo.stageCount + " · " + window.jobInfo.stageTitle : "")
+                                  + "\nрезультатов: " + (window.jobInfo.outputs ? window.jobInfo.outputs.length : 0)
+                            color: window.jobInfo.id === undefined ? Theme.faint : window.stateColor(window.jobInfo.state); font.pixelSize: 11
+                        }
+                        Label { text: "Заданий в проекте"; color: Theme.muted; font.pixelSize: 10; Layout.topMargin: 6 }
+                        Label { text: processing.jobCount.toString(); color: Theme.text; font.pixelSize: 12 }
+                    }
+                    Item { Layout.fillHeight: true }
+                }
             }
         }
 
-        // Right properties inspector (photo details; the processing view uses the width itself)
-        Rectangle {
-            Layout.preferredWidth: 275
-            Layout.fillHeight: true
-            visible: window.activeView !== 2 && window.activeView !== 3
-            color: window.surface
-            border.color: window.line
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 17
-                spacing: 15
-                // Details scroll on short screens (e.g. 1920x1080 at 125 %) so the actions stay visible.
-                ScrollView {
-                    id: inspectorScroll
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    contentWidth: availableWidth
-                    clip: true
-                    ColumnLayout {
-                        width: inspectorScroll.availableWidth
-                        spacing: 15
-                        SectionTitle { text: "ИНСПЕКТОР" }
-                        Rectangle { Layout.fillWidth: true; height: 1; color: window.line }
-                        SectionTitle { text: "ПРОЕКТ" }
-                        DetailLine { field: "Название"; value: projects.hasProject ? projects.projectName : "—"; Layout.fillWidth: true }
-                        DetailLine { field: "Снимков"; value: projects.photoCount.toString(); Layout.fillWidth: true }
-                        DetailLine { field: "С геометками"; value: projects.gpsCount.toString(); Layout.fillWidth: true }
-                        Rectangle { Layout.fillWidth: true; height: 1; color: window.line }
-                        SectionTitle { text: "ВЫБРАННЫЙ СНИМОК" }
-                        DetailLine { field: "Имя файла"; value: projects.selectedPhoto.name || "—"; Layout.fillWidth: true }
-                        DetailLine { field: "Размер"; value: projects.selectedPhoto.width ? projects.selectedPhoto.width + " × " + projects.selectedPhoto.height : "—"; Layout.fillWidth: true }
-                        DetailLine { field: "Объём"; value: projects.selectedIndex >= 0 ? window.prettyBytes(projects.selectedPhoto.bytes) : "—"; Layout.fillWidth: true }
-                        DetailLine { field: "Камера"; value: projects.selectedPhoto.camera || "—"; Layout.fillWidth: true }
-                        DetailLine { field: "Дата съёмки (EXIF)"; value: projects.selectedPhoto.takenAt || "—"; Layout.fillWidth: true }
-                        DetailLine {
-                            field: "GPS координаты"
-                            value: projects.selectedPhoto.hasGps
-                                ? window.coord(projects.selectedPhoto.latitude) + "\n" + window.coord(projects.selectedPhoto.longitude)
-                                : "Не обнаружены"
-                            Layout.fillWidth: true
-                        }
-                    }
-                }
-                FlatButton {
-                    Layout.fillWidth: true
-                    text: "Открыть папку проекта"
-                    enabled: projects.hasProject
-                    onClicked: projects.revealProject()
-                }
-                FlatButton {
-                    Layout.fillWidth: true
-                    text: "Закрыть проект"
-                    enabled: projects.hasProject && !projects.busy
-                    onClicked: window.guardProcessing(function() { projects.closeProject() })
-                }
-                FlatButton {
-                    Layout.fillWidth: true
-                    text: "Удалить снимок из проекта"
-                    caution: true
-                    enabled: projects.selectedIndex >= 0 && !projects.busy
-                    onClicked: deleteDialog.open()
-                }
-            }
+        BottomPanel {
+            id: bottomPanel
+            visible: window.showBottom
+            host: window
+            SplitView.preferredHeight: Theme.bottomHeight
+            SplitView.minimumHeight: collapsed ? Theme.panelHeader : 90
+            SplitView.maximumHeight: collapsed ? Theme.panelHeader : 640
         }
     }
 
     footer: Rectangle {
-        height: 34
-        color: "#121922"
-        border.color: window.line
+        height: Theme.statusHeight
+        color: Theme.toolbar
+        Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: Theme.line }
         RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: 16
-            anchors.rightMargin: 16
-            spacing: 8
-            Rectangle { width: 7; height: 7; radius: 4; color: projects.busy ? "#f5c77a" : "#61cea7" }
+            anchors.leftMargin: 10
+            anchors.rightMargin: 10
+            spacing: 12
+            Rectangle { implicitWidth: 7; implicitHeight: 7; radius: 4; color: projects.busy ? Theme.warn : Theme.good }
             Label {
                 visible: !projects.busy
-                text: projects.statusMessage
-                color: "#a9b9ca"; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true
+                text: window.transientMessage.length > 0 ? window.transientMessage : projects.statusMessage
+                color: window.transientMessage.length > 0 ? Theme.warn : Theme.muted
+                font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true
             }
             // Background import: real per-file progress reported by the worker.
             RowLayout {
                 visible: projects.busy
                 Layout.fillWidth: true
-                spacing: 10
+                spacing: 8
                 Label {
                     text: projects.importCancelling ? "Отмена импорта…"
                         : projects.importScanning ? "Поиск снимков… найдено " + projects.importTotal
                         : "Импорт " + projects.importProcessed + " из " + projects.importTotal
-                    color: "#e2edfa"; font.pixelSize: 11
+                    color: Theme.text; font.pixelSize: 11
                 }
                 Rectangle {
                     visible: !projects.importScanning && projects.importTotal > 0
-                    Layout.preferredWidth: 220
-                    height: 6; radius: 3; color: "#26303b"
+                    Layout.preferredWidth: 160
+                    implicitHeight: 5; radius: 3; color: Theme.field
                     Rectangle {
                         width: parent.width * Math.min(1, projects.importProcessed / Math.max(1, projects.importTotal))
-                        height: parent.height; radius: 3; color: window.accent
+                        height: parent.height; radius: 3; color: Theme.accent
                     }
                 }
                 Label {
                     text: projects.importCurrentFile
-                    color: "#8d9aaa"; font.pixelSize: 11; elide: Text.ElideMiddle; Layout.fillWidth: true
+                    color: Theme.muted; font.pixelSize: 11; elide: Text.ElideMiddle; Layout.fillWidth: true
                 }
                 FlatButton {
-                    text: "Отменить импорт"; compact: true; implicitHeight: 24
+                    text: "Отменить импорт"; compact: true; implicitHeight: 20; font.pixelSize: 11
                     enabled: !projects.importCancelling
                     onClicked: projects.cancelImport()
                 }
@@ -1799,21 +2167,39 @@ ApplicationWindow {
             FlatButton {
                 visible: !projects.busy && projects.importIssues.length > 0
                 text: "Пропущенные файлы: " + projects.importIssues.length
-                compact: true; implicitHeight: 24
+                compact: true; implicitHeight: 20; font.pixelSize: 11
                 onClicked: issuesDialog.open()
+            }
+            Label {
+                visible: window.activeView === 3 && gis.cursorText.length > 0
+                text: gis.cursorText
+                color: Theme.text; font.pixelSize: 11; font.family: "Consolas"
+            }
+            Label {
+                visible: window.activeView === 3 && gis.cursorWgs84.length > 0
+                text: gis.cursorWgs84
+                color: Theme.muted; font.pixelSize: 11
+            }
+            Label {
+                visible: window.activeView === 3 && gis.cursorValue.length > 0
+                text: gis.cursorValue
+                color: Theme.good; font.pixelSize: 11
+            }
+            Label {
+                visible: window.activeView === 3 && projects.hasProject
+                text: gis.crsDefined ? gis.crsLabel : "CRS не задан"
+                color: gis.crsDefined ? Theme.muted : Theme.warn; font.pixelSize: 11
+                elide: Text.ElideRight; Layout.maximumWidth: 260
             }
             // Running processing job (real engine stage), also while another view is shown.
             FlatButton {
                 visible: processing.active
                 text: window.activeJobText.length > 0 ? window.activeJobText : "Обработка"
-                compact: true; implicitHeight: 24
-                Layout.maximumWidth: 380
-                onClicked: {
-                    window.activeView = 2
-                    if (processing.activeJobId.length > 0) window.selectedJobId = processing.activeJobId
-                }
+                compact: true; implicitHeight: 20; font.pixelSize: 11
+                Layout.maximumWidth: 360
+                onClicked: window.openJob(processing.activeJobId.length > 0 ? processing.activeJobId : window.selectedJobId)
             }
-            Label { text: "OFFLINE  /  OPEN SOURCE  /  v" + Qt.application.version; color: "#71849a"; font.pixelSize: 10; font.letterSpacing: 0.6 }
+            Label { text: "OFFLINE · v" + Qt.application.version; color: Theme.faint; font.pixelSize: 10; font.letterSpacing: 0.5 }
         }
     }
 }

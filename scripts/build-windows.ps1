@@ -146,6 +146,12 @@ try {
     Copy-Item (Join-Path $gis 'share\gdal') (Join-Path $out 'share\gdal') -Recurse -Force
     Write-Host "GDAL/PROJ: $gis"
 
+    # Documentation for "Справка": docs\*.md plus README, CHANGELOG and the license.
+    $docs = Join-Path $out 'docs'
+    New-Item -ItemType Directory -Force -Path $docs | Out-Null
+    Copy-Item (Join-Path $root 'docs\*.md') $docs -Force
+    foreach ($file in 'README.md', 'CHANGELOG.md', 'LICENSE') { Copy-Item (Join-Path $root $file) $docs -Force }
+
     if ($OdmDir) {
         # Bundled OpenDroneMap (AGPL-3.0, a separate program): copied as installed, without the
         # uninstaller that belongs to the source installation. GeoMap AI re-points its Python

@@ -1,7 +1,6 @@
 {
-  "$comment": "GIS libraries for Windows builds (vcpkg manifest mode). Linux uses the distribution packages (libgdal-dev, libproj-dev). Only the parts GeoMap AI needs: GeoTIFF/COG, GeoJSON, GeoPackage (sqlite3), KML (expat), JPEG/PNG inside TIFF; no network access, no GEOS. See docs/DEPENDENCIES.md.",
+  "$comment": "GIS libraries for Windows builds (vcpkg manifest mode). Linux uses the distribution packages (libgdal-dev, libproj-dev). Only the parts GeoMap AI needs: GeoTIFF/COG, GeoJSON, GeoPackage (sqlite3), KML (expat), JPEG/PNG inside TIFF; no network access, no GEOS. See docs/DEPENDENCIES.md. The application version is in CMakeLists.txt (not here, so that a new version does not invalidate the CI package cache).",
   "name": "geomap-ai",
-  "version-string": "0.3.0",
   "dependencies": [
     {
       "name": "gdal",

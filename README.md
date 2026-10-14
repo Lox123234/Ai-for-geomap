@@ -2,13 +2,13 @@
 
 **Open-source desktop workspace for UAV photography and geospatial projects.**
 
-`v0.3.0` — Qt 6/QML desktop application written in **C++17**, with no Python runtime, embedded website, accounts or subscription. Photos and projects stay on your computer.
+`v0.3.1` — Qt 6/QML desktop application written in **C++17**, with no Python runtime, embedded website, accounts or subscription. Photos and projects stay on your computer.
 
 > Reconstruction (orthophoto, point cloud, elevation models, textured model) is done by **OpenDroneMap** running locally as a separate program — on Windows its official build runs **without Docker or WSL** (bundled with GeoMap AI or installed by it in one click); Docker is optional. Projects, import, browsing and the map work without OpenDroneMap. The **map** (GDAL/PROJ, bundled) shows results and other geodata in a real coordinate system, offline; 3D viewing and machine learning are milestones for later versions (see [docs/ROADMAP.md](docs/ROADMAP.md)). There is no background basemap (no map tiles are downloaded).
 
-## Available in v0.3.0
+## Available in v0.3.1
 
-- Native application window with a dark three-panel layout (Russian interface)
+- Professional workspace (Russian interface): main menu (File, Edit, Project, Processing, View, Tools, Analysis, Help) and a grouped icon toolbar built from one list of 140 commands — features that are not implemented yet are shown disabled with the stage that brings them ([docs/UI_COMMANDS.md](docs/UI_COMMANDS.md)); project tree with results, layers and jobs; photo, map and processing views (3D is planned); properties panel; jobs and operations journal; resizable panels with saved layout; configurable shortcuts
 - Create, open, save and close **local projects**; recent projects
 - Portable projects: imported photos are **copied** into the project, paths are relative, the manifest `geomap.json` is written atomically
 - Import JPEG, PNG and TIFF files or whole folders (recursively) **in the background**: per-file progress, cancel, photos appear while importing, a report of skipped files with reasons, free-space check
@@ -59,13 +59,15 @@ Open the **▦ Карта** (Map) tab. A project with GPS-tagged photos gets its
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-Five test executables cover EXIF parsing and corrupt files, projects and their format, background import, cancellation, thumbnails, project locking, processing jobs with a scriptable engine (success, failure, cancel, queue, restart), and GIS with control values (coordinate transforms, geodesic distances and areas, a GeoTIFF matched against reference geometry, pyramids, vectors, drawing, export, persistence). An optional sixth runs a real OpenDroneMap reconstruction. Details and the manual checklist: [docs/TESTING.md](docs/TESTING.md).
+Seven test executables cover EXIF parsing and corrupt files, projects and their format, background import, cancellation, thumbnails, project locking, processing jobs with a scriptable engine (success, failure, cancel, queue, restart), GIS with control values (coordinate transforms, geodesic distances and areas, a GeoTIFF matched against reference geometry, pyramids, vectors, drawing, export, persistence), the command registry and workspace, and the real main window offscreen (menus, toolbar, a handler for every available command, shortcuts, project tree, layout persistence). An optional eighth runs a real OpenDroneMap reconstruction. Details and the manual checklist: [docs/TESTING.md](docs/TESTING.md).
 
 ## Documentation
 
 | Document | Contents |
 | --- | --- |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Stages A–G with checklists |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Stages A–G with checklists, Professional Edition additions |
+| [docs/METASHAPE_FEATURE_PARITY.md](docs/METASHAPE_FEATURE_PARITY.md) | Feature-by-feature status against Agisoft Metashape Professional (tested / implemented / planned / blocked) |
+| [docs/UI_COMMANDS.md](docs/UI_COMMANDS.md) | Every menu item, toolbar button and shortcut: state, handler, availability |
 | [docs/AUDIT.md](docs/AUDIT.md) | Audit of 0.1.0: what worked, what was fixed, risks |
 | [docs/BUILD.md](docs/BUILD.md) | Build, dependencies, presets, CI |
 | [docs/TESTING.md](docs/TESTING.md) | Automated tests, acceptance results, manual checklist |
@@ -82,6 +84,7 @@ Five test executables cover EXIF parsing and corrupt files, projects and their f
 - The full-size photo preview decodes the whole image (a 20 MP photo needs ~80 MB of memory); large rasters on the map are tiled.
 - The GPS overview scatter plot preserves relative ordering of coordinates but not geographic distance or aspect ratio; use the map for real positions.
 - Map: no basemap (no tiles are downloaded), no WMS/XYZ, no network COG; JPEG 2000, NetCDF and other formats outside the bundled GDAL drivers do not open; KML styles are ignored; exported rasters/reprojected layers are not available yet. Point clouds and meshes open in external programs (e.g. CloudCompare, QGIS); the 3D viewer comes with stage D. The "Fast preview" and "Balanced" profiles have been verified on real data. AI inference and GCP support are not present yet.
+- GeoMap AI is **not** a replacement for Agisoft Metashape Professional: GCP, editors, 3D viewing, terrain analysis, multispectral processing and many professional tools are not implemented yet; the current state of each feature is in [docs/METASHAPE_FEATURE_PARITY.md](docs/METASHAPE_FEATURE_PARITY.md).
 - Processing on Windows needs about 1 GB for OpenDroneMap (built-in runtime); on Linux it needs Docker Engine and about 2.4 GB for the ODM image. In our measurements the Windows build of ODM extracts features ~3x slower than ODM in Docker, while whole small jobs took about the same time. Reconstruction time and quality depend on photo overlap and quality, GPS/GCP and the computer; they are not guaranteed, and GeoMap AI does not claim parity with commercial suites such as Agisoft Metashape (no manual GCP marking yet).
 - Recent projects that were moved or deleted stay in the list; opening one reports that `geomap.json` is missing.
 - There is no installer, code signing or automatic update yet; Windows SmartScreen may warn about the unsigned EXE. The portable folder does not yet bundle the third-party license texts required for redistribution (see [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md)), so it should not be published as is.

@@ -1520,6 +1520,28 @@ void MapService::deleteSelected()
     m_undo.push(cmd);
 }
 
+void MapService::clearSelection()
+{
+    if (m_selectedFeature < 0) return;
+    m_selectedFeature = -1;
+    emit drawingsChanged();
+    emit repaint();
+}
+
+QString MapService::layerIdForSource(const QString &path) const
+{
+#ifdef Q_OS_WIN
+    constexpr Qt::CaseSensitivity cs = Qt::CaseInsensitive;
+#else
+    constexpr Qt::CaseSensitivity cs = Qt::CaseSensitive;
+#endif
+    const QString wanted = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    for (const MapLayer &l : m_layers)
+        if (!l.source.isEmpty() && QDir::cleanPath(QFileInfo(l.source).absoluteFilePath()).compare(wanted, cs) == 0)
+            return l.id;
+    return {};
+}
+
 void MapService::clearMeasurement()
 {
     m_sketch.clear();

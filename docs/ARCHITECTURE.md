@@ -1,4 +1,4 @@
-# Architecture — GeoMap AI 0.3.0
+# Architecture — GeoMap AI 0.3.1
 
 ## Process
 
@@ -7,8 +7,13 @@ Single native Qt process. C++ handles files, persistence and background work; Qt
 ## Layers and targets
 
 ```text
-qml/Main.qml                 UI (QML); qml/MapWorkspace.qml — the map view, FlatButton/SectionTitle — shared controls
-app/main.cpp                 composition root: QML engine, image provider, settings, GIS, processing and map services
+qml/Main.qml                 main window: menu bar and toolbar from the command registry, panels (SplitView),
+                             runCommand/commandEnabled/commandChecked, dialogs, processing view
+qml/*.qml                    Theme (palette), MainToolBar, ToolIconButton, CommandMenuItem, ProjectTreePanel,
+                             PhotoListPanel, PhotoInspector, BottomPanel, MapController (map dialogs), MapCanvas,
+                             MapLayersPanel, MapLayerProperties, ShortcutsDialog; qml/icons/*.svg (own icons)
+app/main.cpp                 composition root: services, workspace objects, QML engine
+------------------------------------------------------------- GeoMapUi (static library + QML module "GeoMapAI")
 app/ThumbnailProvider        image://thumbs for QML (Qt Quick)
 app/MapView                  QQuickPaintedItem: paints the map through MapService, forwards mouse/wheel/keys
 ------------------------------------------------------------- GeoMapCore (static library, no QML)
@@ -35,9 +40,20 @@ src/gis/VectorSource               GeoJSON/KML/GeoPackage reading (OGR) and writ
 app/MapTiles                       tile cache (256 MB) and rendering pool
 app/MapService                     the map: layers and their model, view, tools, measurements, drawings with
                                    undo/redo, map.json, exports (PNG/PDF, GeoJSON/GPKG/KML); QML API "gis"
+src/ui/commands/CommandRegistry    commands.json (resource): commands, menus, toolbar; user shortcuts in QSettings
+src/ui/workspace/WorkspaceState    window and panel layout in QSettings ("workspace/")
+src/ui/workspace/AppLog            operations journal (model + daily file in <data>/logs); Journal wires the services
+src/ui/workspace/ProjectTreeModel  tree of the project panel from the services; ProjectTreeFilter for the search
+src/ui/workspace/AppInfo           versions, documentation and log folders for the Help menu
 ```
 
-`GeoMapCore` is linked by the app and by the test executables; it depends on Qt Core, Gui and Network, GDAL and PROJ (no QML). The layout evolves towards the `src/core`, `src/import`, `src/processing`, … structure of the master specification; the remaining `app/` classes move there when they are next reworked.
+The interface is a QML module in the static library `GeoMapUi` (URI `GeoMapAI`, every file at the module root `qrc:/qt/qml/GeoMapAI/`), linked by the executable and by `GeoMapAIUiTests`, which loads the real window offscreen.
+
+## Commands
+
+Every user action of the main window is a command of `src/ui/commands/commands.json`: id, title, icon, default shortcut, status (`ready`, `planned` with its stage, `engine` when OpenDroneMap cannot do the step alone) and, for ready ones, what it does, when it is enabled and which code handles it. QML builds the menu bar, the toolbar and one `Shortcut` per command from the registry; all of them call `runCommand(id)`, which looks up `handlers[id]` and checks `commandEnabled(id)`. `unhandledCommands()` lists ready commands without a handler and must be empty (UI test). Planned commands are visible, disabled, with the reason. `docs/UI_COMMANDS.md` is generated from the JSON (`scripts/generate-ui-commands.ps1`), and the workspace test checks that it lists every command.
+
+`GeoMapCore` is linked by the app and by the test executables; it depends on Qt Core, Gui and Network, GDAL and PROJ (no QML). `GeoMapUi` adds Qt Quick and the QML module. The layout evolves towards the `src/core`, `src/import`, `src/processing`, … structure of the master specification; the remaining `app/` classes move there when they are next reworked.
 
 ## Threads
 

@@ -4,7 +4,7 @@ if(CMAKE_HOST_WIN32 AND NOT DEFINED VCPKG_TARGET_TRIPLET)
     set(VCPKG_TARGET_TRIPLET x64-windows-geomap CACHE STRING "vcpkg triplet")
     set(VCPKG_HOST_TRIPLET x64-windows-geomap CACHE STRING "vcpkg host triplet")
 endif()
-project(GeoMapAI VERSION 0.3.0 LANGUAGES CXX)
+project(GeoMapAI VERSION 0.3.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -68,34 +68,64 @@ qt_add_library(GeoMapCore STATIC
     app/MapTiles.cpp
     app/MapService.h
     app/MapService.cpp
+    src/ui/commands/CommandRegistry.h
+    src/ui/commands/CommandRegistry.cpp
+    src/ui/workspace/WorkspaceState.h
+    src/ui/workspace/WorkspaceState.cpp
+    src/ui/workspace/AppLog.h
+    src/ui/workspace/AppLog.cpp
+    src/ui/workspace/AppInfo.h
+    src/ui/workspace/AppInfo.cpp
+    src/ui/workspace/ProjectTreeModel.h
+    src/ui/workspace/ProjectTreeModel.cpp
+    src/ui/workspace/Journal.h
+    src/ui/workspace/Journal.cpp
 )
-target_include_directories(GeoMapCore PUBLIC app src/core src/import src/processing src/gis)
+target_include_directories(GeoMapCore PUBLIC app src/core src/import src/processing src/gis src/ui/commands src/ui/workspace)
 target_link_libraries(GeoMapCore PUBLIC Qt6::Core Qt6::Gui Qt6::Network GDAL::GDAL PROJ::proj)
 target_compile_definitions(GeoMapCore PRIVATE
-    GEOMAP_PROJ_DATA="${GEOMAP_GIS_SHARE}/proj" GEOMAP_GDAL_DATA="${GEOMAP_GIS_SHARE}/gdal")
+    GEOMAP_PROJ_DATA="${GEOMAP_GIS_SHARE}/proj" GEOMAP_GDAL_DATA="${GEOMAP_GIS_SHARE}/gdal"
+    GEOMAP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")   # documentation of developer builds
+# Menus, toolbar and shortcuts: one list of commands (docs/UI_COMMANDS.md is generated from it).
+qt_add_resources(GeoMapCore "geomap_commands" PREFIX "/geomap" BASE src/ui/commands FILES src/ui/commands/commands.json)
 
-qt_add_executable(GeoMapAI
-    app/main.cpp
+# The user interface as a QML module in a static library, shared by the application and the UI
+# test. Every QML file and icon sits at the module root (qrc:/qt/qml/GeoMapAI/...).
+set(GEOMAP_QML_FILES
+    qml/Main.qml qml/Theme.qml qml/FlatButton.qml qml/SectionTitle.qml qml/ToolIconButton.qml
+    qml/CommandMenuItem.qml qml/MainToolBar.qml qml/ProjectTreePanel.qml qml/PhotoListPanel.qml
+    qml/PhotoInspector.qml qml/BottomPanel.qml qml/MapController.qml qml/MapLayersPanel.qml
+    qml/MapLayerProperties.qml qml/MapCanvas.qml qml/ShortcutsDialog.qml)
+set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+foreach(file IN LISTS GEOMAP_QML_FILES)
+    get_filename_component(name ${file} NAME)
+    set_source_files_properties(${file} PROPERTIES QT_RESOURCE_ALIAS ${name})
+endforeach()
+file(GLOB GEOMAP_ICONS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS qml/icons/*.svg)
+foreach(file IN LISTS GEOMAP_ICONS)
+    get_filename_component(name ${file} NAME)
+    set_source_files_properties(${file} PROPERTIES QT_RESOURCE_ALIAS icons/${name})
+endforeach()
+
+qt_add_library(GeoMapUi STATIC
     app/ThumbnailProvider.h
     app/ThumbnailProvider.cpp
     app/MapView.h
     app/MapView.cpp
 )
-target_compile_definitions(GeoMapAI PRIVATE GEOMAP_VERSION="${PROJECT_VERSION}")
-
-set_source_files_properties(qml/Main.qml PROPERTIES QT_RESOURCE_ALIAS Main.qml)
-
 # The module directory would otherwise be <build>/GeoMapAI, the path of the Linux executable.
-qt_add_qml_module(GeoMapAI
+qt_add_qml_module(GeoMapUi
     URI GeoMapAI
     VERSION 1.0
     OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/qml/GeoMapAI
-    QML_FILES qml/Main.qml qml/MapWorkspace.qml qml/FlatButton.qml qml/SectionTitle.qml
+    QML_FILES ${GEOMAP_QML_FILES}
+    RESOURCES ${GEOMAP_ICONS}
 )
+target_link_libraries(GeoMapUi PUBLIC GeoMapCore Qt6::Core Qt6::Gui Qt6::Quick Qt6::QuickControls2)
 
-target_link_libraries(GeoMapAI PRIVATE
-    GeoMapCore Qt6::Core Qt6::Gui Qt6::Quick Qt6::QuickControls2
-)
+qt_add_executable(GeoMapAI app/main.cpp)
+target_compile_definitions(GeoMapAI PRIVATE GEOMAP_VERSION="${PROJECT_VERSION}")
+target_link_libraries(GeoMapAI PRIVATE GeoMapUi GeoMapUiplugin)
 
 set_target_properties(GeoMapAI PROPERTIES
     WIN32_EXECUTABLE TRUE
@@ -139,7 +169,20 @@ if(BUILD_TESTING)
         qt_add_executable(GeoMapAIGisTests tests/test_gis.cpp)
         target_link_libraries(GeoMapAIGisTests PRIVATE GeoMapCore Qt6::Test)
         add_test(NAME GeoMapAIGisTests COMMAND GeoMapAIGisTests)
-        set(geomap_tests GeoMapAITests GeoMapAIProjectTests GeoMapAIImportTests GeoMapAIProcessingTests GeoMapAIGisTests)
+
+        qt_add_executable(GeoMapAIWorkspaceTests tests/test_workspace.cpp tests/MockEngine.h)
+        target_link_libraries(GeoMapAIWorkspaceTests PRIVATE GeoMapCore Qt6::Test)
+        target_compile_definitions(GeoMapAIWorkspaceTests PRIVATE GEOMAP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        add_test(NAME GeoMapAIWorkspaceTests COMMAND GeoMapAIWorkspaceTests)
+
+        # The real main window, offscreen with the software renderer: menus, commands, shortcuts,
+        # panels and layout persistence (GEOMAP_TEST_OUTPUT=<folder> keeps screenshots).
+        qt_add_executable(GeoMapAIUiTests tests/test_ui.cpp tests/MockEngine.h)
+        target_link_libraries(GeoMapAIUiTests PRIVATE GeoMapUi GeoMapUiplugin Qt6::Test Qt6::Quick)
+        add_test(NAME GeoMapAIUiTests COMMAND GeoMapAIUiTests)
+        set_tests_properties(GeoMapAIUiTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        set(geomap_tests GeoMapAITests GeoMapAIProjectTests GeoMapAIImportTests GeoMapAIProcessingTests GeoMapAIGisTests
+            GeoMapAIWorkspaceTests GeoMapAIUiTests)
 
         # Real reconstruction with Docker and the pinned ODM image; minutes to hours, so only
         # when configured with -DGEOMAP_ODM_DATASET=<folder with overlapping drone photos>.

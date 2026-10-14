@@ -5,18 +5,26 @@
 #include <QQmlContext>
 #include <QQuickStyle>
 #include <QIcon>
-#include <QScreen>
 #include <QSettings>
-#include <QWindow>
 #include <QQmlEngine>
+#include <QtQml/qqmlextensionplugin.h>
+#include "AppInfo.h"
+#include "AppLog.h"
+#include "CommandRegistry.h"
 #include "GisEnvironment.h"
+#include "Journal.h"
 #include "MapService.h"
 #include "MapView.h"
 #include "OdmEngine.h"
 #include "Platform.h"
 #include "ProcessingService.h"
 #include "ProjectManager.h"
+#include "ProjectTreeModel.h"
 #include "ThumbnailProvider.h"
+#include "WorkspaceState.h"
+
+// The user interface is a QML module in the static library GeoMapUi.
+Q_IMPORT_QML_PLUGIN(GeoMapAIPlugin)
 
 int main(int argc, char *argv[])
 {
@@ -67,6 +75,18 @@ int main(int argc, char *argv[])
                      [&map, &projects] { map.setSelectedPhoto(projects.selectedIndex()); });
     qmlRegisterType<MapView>("GeoMapAI.Map", 1, 0, "MapView");
 
+    // Professional workspace: commands, layout, journal, project tree.
+    CommandRegistry commands;
+    WorkspaceState workspace;
+    AppLog appLog(QDir(Platform::dataDirectory()).filePath(QStringLiteral("logs")));
+    AppInfo appInfo(appLog.logDirectory());
+    ProjectTreeModel projectTree(&projects, &processing, &map);
+    ProjectTreeFilter projectTreeView;
+    projectTreeView.setSourceModel(&projectTree);
+    connectJournal(&appLog, &projects, &processing, &map);
+    appLog.add(AppLog::Info, QStringLiteral("Программа"),
+               QStringLiteral("GeoMap AI %1 запущена · %2").arg(QCoreApplication::applicationVersion(), map.gisVersion()));
+
     QQmlApplicationEngine engine;
     auto *thumbnails = new ThumbnailProvider;   // owned by the engine
     QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, thumbnails,
@@ -75,16 +95,15 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("projects", &projects);
     engine.rootContext()->setContextProperty("processing", &processing);
     engine.rootContext()->setContextProperty("gis", &map);
+    engine.rootContext()->setContextProperty("commands", &commands);
+    engine.rootContext()->setContextProperty("workspace", &workspace);
+    engine.rootContext()->setContextProperty("appLog", &appLog);
+    engine.rootContext()->setContextProperty("appInfo", &appInfo);
+    engine.rootContext()->setContextProperty("projectTree", &projectTree);
+    engine.rootContext()->setContextProperty("projectTreeView", &projectTreeView);
     engine.loadFromModule("GeoMapAI", "Main");
     if (engine.rootObjects().isEmpty())
         return -1;
-    // 1500x900 does not fit e.g. 1920x1080 at 125 % scaling; maximize instead of
-    // hiding the status bar and inspector buttons behind the taskbar.
-    if (auto *window = qobject_cast<QWindow *>(engine.rootObjects().constFirst())) {
-        const QRect available = window->screen()->availableGeometry();
-        if (window->frameGeometry().width() > available.width()
-            || window->frameGeometry().height() > available.height())
-            window->showMaximized();
-    }
+    // The window restores its saved geometry and maximizes itself when it does not fit (Main.qml).
     return app.exec();
 }

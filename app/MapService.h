@@ -179,6 +179,8 @@ public:
     Q_INVOKABLE void undo() { m_undo.undo(); }
     Q_INVOKABLE void redo() { m_undo.redo(); }
     Q_INVOKABLE void deleteSelected();
+    Q_INVOKABLE void clearSelection();
+    Q_INVOKABLE QString layerIdForSource(const QString &path) const;   // "" when not on the map
     Q_INVOKABLE void clearMeasurement();
     Q_INVOKABLE void finishSketch();
     // PNG or PDF by extension: current view with legend, scale bar, CRS and sources.
