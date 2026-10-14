@@ -2,8 +2,9 @@
 
 #include "ProcessingTypes.h"
 #include <QObject>
+#include <QVariantList>
 
-// A reconstruction engine (ODM in a container, later native engines), independent of the UI.
+// A reconstruction engine (ODM as a bundled program or in a container), independent of the UI.
 // ProcessingService owns job state and persistence; an engine runs one prepared job at a time
 // in its job directory and reports what really happens. Engines never invent progress.
 class IProcessingEngine : public QObject
@@ -24,17 +25,29 @@ public:
         Q_UNUSED(imageCount) Q_UNUSED(profile) Q_UNUSED(env)
         return {};
     }
+    // Structured options for the UI: [{id, group, title, type: choice|number|flag, choices:
+    // [{value, title}], min, max, unit, help}]. Values go to createJob() as JobRequest::options.
+    virtual QVariantList optionDefinitions(const EnvironmentReport &env) const
+    {
+        Q_UNUSED(env)
+        return {};
+    }
+
+    // Runtimes the engine can use ("native", "docker"); empty selects automatically.
+    virtual void setPreferredBackend(const QString &backend) { Q_UNUSED(backend) }
 
     // Asynchronous: emits environmentChecked(). Must not block the caller.
     virtual void validateEnvironment() = 0;
-    // Downloads what validateEnvironment() reported as missing (only on user request).
+    // Installs what validateEnvironment() reported as missing (only on user request).
     virtual void installRuntime() { emit installFinished(false, tr("Not supported by this engine")); }
+    virtual void cancelInstall() {}
 
-    // Engine-specific part of job creation: final arguments for the profile and any extra,
-    // already validated options. Returns false with an error for options it cannot accept.
-    virtual bool createJob(ProcessingJob &job, const ProcessingProfile &profile,
-                           const QStringList &extraArguments, const EnvironmentReport &env,
+    // Engine-specific part of job creation: final arguments for the request. Returns false
+    // with an error for options it cannot accept; automatic adjustments go to job.notes.
+    virtual bool createJob(ProcessingJob &job, const JobRequest &request, const EnvironmentReport &env,
                            QString *error) = 0;
+    // Arguments to continue a stopped or partial job in its directory.
+    virtual QStringList resumeArguments(const QStringList &arguments) const { return arguments; }
 
     // Starts the job prepared in jobDirectory (input images in jobDirectory/images).
     virtual bool start(const ProcessingJob &job, const QString &jobDirectory, QString *error) = 0;
@@ -47,6 +60,12 @@ public:
     virtual JobProgress readProgress(const QString &jobId) const = 0;
     // Results present in a finished job directory, with verified size and properties.
     virtual QVector<Artifact> collectOutputs(const QString &jobDirectory) const = 0;
+    // Accuracy and statistics of a finished job, as reported by the engine; empty if none.
+    virtual QVariantMap qualityReport(const QString &jobDirectory) const
+    {
+        Q_UNUSED(jobDirectory)
+        return {};
+    }
     // Called for jobs that were active when the application stopped (e.g. stop a container).
     virtual void cleanupInterrupted(const ProcessingJob &job) { Q_UNUSED(job) }
 

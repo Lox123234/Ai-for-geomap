@@ -57,6 +57,14 @@ class ProcessingService final : public QObject
     Q_PROPERTY(QStringList environmentProblems READ environmentProblems NOTIFY environmentChanged)
     Q_PROPERTY(QStringList environmentWarnings READ environmentWarnings NOTIFY environmentChanged)
     Q_PROPERTY(QStringList environmentHints READ environmentHints NOTIFY environmentChanged)
+    Q_PROPERTY(QString backend READ backend NOTIFY environmentChanged)
+    Q_PROPERTY(QStringList backends READ backends NOTIFY environmentChanged)
+    Q_PROPERTY(QString preferredBackend READ preferredBackend WRITE setPreferredBackend NOTIFY environmentChanged)
+    Q_PROPERTY(QString gpuName READ gpuName NOTIFY environmentChanged)
+    Q_PROPERTY(bool canInstall READ canInstall NOTIFY environmentChanged)
+    Q_PROPERTY(QString installTitle READ installTitle NOTIFY environmentChanged)
+    Q_PROPERTY(QString installPrompt READ installPrompt NOTIFY environmentChanged)
+    Q_PROPERTY(QVariantList optionDefinitions READ optionDefinitions NOTIFY environmentChanged)
     Q_PROPERTY(bool installing READ installing NOTIFY installChanged)
     Q_PROPERTY(QString installStatus READ installStatus NOTIFY installChanged)
     Q_PROPERTY(QVariantList profiles READ profilesForQml CONSTANT)
@@ -94,6 +102,16 @@ public:
     QStringList environmentProblems() const { return m_env.problems; }
     QStringList environmentWarnings() const { return m_env.warnings; }
     QStringList environmentHints() const { return m_env.hints; }
+    QString backend() const { return m_env.backend; }
+    QStringList backends() const { return m_env.backends; }
+    QString preferredBackend() const { return m_preferredBackend; }
+    // "", "native" or "docker"; stored in the settings and applied with a new check.
+    void setPreferredBackend(const QString &backend);
+    QString gpuName() const { return m_env.gpuName; }
+    bool canInstall() const { return m_env.canInstall; }
+    QString installTitle() const { return m_env.installTitle; }
+    QString installPrompt() const { return m_env.installPrompt; }
+    QVariantList optionDefinitions() const { return m_engine->optionDefinitions(m_env); }
     bool installing() const { return m_installing; }
     QString installStatus() const { return m_installStatus; }
     QVariantList profilesForQml() const;
@@ -104,10 +122,17 @@ public:
 
     Q_INVOKABLE void checkEnvironment();
     Q_INVOKABLE void installRuntime();
-    // {ok, errors[], warnings[], images, withGps, inputBytes, neededBytes, freeBytes}
-    Q_INVOKABLE QVariantMap preflight(const QString &profileId, const QString &extraOptions = {}) const;
+    Q_INVOKABLE void cancelInstall();
+    // {ok, errors[], warnings[], notes[], images, withGps, inputBytes, neededBytes, freeBytes, arguments}
+    Q_INVOKABLE QVariantMap preflight(const QString &profileId, const QString &extraOptions = {},
+                                      const QVariantMap &options = {}) const;
     // Returns the new job id, or an empty string after errorOccurred().
-    Q_INVOKABLE QString startJob(const QString &profileId, const QString &extraOptions = {});
+    Q_INVOKABLE QString startJob(const QString &profileId, const QString &extraOptions = {},
+                                 const QVariantMap &options = {});
+    // Continues a stopped or partial job in its own directory; the engine reuses finished
+    // stages. With a profile, the job continues with that profile's settings.
+    Q_INVOKABLE bool resumeJob(const QString &id, const QString &profileId = {},
+                               const QVariantMap &options = {}, const QString &extraOptions = {});
     Q_INVOKABLE void cancelJob(const QString &id);
     // Removes a finished job and its directory (results included). Callers confirm first.
     Q_INVOKABLE bool deleteJob(const QString &id);
@@ -128,12 +153,15 @@ signals:
 
 private:
     struct Check {
-        QStringList errors, warnings, images, arguments;
+        QStringList errors, warnings, notes, images, arguments;
         int withGps = 0;
         qint64 inputBytes = 0, needed = 0, free = -1;
+        JobRequest request;
     };
-    Check runPreflight(const QString &profileId, const QString &extraOptions) const;
+    Check runPreflight(const QString &profileId, const QString &extraOptions, const QVariantMap &options) const;
     ProcessingProfile profile(const QString &id, bool *found = nullptr) const;
+    const ProcessingProfile *profilePointer(const QString &id) const;
+    static QString backendTitle(const QString &backend);
     QString newJobId() const;
     void loadJobs();
     bool saveJob(const ProcessingJob &job) const;
@@ -164,6 +192,9 @@ private:
     EnvironmentReport m_env;
     bool m_checking = false;
     bool m_installing = false;
+    QString m_preferredBackend;
+    QVector<ProcessingProfile> m_profiles;   // the engine's profiles, kept for JobRequest pointers
+    QStringList m_resumed;                   // jobs whose next start continues an earlier run
     QString m_installStatus;
     qint64 m_diskReserve = 512LL * 1024 * 1024;
     JobListModel m_model;

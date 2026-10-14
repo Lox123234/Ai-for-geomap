@@ -2,11 +2,11 @@
 
 **Open-source desktop workspace for UAV photography and geospatial projects.**
 
-`v0.2.0` — Qt 6/QML desktop application written in **C++17**, with no Python runtime, embedded website, accounts or subscription. Photos and projects stay on your computer.
+`v0.2.1` — Qt 6/QML desktop application written in **C++17**, with no Python runtime, embedded website, accounts or subscription. Photos and projects stay on your computer.
 
-> Reconstruction (orthophoto, point cloud, elevation models, textured model) is done by **OpenDroneMap**, run locally in Docker as a separate program. GeoMap AI itself does not need Docker: projects, import and browsing work without it. Map/GIS viewing of the results, 3D viewing and machine learning are milestones for later versions (see [docs/ROADMAP.md](docs/ROADMAP.md)). The GPS overview shows a scatter plot, **not a real basemap**.
+> Reconstruction (orthophoto, point cloud, elevation models, textured model) is done by **OpenDroneMap** running locally as a separate program — on Windows its official build runs **without Docker or WSL** (bundled with GeoMap AI or installed by it in one click); Docker is optional. Projects, import and browsing work without OpenDroneMap. Map/GIS viewing of the results, 3D viewing and machine learning are milestones for later versions (see [docs/ROADMAP.md](docs/ROADMAP.md)). The GPS overview shows a scatter plot, **not a real basemap**.
 
-## Available in v0.2.0
+## Available in v0.2.1
 
 - Native application window with a dark three-panel layout (Russian interface)
 - Create, open, save and close **local projects**; recent projects
@@ -18,7 +18,7 @@
 - Remove a project copy of an image without touching the original file
 - A project open in one window is locked against writes from a second window
 - Keyboard shortcuts: `Ctrl+N`, `Ctrl+O`, `Ctrl+S`, `Ctrl+I`, `Ctrl+W`
-- **Processing** with OpenDroneMap 3.6.2 (Docker): environment check, pinned image download on confirmation, three documented quality profiles, pre-flight check (photos, GPS, disk space), job queue, real engine stages and live log, cancel, job history kept in the project, verified results (GeoTIFF CRS and pixel size, LAS point count, report)
+- **Processing** with OpenDroneMap 3.6.2: built-in Windows runtime (no Docker/WSL, no admin rights) or Docker; four profiles including alignment-only for stepwise work, ~30 stage settings with validation (SIFT on NVIDIA GPUs), pre-flight check, job queue, real engine stages and live log, cancel and resume, job history kept in the project, verified results (GeoTIFF CRS and pixel size, LAS point count, report) and a quality report from ODM's statistics (aligned images, reprojection error, GPS RMSE/CE90/LE90, GSD)
 
 ## Requirements
 
@@ -42,13 +42,12 @@ Settings (recent projects) are stored per user in `HKEY_CURRENT_USER\Software\Ge
 
 ## Processing photos with OpenDroneMap
 
-1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine on Linux) and start it.
-2. Open a project with overlapping drone photos and switch to the **◈ Обработка** (Processing) tab. The environment check runs automatically.
-3. If the OpenDroneMap image is missing, click **Загрузить образ ODM**: about 630 MB to download, about 2.4 GB on disk. The image is pinned to a fixed digest.
-4. Choose a profile (Fast preview / Balanced / High quality), read the pre-flight summary and click **Запустить обработку**.
+1. Open a project with overlapping drone photos and switch to the **◈ Обработка** (Processing) tab. The environment check runs automatically.
+2. If OpenDroneMap is not there yet, click **Установить OpenDroneMap**: GeoMap AI downloads the official signed Windows installer (233.5 MB, SHA-256 verified) and installs it for the current user — no Docker, no WSL, no administrator rights; about 1 GB on disk. The full package `GeoMapAI-<version>-win64-odm.zip` already contains it.
+3. Choose a profile — **Только выравнивание** (alignment only), **Быстрый просмотр**, **Сбалансированный** or **Высокое качество** — optionally adjust **Параметры обработки**, read the pre-flight summary and click **Запустить обработку**.
+4. Follow the stage and the live log; when the job finishes, see **Результаты** (files with CRS and size) and **Качество** (aligned images, reprojection error, GPS errors, GSD). An alignment-only, cancelled or interrupted job can be continued with **Продолжить**.
 
-The current stage, the live log and, when finished, the results with their properties appear in the same tab. Each job lives in its own folder `jobs/<id>/` inside the project, so later runs never overwrite earlier results. Profiles, options and troubleshooting: [docs/PROCESSING_ODM.md](docs/PROCESSING_ODM.md).
-
+Each job lives in its own folder `jobs/<id>/` inside the project, so later runs never overwrite earlier results. Runtimes, profiles, settings and troubleshooting: [docs/PROCESSING_ODM.md](docs/PROCESSING_ODM.md).
 ## Tests
 
 ```powershell
@@ -77,11 +76,11 @@ Four test executables cover EXIF parsing and corrupt files, projects and their f
 - The full-size preview decodes the whole image (a 20 MP photo needs ~80 MB of memory); tiled viewing of large rasters is planned with the GIS stage.
 - The GPS scatter plot preserves relative ordering of coordinates but not geographic distance or aspect ratio; no map tiles are downloaded.
 - Results open in external programs (e.g. QGIS for GeoTIFF/LAZ); built-in map and 3D viewers come with stages C and D. Only the "Fast preview" profile has been verified on real data so far. AI inference and GCP support are not present yet.
-- Processing needs Docker Desktop (Windows) or Docker Engine (Linux) and about 2.4 GB for the ODM image; Docker Desktop has its own license terms. Reconstruction time and quality depend on photo overlap and quality, GPS/GCP and the computer; they are not guaranteed.
+- Processing on Windows needs about 1 GB for OpenDroneMap (built-in runtime); on Linux it needs Docker Engine and about 2.4 GB for the ODM image. In our measurements the Windows build of ODM extracts features ~3x slower than ODM in Docker, while whole small jobs took about the same time. Reconstruction time and quality depend on photo overlap and quality, GPS/GCP and the computer; they are not guaranteed, and GeoMap AI does not claim parity with commercial suites such as Agisoft Metashape (no manual GCP marking yet).
 - Recent projects that were moved or deleted stay in the list; opening one reports that `geomap.json` is missing.
 - There is no installer, code signing or automatic update yet; Windows SmartScreen may warn about the unsigned EXE. The portable folder does not yet bundle the third-party license texts required for redistribution (see [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md)), so it should not be published as is.
 - Linux build files are provided but the Linux build has not been verified yet.
 
 ## License
 
-Application source: **MIT**, see [LICENSE](LICENSE). Qt and the other bundled components keep their own licenses (Qt modules used here are available under LGPL-3.0); see [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md). OpenDroneMap (AGPL-3.0) is not bundled: it runs as a separate program from its own Docker image and keeps its license; it does not become MIT by being used with GeoMap AI.
+Application source: **MIT**, see [LICENSE](LICENSE). Qt and the other bundled components keep their own licenses (Qt modules used here are available under LGPL-3.0); see [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md). OpenDroneMap (AGPL-3.0) is a separate program: GeoMap AI runs it as an external process, and the full package ships it unmodified with its license and a pointer to its source code. It keeps its license and does not become MIT by being distributed with GeoMap AI.

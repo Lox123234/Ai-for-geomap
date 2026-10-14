@@ -9,6 +9,7 @@
 #include <QSettings>
 #include <QWindow>
 #include "OdmEngine.h"
+#include "Platform.h"
 #include "ProcessingService.h"
 #include "ProjectManager.h"
 #include "ThumbnailProvider.h"
@@ -29,7 +30,12 @@ int main(int argc, char *argv[])
         QStringLiteral("Store settings in <dir>/GeoMap AI.ini instead of the user profile."),
         QStringLiteral("dir"));
     parser.addOption(settingsDir);
+    const QCommandLineOption dataDir(QStringLiteral("data-dir"),
+        QStringLiteral("Keep engines, downloads and work links in <dir> instead of %LOCALAPPDATA%\\GeoMapAI."),
+        QStringLiteral("dir"));
+    parser.addOption(dataDir);
     parser.process(app);
+    if (parser.isSet(dataDir)) Platform::setDataDirectory(parser.value(dataDir));
     if (parser.isSet(settingsDir)) {
         // Must precede the first QSettings use (ProjectManager reads recent projects).
         QSettings::setDefaultFormat(QSettings::IniFormat);

@@ -26,6 +26,7 @@ public:
         env.summary = QStringLiteral("mock");
         env.cpus = 4;
         env.memoryBytes = 8LL << 30;
+        env.backend = QStringLiteral("mock");
     }
 
     EnvironmentReport env;
@@ -44,28 +45,54 @@ public:
     }
     QVector<ProcessingProfile> profiles() const override
     {
-        return {{QStringLiteral("fast"), QStringLiteral("Быстрый"), QString(), {QStringLiteral("--fast")}, 2}};
+        return {{QStringLiteral("fast"), QStringLiteral("Быстрый"), QString(), {QStringLiteral("--fast")}, 2},
+                {QStringLiteral("part"), QStringLiteral("Частично"), QString(), {QStringLiteral("--partial"), QStringLiteral("--end-with"), QStringLiteral("x")}, 1}};
     }
     QString stageTitle(const QString &stage) const override { return QStringLiteral("Этап ") + stage; }
     void validateEnvironment() override
     {
         QTimer::singleShot(0, this, [this] { emit environmentChecked(env); });
     }
-    bool createJob(ProcessingJob &job, const ProcessingProfile &profile, const QStringList &extra,
-                   const EnvironmentReport &, QString *error) override
+    bool createJob(ProcessingJob &job, const JobRequest &request, const EnvironmentReport &env, QString *error) override
     {
-        for (const QString &a : extra) {
+        for (const QString &a : request.extraArguments) {
             if (a != QLatin1String("--ok")) {
                 if (error) *error = QStringLiteral("bad option ") + a;
                 return false;
             }
         }
+        QStringList fromOptions;
+        for (auto it = request.options.cbegin(); it != request.options.cend(); ++it) {
+            if (it.key() != QLatin1String("level")) {
+                if (error) *error = QStringLiteral("bad option ") + it.key();
+                return false;
+            }
+            fromOptions << QStringLiteral("--level") << it.value().toString();
+        }
         job.engine = QStringLiteral("mock");
         job.engineVersion = QStringLiteral("1.0");
-        job.arguments = profile.arguments + extra;
+        job.backend = env.backend;
+        job.arguments = request.profile->arguments + fromOptions + request.extraArguments;
+        job.notes.clear();
+        if (request.dataset.withGps == 0) job.notes << QStringLiteral("no gps");
         job.stageCount = 3;
+        lastDataset = request.dataset;
         return true;
     }
+    QStringList resumeArguments(const QStringList &arguments) const override
+    {
+        QStringList args = arguments;
+        args.removeAll(QStringLiteral("--partial"));
+        const int i = args.indexOf(QStringLiteral("--end-with"));
+        if (i >= 0) args.remove(i, qMin(2, int(args.size()) - i));
+        return args;
+    }
+    QVariantMap qualityReport(const QString &jobDirectory) const override
+    {
+        return QFileInfo::exists(jobDirectory + QStringLiteral("/stats.json")) ? QVariantMap{{"alignedImages", 2}, {"totalImages", 2}}
+                                                                              : QVariantMap();
+    }
+    DatasetSummary lastDataset;
     bool start(const ProcessingJob &job, const QString &jobDirectory, QString *error) override
     {
         if (failStart) {

@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.21)
-project(GeoMapAI VERSION 0.2.0 LANGUAGES CXX)
+project(GeoMapAI VERSION 0.2.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Network Qml Quick QuickControls2)
 qt_standard_project_setup(REQUIRES 6.5)
 
 # Project, import and metadata logic without QML; shared by the app and the tests.
@@ -26,13 +26,17 @@ qt_add_library(GeoMapCore STATIC
     src/processing/IProcessingEngine.h
     src/processing/GeoTiffInfo.h
     src/processing/GeoTiffInfo.cpp
+    src/processing/Platform.h
+    src/processing/Platform.cpp
+    src/processing/Downloader.h
+    src/processing/Downloader.cpp
     src/processing/OdmEngine.h
     src/processing/OdmEngine.cpp
     src/processing/ProcessingService.h
     src/processing/ProcessingService.cpp
 )
 target_include_directories(GeoMapCore PUBLIC app src/core src/import src/processing)
-target_link_libraries(GeoMapCore PUBLIC Qt6::Core Qt6::Gui)
+target_link_libraries(GeoMapCore PUBLIC Qt6::Core Qt6::Gui Qt6::Network)
 
 qt_add_executable(GeoMapAI
     app/main.cpp

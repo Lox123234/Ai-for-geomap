@@ -68,7 +68,8 @@ QJsonObject ProcessingJob::toJson() const
     for (const Artifact &a : outputs) outputArray.append(a.toJson());
     return {
         {"schemaVersion", 1}, {"id", id}, {"engine", engine}, {"engineVersion", engineVersion},
-        {"profile", profile}, {"arguments", QJsonArray::fromStringList(arguments)},
+        {"backend", backend}, {"profile", profile}, {"arguments", QJsonArray::fromStringList(arguments)},
+        {"notes", QJsonArray::fromStringList(notes)}, {"runs", runs},
         {"state", jobStateId(state)}, {"message", message},
         {"stage", stage}, {"stageIndex", stageIndex}, {"stageCount", stageCount},
         {"createdAt", dateToJson(createdAt)}, {"startedAt", dateToJson(startedAt)},
@@ -84,8 +85,12 @@ ProcessingJob ProcessingJob::fromJson(const QJsonObject &o, bool *ok)
     job.id = o.value("id").toString();
     job.engine = o.value("engine").toString();
     job.engineVersion = o.value("engineVersion").toString();
+    // "docker" for jobs written by 0.2.0, which had no other runtime.
+    job.backend = o.value("backend").toString(QStringLiteral("docker"));
     job.profile = o.value("profile").toString();
     for (const QJsonValue &v : o.value("arguments").toArray()) job.arguments << v.toString();
+    for (const QJsonValue &v : o.value("notes").toArray()) job.notes << v.toString();
+    job.runs = o.value("runs").toInt(1);
     job.state = jobStateFromId(o.value("state").toString(), &stateOk);
     job.message = o.value("message").toString();
     job.stage = o.value("stage").toString();

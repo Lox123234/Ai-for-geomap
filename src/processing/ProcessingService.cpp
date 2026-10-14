@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QProcess>
 #include <QSaveFile>
+#include <QSettings>
 #include <QStorageInfo>
 #include <QThread>
 #include <QUrl>
@@ -203,6 +204,9 @@ ProcessingService::ProcessingService(IProcessingEngine *engine, QObject *parent)
     : QObject(parent), m_engine(engine), m_model(engine)
 {
     m_engine->setParent(this);
+    m_profiles = m_engine->profiles();
+    m_preferredBackend = QSettings().value(QStringLiteral("processing/backend")).toString();
+    if (!m_preferredBackend.isEmpty()) m_engine->setPreferredBackend(m_preferredBackend);
     m_logNotify.setSingleShot(true);
     m_logNotify.setInterval(250);
     connect(&m_logNotify, &QTimer::timeout, this, [this] {
@@ -299,20 +303,31 @@ QString ProcessingService::jobDirectory(const QString &id) const
 
 ProcessingProfile ProcessingService::profile(const QString &id, bool *found) const
 {
-    for (const ProcessingProfile &p : m_engine->profiles()) {
-        if (p.id == id) {
-            if (found) *found = true;
-            return p;
-        }
-    }
-    if (found) *found = false;
-    return {};
+    const ProcessingProfile *p = profilePointer(id);
+    if (found) *found = p != nullptr;
+    return p ? *p : ProcessingProfile();
+}
+
+const ProcessingProfile *ProcessingService::profilePointer(const QString &id) const
+{
+    for (const ProcessingProfile &p : m_profiles) if (p.id == id) return &p;
+    return nullptr;
+}
+
+void ProcessingService::setPreferredBackend(const QString &backend)
+{
+    if (backend == m_preferredBackend) return;
+    m_preferredBackend = backend;
+    QSettings().setValue(QStringLiteral("processing/backend"), backend);
+    m_engine->setPreferredBackend(backend);
+    emit environmentChanged();
+    if (!active()) checkEnvironment();
 }
 
 QVariantList ProcessingService::profilesForQml() const
 {
     QVariantList list;
-    for (const ProcessingProfile &p : m_engine->profiles())
+    for (const ProcessingProfile &p : m_profiles)
         list << QVariantMap{{"id", p.id}, {"title", p.title}, {"description", p.description},
                             {"arguments", p.arguments.join(QLatin1Char(' '))}};
     return list;
@@ -330,12 +345,18 @@ void ProcessingService::installRuntime()
 {
     if (m_installing) return;
     m_installing = true;
-    m_installStatus = QStringLiteral("Загрузка образа…");
+    m_installStatus = QStringLiteral("Подготовка…");
     emit installChanged();
     m_engine->installRuntime();
 }
 
-ProcessingService::Check ProcessingService::runPreflight(const QString &profileId, const QString &extraOptions) const
+void ProcessingService::cancelInstall()
+{
+    if (m_installing) m_engine->cancelInstall();
+}
+
+ProcessingService::Check ProcessingService::runPreflight(const QString &profileId, const QString &extraOptions,
+                                                         const QVariantMap &options) const
 {
     Check c;
     bool found = false;
@@ -382,13 +403,19 @@ ProcessingService::Check ProcessingService::runPreflight(const QString &profileI
     else if (c.withGps < count)
         c.warnings << QStringLiteral("Без GPS: %1 из %2 снимков.").arg(count - c.withGps).arg(count);
 
+    c.request.profile = profilePointer(profileId);
+    c.request.options = options;
+    c.request.extraArguments = QProcess::splitCommand(extraOptions);
+    c.request.dataset = {count, c.withGps, c.inputBytes};
     if (found) {
         ProcessingJob probe;
         QString error;
-        if (m_engine->createJob(probe, p, QProcess::splitCommand(extraOptions), m_env, &error))
+        if (m_engine->createJob(probe, c.request, m_env, &error)) {
             c.arguments = probe.arguments;
-        else
+            c.notes = probe.notes;
+        } else {
             c.errors << error;
+        }
     }
 
     const QStorageInfo storage(m_project);
@@ -400,10 +427,11 @@ ProcessingService::Check ProcessingService::runPreflight(const QString &profileI
     return c;
 }
 
-QVariantMap ProcessingService::preflight(const QString &profileId, const QString &extraOptions) const
+QVariantMap ProcessingService::preflight(const QString &profileId, const QString &extraOptions,
+                                         const QVariantMap &options) const
 {
-    const Check c = runPreflight(profileId, extraOptions);
-    return {{"ok", c.errors.isEmpty()}, {"errors", c.errors}, {"warnings", c.warnings},
+    const Check c = runPreflight(profileId, extraOptions, options);
+    return {{"ok", c.errors.isEmpty()}, {"errors", c.errors}, {"warnings", c.warnings}, {"notes", c.notes},
             {"images", int(c.images.size())}, {"withGps", c.withGps},
             {"inputBytes", double(c.inputBytes)}, {"neededBytes", double(c.needed)}, {"freeBytes", double(c.free)},
             {"inputText", sizeText(c.inputBytes)}, {"neededText", sizeText(c.needed)}, {"freeText", sizeText(c.free)},
@@ -419,9 +447,9 @@ QString ProcessingService::newJobId() const
     return id;
 }
 
-QString ProcessingService::startJob(const QString &profileId, const QString &extraOptions)
+QString ProcessingService::startJob(const QString &profileId, const QString &extraOptions, const QVariantMap &options)
 {
-    const Check c = runPreflight(profileId, extraOptions);
+    const Check c = runPreflight(profileId, extraOptions, options);
     if (!c.errors.isEmpty()) {
         emit errorOccurred(c.errors.join(QLatin1Char('\n')));
         return {};
@@ -432,7 +460,7 @@ QString ProcessingService::startJob(const QString &profileId, const QString &ext
     job.images = c.images;
     job.createdAt = QDateTime::currentDateTime();
     QString error;
-    if (!m_engine->createJob(job, profile(profileId), QProcess::splitCommand(extraOptions), m_env, &error)) {
+    if (!m_engine->createJob(job, c.request, m_env, &error)) {
         emit errorOccurred(error);
         return {};
     }
@@ -504,8 +532,11 @@ void ProcessingService::prepareFinished(const QString &id, const QString &error,
     writeLog(QStringLiteral("[GeoMap] Снимки подготовлены: %1%2").arg(job->images.size())
                  .arg(copied > 0 ? QStringLiteral(" (скопировано %1: жёсткие ссылки на этом диске недоступны)").arg(copied)
                                  : QString()));
-    job->startedAt = QDateTime::currentDateTime();
-    setState(*job, JobState::Running, QStringLiteral("Запущен %1.").arg(engineName()));
+    job->startedAt = QDateTime::currentDateTime();   // of this run
+    m_resumed.removeAll(id);
+    ++job->runs;
+    setState(*job, JobState::Running, job->runs > 1 ? QStringLiteral("Продолжение обработки (запуск %1).").arg(job->runs)
+                                                    : QStringLiteral("Запущен %1.").arg(engineName()));
     QString startError;
     // A start failure may also arrive through finished(); onFinished() ignores it once m_current moved on.
     if (!m_engine->start(*job, jobDirectory(id), &startError) && m_current == id)
@@ -530,6 +561,54 @@ void ProcessingService::cancelJob(const QString &id)
         writeLog(QStringLiteral("[GeoMap] Отмена по запросу пользователя."));
         m_engine->cancel(id);
     }
+}
+
+bool ProcessingService::resumeJob(const QString &id, const QString &profileId, const QVariantMap &options,
+                                  const QString &extraOptions)
+{
+    ProcessingJob *job = findJob(id);
+    auto fail = [this](const QString &message) {
+        emit errorOccurred(message);
+        return false;
+    };
+    if (!job || isActive(job->state) || id == m_current) return false;
+    if (!m_env.available) return fail(QStringLiteral("Движок обработки недоступен: проверьте окружение."));
+    if (!job->backend.isEmpty() && job->runs > 0 && job->backend != m_env.backend)
+        return fail(QStringLiteral("Задание начато в режиме «%1», сейчас выбран «%2». Продолжить его можно только в том же режиме: "
+                                   "файлы промежуточных этапов содержат пути этого режима.")
+                        .arg(job->backend, m_env.backend));
+    for (const QString &file : job->images)
+        if (!QFileInfo::exists(QDir(m_project).filePath(file)) && !QFileInfo::exists(QDir(jobDirectory(id)).filePath(
+                                                                       QStringLiteral("images/") + QFileInfo(file).fileName())))
+            return fail(QStringLiteral("Снимок %1 больше не найден ни в проекте, ни в папке задания.").arg(QFileInfo(file).fileName()));
+    if (profileId.isEmpty()) {
+        job->arguments = m_engine->resumeArguments(job->arguments);
+    } else {
+        const ProcessingProfile *p = profilePointer(profileId);
+        if (!p) return fail(QStringLiteral("Неизвестный профиль обработки «%1».").arg(profileId));
+        int withGps = 0;
+        if (m_photos)
+            for (const Photo &photo : m_photos->photos()) if (photo.hasGps && job->images.contains(photo.file)) ++withGps;
+        JobRequest request;
+        request.profile = p;
+        request.options = options;
+        request.extraArguments = QProcess::splitCommand(extraOptions);
+        request.dataset = {int(job->images.size()), withGps, 0};
+        ProcessingJob copy = *job;
+        QString error;
+        if (!m_engine->createJob(copy, request, m_env, &error)) return fail(error);
+        job->arguments = copy.arguments;
+        job->notes = copy.notes;
+        job->profile = profileId;
+    }
+    if (job->backend.isEmpty() || job->runs == 0) job->backend = m_env.backend;
+    job->exitCode = 0;
+    job->finishedAt = {};
+    m_resumed << id;
+    m_queue.append(id);
+    setState(*job, JobState::Queued, QStringLiteral("Ожидает продолжения."));
+    runNext();
+    return true;
 }
 
 void ProcessingService::onStage(const QString &id, const QString &stage, int index, int count)
@@ -570,7 +649,14 @@ void ProcessingService::onFinished(const QString &id, JobOutcome outcome, int ex
         if (outcome == JobOutcome::Cancelled) {
             state = JobState::Cancelled;
         } else if (outcome == JobOutcome::Succeeded) {
-            if (job->outputs.isEmpty()) {
+            const QVariantMap quality = m_engine->qualityReport(jobDirectory(id));
+            if (job->arguments.contains(QStringLiteral("--end-with")) && job->outputs.isEmpty() && !quality.isEmpty()) {
+                // A partial run (e.g. alignment only) is complete when the engine reports on it.
+                state = JobState::Completed;
+                text = QStringLiteral("Выравнивание готово: %1 из %2 снимков. Проверьте качество и продолжите обработку.")
+                           .arg(quality.value(QStringLiteral("alignedImages")).toInt())
+                           .arg(quality.value(QStringLiteral("totalImages")).toInt());
+            } else if (job->outputs.isEmpty()) {
                 text = QStringLiteral("%1 завершился без ошибок, но результатов в папке задания нет.").arg(engineName());
             } else {
                 state = JobState::Completed;
@@ -673,15 +759,19 @@ void ProcessingService::openLog(const ProcessingJob &job)
     m_log.close();
     m_log.setFileName(QDir(jobDirectory(job.id)).filePath(LogFile));
     if (!m_log.open(QIODevice::WriteOnly | QIODevice::Append)) return;
-    const QStringList header = {
-        QStringLiteral("==== %1 · задание %2 · %3")
+    const bool resumed = m_resumed.contains(job.id);
+    QStringList header = {
+        QStringLiteral("==== %1 · задание %2 · %3%4")
             .arg(QStringLiteral("GeoMap AI %1").arg(QCoreApplication::applicationVersion()).trimmed(), job.id,
-                 QDateTime::currentDateTime().toString(Qt::ISODate)),
-        QStringLiteral("Движок: %1 %2").arg(engineName(), job.engineVersion),
+                 QDateTime::currentDateTime().toString(Qt::ISODate),
+                 resumed ? QStringLiteral(" · продолжение: готовые этапы используются повторно") : QString()),
+        QStringLiteral("Движок: %1 %2%3").arg(engineName(), job.engineVersion,
+                                             job.backend.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(backendTitle(job.backend))),
         QStringLiteral("Профиль: %1 (%2)").arg(profile(job.profile).title, job.profile),
         QStringLiteral("Параметры: %1").arg(job.arguments.join(QLatin1Char(' '))),
         QStringLiteral("Снимков: %1").arg(job.images.size()),
     };
+    for (const QString &note : job.notes) header << QStringLiteral("Автоматически: %1").arg(note);
     for (const QString &line : header) writeLog(line);
 }
 
@@ -728,7 +818,8 @@ QVariantMap ProcessingService::jobDetails(const QString &id) const
                                {"path", QDir::toNativeSeparators(dir.filePath(a.file))},
                                {"bytes", double(a.bytes)}, {"size", sizeText(a.bytes)}, {"details", a.details}};
     QStringList missing;
-    if (j.state == JobState::Completed) {
+    const bool partial = j.arguments.contains(QStringLiteral("--end-with"));
+    if (j.state == JobState::Completed && !partial) {
         for (const QString &kind : m_engine->capabilities().outputs) {
             const bool present = std::any_of(j.outputs.cbegin(), j.outputs.cend(), [&kind](const Artifact &a) { return a.kind == kind; });
             if (!present) missing << kindTitle(kind);
@@ -751,7 +842,19 @@ QVariantMap ProcessingService::jobDetails(const QString &id) const
             {"directory", QDir::toNativeSeparators(dir.absolutePath())},
             {"logFile", QDir::toNativeSeparators(dir.filePath(LogFile))},
             {"outputs", outputs}, {"missing", missing},
+            {"backend", j.backend}, {"backendTitle", backendTitle(j.backend)}, {"notes", j.notes}, {"runs", j.runs},
+            {"partial", partial},
+            // Stopped, failed or partial jobs continue in place; the engine reuses finished stages.
+            {"canResume", !isActive(j.state) && !running && (j.state != JobState::Completed || partial)},
+            {"quality", running ? QVariantMap() : m_engine->qualityReport(dir.absolutePath())},
             {"log", logTail(id, RecentLogLines).join(QLatin1Char('\n'))}};
+}
+
+QString ProcessingService::backendTitle(const QString &backend)
+{
+    if (backend == QLatin1String("native")) return QStringLiteral("встроенный");
+    if (backend == QLatin1String("docker")) return QStringLiteral("Docker");
+    return backend;
 }
 
 void ProcessingService::revealJob(const QString &id)

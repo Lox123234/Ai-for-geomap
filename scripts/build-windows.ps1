@@ -10,14 +10,19 @@
 .PARAMETER OutDir
     Deployment folder. Default: dist\GeoMapAI. It is recreated on every run.
 .PARAMETER Zip
-    Also pack the deployment folder into GeoMapAI-<version>-win64.zip next to it.
+    Also pack the deployment folder into GeoMapAI-<version>-win64[-odm].zip next to it.
+.PARAMETER OdmDir
+    Folder of an installed OpenDroneMap 3.6.x for Windows (official ODM_Setup_3.6.x.exe, e.g. the
+    one GeoMap AI installs into %LOCALAPPDATA%\GeoMapAI\engines\odm-3.6.2). It is copied unmodified
+    to <OutDir>\engines\odm, so the deployment processes photos without Docker or any installation.
 #>
 param(
     [string]$QtDir,
     [string]$Generator = 'Visual Studio 17 2022',
     [switch]$SkipTests,
     [string]$OutDir,
-    [switch]$Zip
+    [switch]$Zip,
+    [string]$OdmDir
 )
 
 $ErrorActionPreference = 'Stop'
@@ -118,11 +123,49 @@ try {
         Write-Warning 'MSVC runtime DLLs not found; target PCs will need the VC++ 2015-2022 x64 Redistributable.'
     }
 
+    if ($OdmDir) {
+        # Bundled OpenDroneMap (AGPL-3.0, a separate program): copied as installed, without the
+        # uninstaller that belongs to the source installation. GeoMap AI re-points its Python
+        # environment to the new folder on first use (what ODM's winpostinstall.bat does).
+        $odm = (Resolve-Path $OdmDir).Path
+        if (!(Test-Path (Join-Path $odm 'run.py')) -or !(Test-Path (Join-Path $odm 'venv\Scripts\python.exe'))) {
+            throw "Not an OpenDroneMap installation: $odm"
+        }
+        $odmVersion = (Get-Content (Join-Path $odm 'VERSION') -Raw).Trim()
+        if ($odmVersion -notmatch '^3\.6\.') { throw "OpenDroneMap 3.6.x expected, found $odmVersion" }
+        $target = Join-Path $out 'engines\odm'
+        New-Item -ItemType Directory -Force -Path $target | Out-Null
+        $copyArgs = @($odm, $target, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/XF', 'unins*.*')
+        & robocopy @copyArgs | Out-Null
+        if ($LASTEXITCODE -ge 8) { throw "Copying OpenDroneMap failed (robocopy $LASTEXITCODE)" }
+        if ($redist) {
+            # ODM's tools need the VC++ runtime; its installer adds it system-wide only with admin rights.
+            $bin = Join-Path $target 'SuperBuild\install\bin'
+            Get-ChildItem (Join-Path $redist.FullName '*.dll') | Where-Object { !(Test-Path (Join-Path $bin $_.Name)) } |
+                ForEach-Object { Copy-Item $_.FullName $bin }
+        }
+        Set-Content -Encoding ASCII (Join-Path $target 'SOURCE.txt') @(
+            "OpenDroneMap $odmVersion - official Windows build, unmodified (ODM_Setup_$odmVersion.exe).",
+            'License: GNU Affero General Public License v3.0, see LICENSE and licenses\ in this folder.',
+            "Source code of this version: https://github.com/OpenDroneMap/ODM/tree/v$odmVersion",
+            'OpenDroneMap is a separate program that GeoMap AI runs as an external process.')
+        Write-Host "OpenDroneMap $odmVersion bundled: $target"
+    }
+
     if ($Zip) {
         $cmake = Get-Content (Join-Path $root 'CMakeLists.txt') -Raw
         if ($cmake -notmatch 'project\(GeoMapAI VERSION ([0-9.]+)') { throw 'Project version not found in CMakeLists.txt' }
-        $archive = Join-Path (Split-Path -Parent $out) "GeoMapAI-$($Matches[1])-win64.zip"
-        Compress-Archive -Path $out -DestinationPath $archive -Force
+        $suffix = if ($OdmDir) { '-odm' } else { '' }
+        $archive = Join-Path (Split-Path -Parent $out) "GeoMapAI-$($Matches[1])-win64$suffix.zip"
+        if (Test-Path $archive) { Remove-Item -Force $archive }
+        # bsdtar (Windows 10+) packs the ~20 000 files of ODM much faster than Compress-Archive.
+        $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+        if (Test-Path $tar) {
+            & $tar -a -c -f $archive -C (Split-Path -Parent $out) (Split-Path -Leaf $out)
+            if ($LASTEXITCODE -ne 0) { throw 'Packing the archive failed' }
+        } else {
+            Compress-Archive -Path $out -DestinationPath $archive -Force
+        }
         Write-Host "Archive: $archive"
     }
 

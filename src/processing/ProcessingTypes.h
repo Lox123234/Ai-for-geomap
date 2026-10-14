@@ -5,6 +5,7 @@
 #include <QMetaType>
 #include <QString>
 #include <QStringList>
+#include <QVariantMap>
 #include <QVector>
 
 // Data exchanged between ProcessingService and processing engines (no UI dependency).
@@ -43,8 +44,8 @@ struct EnvironmentReport
 {
     bool checked = false;
     bool available = false;     // everything needed to start a job is present
-    bool engineMissing = false; // e.g. Docker not installed / not running
-    bool imageMissing = false;  // engine present, image not downloaded yet
+    bool engineMissing = false; // nothing to run the engine with (no runtime, no Docker)
+    bool imageMissing = false;  // the engine itself is not installed / downloaded yet
     QString engineVersion;
     QString summary;            // one line for the UI
     QStringList problems;       // blocking
@@ -52,6 +53,31 @@ struct EnvironmentReport
     QStringList hints;          // what the user can do
     int cpus = 0;
     qint64 memoryBytes = 0;
+    QString backend;            // runtime used for jobs: "native", "docker"; empty if none
+    QStringList backends;       // runtimes that are ready, for a user choice
+    QString gpuName;            // usable GPU reported by the driver, empty if none
+    bool canInstall = false;    // installRuntime() can fix what is missing
+    QString installTitle;       // button text
+    QString installPrompt;      // confirmation text: what is downloaded, size, license
+};
+
+// What the project offers to a job: used to adapt engine parameters (e.g. no GPS).
+struct DatasetSummary
+{
+    int images = 0;
+    int withGps = 0;
+    qint64 bytes = 0;
+};
+
+struct ProcessingProfile;
+
+// Everything the user chose for a new job.
+struct JobRequest
+{
+    const ProcessingProfile *profile = nullptr;
+    QVariantMap options;        // structured options (engine option definitions)
+    QStringList extraArguments; // expert command-line options
+    DatasetSummary dataset;
 };
 
 struct ProcessingProfile
@@ -86,8 +112,11 @@ struct ProcessingJob
     QString id;
     QString engine;
     QString engineVersion;
+    QString backend;            // runtime that runs the job: "native" or "docker"
     QString profile;
     QStringList arguments;      // final engine arguments
+    QStringList notes;          // automatic adjustments of the request, shown and logged
+    int runs = 0;               // starts so far (resuming continues in the same directory)
     JobState state = JobState::Queued;
     QString message;            // last status / diagnostic message
     QString stage;              // engine stage id, e.g. "opensfm"

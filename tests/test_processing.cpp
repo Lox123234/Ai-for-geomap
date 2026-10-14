@@ -12,10 +12,16 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <QCryptographicHash>
+#include <QElapsedTimer>
+#include <QProcessEnvironment>
+#include <QSettings>
+#include "Downloader.h"
 #include "GeoTiffInfo.h"
 #include "MockEngine.h"
 #include "OdmEngine.h"
 #include "PhotoModel.h"
+#include "Platform.h"
 #include "ProcessingService.h"
 #include "TestImages.h"
 
@@ -178,7 +184,17 @@ struct Fixture
 class ProcessingTest : public QObject
 {
     Q_OBJECT
+    QTemporaryDir m_settings;
 private slots:
+    void initTestCase()
+    {
+        // ProcessingService keeps the preferred runtime in QSettings: never the user's registry.
+        QVERIFY(m_settings.isValid());
+        QCoreApplication::setOrganizationName(QStringLiteral("GeoMapAI-Tests"));
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_settings.path());
+    }
+
     void preflightReportsRealProblems()
     {
         {
@@ -496,6 +512,75 @@ private slots:
         QCOMPARE(f.service->jobCount(), 1);
     }
 
+    void resumesStoppedAndPartialJobs()
+    {
+        Fixture f;
+        QVERIFY(f.init(2));
+        QVERIFY(f.checkEnvironment());
+        // A failed job continues in its own directory.
+        const QString id = f.service->startJob(QStringLiteral("fast"));
+        QTRY_COMPARE(f.state(id), JobState::Running);
+        f.engine->finish(JobOutcome::Failed, 1, QStringLiteral("x"));
+        QVERIFY(f.service->jobDetails(id).value("canResume").toBool());
+        QVERIFY(f.service->resumeJob(id));
+        QTRY_COMPARE(f.record->started, (QStringList{id, id}));
+        QCOMPARE(f.service->job(id).runs, 2);
+        QCOMPARE(f.service->jobCount(), 1);
+        QTRY_VERIFY(QString::fromUtf8(readFile(f.jobFile(id, QStringLiteral("log.txt")))).contains(QStringLiteral("продолжение")));
+        QVERIFY(writeFile(f.jobFile(id, QStringLiteral("out/ortho.tif")), geoTiff(false, false, 3072, 32630, 0.05)));
+        f.engine->finish(JobOutcome::Succeeded, 0, QStringLiteral("ok"));
+        QCOMPARE(f.state(id), JobState::Completed);
+        QVERIFY(!f.service->jobDetails(id).value("canResume").toBool());
+
+        // Alignment only: complete with the engine's report, then continue with another profile.
+        const QString part = f.service->startJob(QStringLiteral("part"));
+        QTRY_COMPARE(f.state(part), JobState::Running);
+        QVERIFY(writeFile(f.jobFile(part, QStringLiteral("stats.json")), "{}"));
+        f.engine->finish(JobOutcome::Succeeded, 0, QStringLiteral("ok"));
+        QCOMPARE(f.state(part), JobState::Completed);
+        QVERIFY(f.service->job(part).message.contains(QStringLiteral("Выравнивание готово")));
+        QVariantMap details = f.service->jobDetails(part);
+        QVERIFY(details.value("partial").toBool());
+        QVERIFY(details.value("canResume").toBool());
+        QVERIFY(details.value("missing").toStringList().isEmpty());
+        QCOMPARE(details.value("quality").toMap().value("alignedImages").toInt(), 2);
+        QVERIFY(f.service->resumeJob(part, QStringLiteral("fast"), {{"level", 3}}));
+        QTRY_COMPARE(f.record->started.size(), 4);
+        QCOMPARE(f.service->job(part).profile, QStringLiteral("fast"));
+        QCOMPARE(f.service->job(part).arguments, (QStringList{QStringLiteral("--fast"), QStringLiteral("--level"), QStringLiteral("3")}));
+        f.engine->finish(JobOutcome::Failed, 1, QStringLiteral("x"));
+
+        // Intermediate files hold the runtime's paths: no resume in another runtime.
+        f.engine->env.backend = QStringLiteral("other");
+        QVERIFY(f.checkEnvironment());
+        QSignalSpy errors(f.service.get(), &ProcessingService::errorOccurred);
+        QVERIFY(!f.service->resumeJob(part));
+        QCOMPARE(errors.count(), 1);
+    }
+
+    void passesStructuredOptionsAndNotes()
+    {
+        Fixture f;
+        QVERIFY(f.init(2, false));
+        QVERIFY(f.checkEnvironment());
+        QVariantMap r = f.service->preflight(QStringLiteral("fast"), {}, {{"level", 2}});
+        QVERIFY(r.value("ok").toBool());
+        QCOMPARE(r.value("arguments").toString(), QStringLiteral("--fast --level 2"));
+        QCOMPARE(r.value("notes").toStringList(), QStringList{QStringLiteral("no gps")});
+        QCOMPARE(f.engine->lastDataset.images, 2);
+        QCOMPARE(f.engine->lastDataset.withGps, 0);
+        r = f.service->preflight(QStringLiteral("fast"), {}, {{"bad", 1}});
+        QVERIFY(!r.value("ok").toBool());
+        QVERIFY(r.value("errors").toStringList().contains(QStringLiteral("bad option bad")));
+
+        const QString id = f.service->startJob(QStringLiteral("fast"), {}, {{"level", 2}});
+        QCOMPARE(f.service->job(id).notes, QStringList{QStringLiteral("no gps")});
+        QCOMPARE(f.service->job(id).backend, QStringLiteral("mock"));
+        QTRY_COMPARE(f.state(id), JobState::Running);
+        QTRY_VERIFY(QString::fromUtf8(readFile(f.jobFile(id, QStringLiteral("log.txt")))).contains(QStringLiteral("Автоматически: no gps")));
+        QCOMPARE(readJson(f.jobFile(id, QStringLiteral("job.json"))).value("notes").toArray().size(), 1);
+    }
+
     // ------------------------------------------------------------- OdmEngine
 
     void odmRunArgumentsNeedNoShell()
@@ -545,7 +630,14 @@ private slots:
         OdmEngine odm;
         for (const ProcessingProfile &p : odm.profiles())
             QVERIFY2(OdmEngine::validateExtraArguments(p.arguments, &error), qPrintable(p.id + ": " + error));
-        QCOMPARE(odm.profiles().size(), 3);
+        QCOMPARE(odm.profiles().size(), 4);
+        // Every structured option of the UI is also accepted in the expert field.
+        for (const QVariant &d : odm.optionDefinitions({})) {
+            const QVariantMap def = d.toMap();
+            QVERIFY(!def.value("title").toString().isEmpty());
+            QVERIFY(OdmEngine::validateExtraArguments({QStringLiteral("--") + def.value("id").toString()}, &error)
+                    || def.value("type").toString() != QLatin1String("flag"));
+        }
         QCOMPARE(odm.stageTitle(QStringLiteral("odm_orthophoto")), QStringLiteral("Ортофотоплан"));
         QCOMPARE(odm.stageTitle(QStringLiteral("future_stage")), QStringLiteral("future_stage"));
         QVERIFY(odm.capabilities().inputSuffixes.contains(QStringLiteral("jpg")));
@@ -561,21 +653,275 @@ private slots:
         QCOMPARE(OdmEngine::concurrencyFor(1, 512LL << 20), 1);
 
         OdmEngine odm;
+        const QVector<ProcessingProfile> profiles = odm.profiles();
         EnvironmentReport env;
         env.cpus = 16;
         env.memoryBytes = 8 * gb;
+        env.backend = QStringLiteral("native");
+        JobRequest request;
+        request.profile = &profiles[1];   // fast
+        request.dataset = {20, 20, 1000};
         ProcessingJob job;
         QString error;
-        QVERIFY(odm.createJob(job, odm.profiles().constFirst(), {}, env, &error));
+        QVERIFY(odm.createJob(job, request, env, &error));
         QCOMPARE(job.arguments.mid(job.arguments.size() - 2), (QStringList{QStringLiteral("--max-concurrency"), QStringLiteral("7")}));
         QCOMPARE(job.stageCount, int(OdmEngine::stageIds().size()));
         QCOMPARE(job.engineVersion, QStringLiteral("3.6.2"));
+        QCOMPARE(job.backend, QStringLiteral("native"));
         ProcessingJob manual;
-        QVERIFY(odm.createJob(manual, odm.profiles().constFirst(), {QStringLiteral("--max-concurrency"), QStringLiteral("2")}, env, &error));
+        request.extraArguments = {QStringLiteral("--max-concurrency"), QStringLiteral("2")};
+        QVERIFY(odm.createJob(manual, request, env, &error));
         QCOMPARE(manual.arguments.count(QStringLiteral("--max-concurrency")), 1);
-        QVERIFY(!odm.createJob(manual, odm.profiles().constFirst(), {QStringLiteral("--evil")}, env, &error));
-        QVERIFY(odm.resourceWarnings(3, odm.profiles().constFirst(), env).join(' ').contains(QStringLiteral("Снимков мало")));
-        QVERIFY(odm.resourceWarnings(100, odm.profiles().at(2), env).join(' ').contains(QStringLiteral("137")));
+        request.extraArguments = {QStringLiteral("--evil")};
+        QVERIFY(!odm.createJob(manual, request, env, &error));
+        QVERIFY(odm.resourceWarnings(3, profiles[1], env).join(' ').contains(QStringLiteral("Снимков мало")));
+        QVERIFY(odm.resourceWarnings(100, profiles[3], env).join(' ').contains(QStringLiteral("памят")));
+        QVERIFY(odm.resourceWarnings(1500, profiles[1], env).join(' ').contains(QStringLiteral("Разбиение")));
+    }
+
+    void odmTurnsStructuredOptionsIntoArguments()
+    {
+        QString error;
+        QStringList args = OdmEngine::optionArguments({{"feature-quality", "ultra"}, {"pc-filter", 2.5}, {"dsm", true},
+                                                       {"dtm", false}, {"mesh-size", 300000}, {"gps-accuracy", ""}}, &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(args, (QStringList{QStringLiteral("--dsm"), QStringLiteral("--feature-quality"), QStringLiteral("ultra"),
+                                    QStringLiteral("--mesh-size"), QStringLiteral("300000"), QStringLiteral("--pc-filter"),
+                                    QStringLiteral("2.5")}));
+        QVERIFY(OdmEngine::optionArguments({{"feature-quality", "best"}}, &error).isEmpty());
+        QVERIFY(error.contains(QStringLiteral("best")));
+        QVERIFY(OdmEngine::optionArguments({{"pc-filter", 11}}, &error).isEmpty());
+        QVERIFY(OdmEngine::optionArguments({{"mesh-size", 1000.5}}, &error).isEmpty());
+        QVERIFY(OdmEngine::optionArguments({{"project-path", "/"}}, &error).isEmpty());
+        QVERIFY(error.contains(QStringLiteral("project-path")));
+        QVERIFY(OdmEngine::optionArguments({{"fast-orthophoto", true}}, &error).isEmpty());   // expert field only
+
+        // Requests are adapted to the dataset and explained.
+        OdmEngine odm;
+        const QVector<ProcessingProfile> profiles = odm.profiles();
+        EnvironmentReport env;
+        env.backend = QStringLiteral("native");
+        env.gpuName = QStringLiteral("NVIDIA Test");
+        JobRequest request;
+        request.profile = &profiles[2];   // balanced: has --auto-boundary
+        request.dataset = {10, 0, 1000};
+        request.options = {{"feature-type", "sift"}};
+        ProcessingJob job;
+        QVERIFY(odm.createJob(job, request, env, &error));
+        QVERIFY(!job.arguments.contains(QStringLiteral("--auto-boundary")));
+        QVERIFY(job.notes.join(' ').contains(QStringLiteral("auto-boundary")));
+        QVERIFY(job.notes.join(' ').contains(QStringLiteral("NVIDIA Test")));
+        request.options = {{"split", 400}};
+        QVERIFY(!odm.createJob(job, request, env, &error));
+        QVERIFY(error.contains(QStringLiteral("GPS")));
+        // Settings override the profile: later options win in ODM's parser.
+        request.dataset = {10, 10, 1000};
+        request.options = {{"feature-quality", "lowest"}};
+        QVERIFY(odm.createJob(job, request, env, &error));
+        QCOMPARE(job.arguments[job.arguments.lastIndexOf(QStringLiteral("--feature-quality")) + 1], QStringLiteral("lowest"));
+
+        QCOMPARE(odm.resumeArguments({QStringLiteral("--dsm"), QStringLiteral("--end-with"), QStringLiteral("opensfm"),
+                                      QStringLiteral("--rerun-from"), QStringLiteral("odm_dem"), QStringLiteral("--rerun-all")}),
+                 QStringList{QStringLiteral("--dsm")});
+    }
+
+    void odmQualityReportFollowsStatsJson()
+    {
+        const QByteArray stats = R"({
+          "processing_statistics": {"steps_times": {"Feature Extraction": 15.2, "Reconstruction": 6.5, "Total Time": 25.0}, "area": 7054.6},
+          "reconstruction_statistics": {"components": 2, "has_gps": true, "has_gcp": false, "initial_shots_count": 18,
+                                        "reconstructed_shots_count": 16, "reconstructed_points_count": 3251,
+                                        "average_track_length": 3.04, "reprojection_error_pixels": 1.0827},
+          "gps_errors": {"error": {"x": 0.1637, "y": 0.6004, "z": 0.1641}, "ce90": 0.9057, "le90": 0.2428},
+          "gcp_errors": {},
+          "odm_processing_statistics": {"average_gsd": 1.644},
+          "point_cloud_statistics": {"dense": false, "stats": {"statistic": [{"count": 3237, "name": "X"}]}}
+        })";
+        const QVariantMap r = OdmEngine::parseQualityStats(stats);
+        QCOMPARE(r.value("alignedImages").toInt(), 16);
+        QCOMPARE(r.value("totalImages").toInt(), 18);
+        QStringList rows;
+        for (const QVariant &v : r.value("rows").toList())
+            rows << v.toMap().value("label").toString() + QStringLiteral(": ") + v.toMap().value("value").toString();
+        const QString all = rows.join('\n');
+        QVERIFY2(all.contains(QStringLiteral("Выровнено снимков: 16 из 18")), qPrintable(all));
+        QVERIFY(all.contains(QStringLiteral("Ошибка репроекции (RMS): 1,08 пикс")));
+        QVERIFY(all.contains(QStringLiteral("Средний GSD: 1,64 см/пикс")));
+        QVERIFY(QString(all).remove(QChar(0x00A0)).remove(QChar(0x202F)).contains(QStringLiteral("Площадь съёмки: 7055 м²")));
+        QVERIFY(all.contains(QStringLiteral("Расхождение с GPS, RMSE X / Y / Z: 0,164 / 0,600 / 0,164 м")));
+        QVERIFY(!all.contains(QStringLiteral("опорным")));   // no GCPs
+        QVERIFY(QString(all).remove(QChar(0x00A0)).remove(QChar(0x202F)).contains(QStringLiteral("Точек в облаке (разреженном): 3237")));
+        const QString warnings = r.value("warnings").toStringList().join('\n');
+        QVERIFY(warnings.contains(QStringLiteral("Не выровнено снимков: 2")));
+        QVERIFY(warnings.contains(QStringLiteral("2 несвязанных частей")));
+        QCOMPARE(r.value("steps").toList().size(), 2);
+        QVERIFY(OdmEngine::parseQualityStats("not json").isEmpty());
+    }
+
+    // ------------------------------------------------------- native runtime
+
+    void nativeRuntimeIsPreparedLikeOdmScripts()
+    {
+        QTemporaryDir tmp;
+        const QString root = tmp.filePath(QStringLiteral("odm"));
+        const QProcessEnvironment base = [] {
+            QProcessEnvironment e;
+            e.insert(QStringLiteral("SystemRoot"), QStringLiteral("C:\\Windows"));
+            e.insert(QStringLiteral("PYTHONHOME"), QStringLiteral("C:\\Python"));
+            e.insert(QStringLiteral("PATH"), QStringLiteral("C:\\Other"));
+            return e;
+        }();
+        const QProcessEnvironment env = OdmEngine::nativeEnvironment(root, tmp.filePath(QStringLiteral("cache")), base);
+        const QString r = QDir::toNativeSeparators(root);
+        QVERIFY(env.value(QStringLiteral("PATH")).startsWith(r + QStringLiteral("\\venv\\Scripts;") + r + QStringLiteral("\\SuperBuild\\install\\bin;")));
+        QVERIFY(!env.value(QStringLiteral("PATH")).contains(QStringLiteral("C:\\Other")));
+        QCOMPARE(env.value(QStringLiteral("GDAL_DATA")), r + QStringLiteral("\\SuperBuild\\install\\bin\\data\\gdal"));
+        QCOMPARE(env.value(QStringLiteral("PROJ_LIB")), r + QStringLiteral("\\SuperBuild\\install\\bin\\data\\proj"));
+        QCOMPARE(env.value(QStringLiteral("VIRTUAL_ENV")), r + QStringLiteral("\\venv"));
+        QVERIFY(!env.contains(QStringLiteral("PYTHONHOME")));
+        QCOMPARE(env.value(QStringLiteral("PYTHONUNBUFFERED")), QStringLiteral("1"));
+
+        ProcessingJob job;
+        job.id = QStringLiteral("20261014-150000");
+        job.arguments = {QStringLiteral("--fast-orthophoto")};
+        QCOMPARE(OdmEngine::nativeArguments(job, root, QStringLiteral("C:/work")),
+                 (QStringList{QStringLiteral("-X"), QStringLiteral("utf8"), QDir::toNativeSeparators(root + QStringLiteral("/run.py")),
+                              QStringLiteral("--project-path"), QStringLiteral("C:\\work").replace('\\', QDir::separator()),
+                              QStringLiteral("20261014-150000"), QStringLiteral("--fast-orthophoto")}));
+
+        // A moved installation: pyvenv.cfg and OpenCV's loader point at the new folder afterwards.
+        QVERIFY(writeFile(root + QStringLiteral("/venv/pyvenv.cfg"), "home = D:\\old\\venv\\Scripts\ninclude-system-site-packages = false\n"));
+        QVERIFY(writeFile(root + QStringLiteral("/venv/Lib/site-packages/cv2/config-3.12.py"), "old"));
+        QString error;
+        QVERIFY2(OdmEngine::patchNativeVirtualEnv(root, &error), qPrintable(error));
+        const QString cfg = QString::fromUtf8(readFile(root + QStringLiteral("/venv/pyvenv.cfg")));
+        QVERIFY(cfg.startsWith(QStringLiteral("home = ") + r + QStringLiteral("\\venv\\Scripts")));
+        QVERIFY(QString::fromUtf8(readFile(root + QStringLiteral("/venv/Lib/site-packages/cv2/config.py"))).contains(r + QStringLiteral("\\SuperBuild\\install\\bin")));
+        QVERIFY(QString::fromUtf8(readFile(root + QStringLiteral("/venv/Lib/site-packages/cv2/config-3.12.py"))).contains(QStringLiteral("python-3.12")));
+        QVERIFY(OdmEngine::patchNativeVirtualEnv(root, &error));   // already current: nothing to do
+
+#ifdef Q_OS_WIN
+        QVERIFY(OdmEngine::nativeProblem(root).contains(QStringLiteral("run.py")));
+        for (const char *f : {"run.py", "VERSION", "venv/Scripts/python.exe"}) QVERIFY(writeFile(root + QLatin1Char('/') + QLatin1String(f), "3.5.1"));
+        for (const char *d : {"SuperBuild/install/bin", "opendm", "stages"}) QVERIFY(QDir().mkpath(root + QLatin1Char('/') + QLatin1String(d)));
+        QVERIFY(OdmEngine::nativeProblem(root).contains(QStringLiteral("3.5.1")));
+        QVERIFY(writeFile(root + QStringLiteral("/VERSION"), "3.6.2\n"));
+        QCOMPARE(OdmEngine::nativeProblem(root), QString());
+        qputenv("GEOMAP_ODM_HOME", root.toLocal8Bit());
+        QCOMPARE(OdmEngine::nativeCandidates().constFirst(), QDir::cleanPath(root));
+        qunsetenv("GEOMAP_ODM_HOME");
+#else
+        QVERIFY(!OdmEngine::nativeProblem(root).isEmpty());   // Windows only
+#endif
+    }
+
+    void directoryLinksGiveToolsAnAsciiPath()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(Platform::isToolSafePath(QStringLiteral("C:\\Users\\JOHNSM~1\\AppData\\Local\\GeoMapAI")));
+        QVERIFY(!Platform::isToolSafePath(QStringLiteral("C:\\Users\\Андрей\\GeoMapAI")));
+        QVERIFY(!Platform::isToolSafePath(QStringLiteral("C:\\Program Files\\GeoMapAI")));
+        QVERIFY(!Platform::isToolSafePath(QString()));
+
+        const QString target = tmp.filePath(QStringLiteral("Проект с пробелом/jobs/1"));
+        QVERIFY(writeFile(target + QStringLiteral("/images/a.jpg"), "photo"));
+        const QString link = tmp.filePath(QStringLiteral("work/1"));
+        QString error;
+        QVERIFY2(Platform::createDirectoryLink(link, target, &error), qPrintable(error));
+        QVERIFY(Platform::createDirectoryLink(link, target, &error));   // kept
+        QCOMPARE(QDir::cleanPath(Platform::directoryLinkTarget(link)).toLower(), QDir::cleanPath(QFileInfo(target).absoluteFilePath()).toLower());
+        QCOMPARE(readFile(link + QStringLiteral("/images/a.jpg")), QByteArray("photo"));
+        // Tools create, rename and replace files through the link.
+        QVERIFY(writeFile(link + QStringLiteral("/out.tmp"), "result"));
+        QVERIFY(QFile::rename(link + QStringLiteral("/out.tmp"), link + QStringLiteral("/out.tif")));
+        QCOMPARE(readFile(target + QStringLiteral("/out.tif")), QByteArray("result"));
+
+        QVERIFY(!Platform::removeDirectoryLink(target));   // not a link: refused
+        QVERIFY(Platform::removeDirectoryLink(link));
+        QVERIFY(!QFileInfo::exists(link));
+        QCOMPARE(readFile(target + QStringLiteral("/images/a.jpg")), QByteArray("photo"));   // contents untouched
+        QVERIFY(!Platform::createDirectoryLink(link, tmp.filePath(QStringLiteral("missing")), &error));
+
+        // An ODM folder under a non-Latin path is used through an ASCII link in the data folder.
+        Platform::setDataDirectory(tmp.filePath(QStringLiteral("data")));
+        const QString odm = tmp.filePath(QStringLiteral("Загрузки/GeoMapAI/engines/odm"));
+        QVERIFY(QDir().mkpath(odm));
+        const QString effective = OdmEngine::effectiveNativeRoot(odm, &error);
+        QVERIFY2(effective.endsWith(QStringLiteral("engines/odm-link")), qPrintable(effective + error));
+        QVERIFY(Platform::isToolSafePath(QDir::toNativeSeparators(effective)) || !Platform::isToolSafePath(tmp.path()));
+        QCOMPARE(QDir::cleanPath(Platform::directoryLinkTarget(effective)).toLower(), QDir::cleanPath(odm).toLower());
+        const QString ascii = tmp.filePath(QStringLiteral("ascii/odm"));
+        QVERIFY(QDir().mkpath(ascii));
+        if (Platform::isToolSafePath(QDir::toNativeSeparators(ascii))) QCOMPARE(OdmEngine::effectiveNativeRoot(ascii, &error), ascii);
+        QVERIFY(Platform::removeDirectoryLink(effective));
+        Platform::setDataDirectory({});
+    }
+
+    void processTreeEndsGrandchildren()
+    {
+        QProcess process;
+        ProcessTree::prepare(process);
+#ifdef Q_OS_WIN
+        // cmd.exe starts ping.exe: a grandchild of this test.
+        process.start(QStringLiteral("cmd.exe"), {QStringLiteral("/c"), QStringLiteral("ping -n 60 127.0.0.1 >nul")});
+#else
+        process.start(QStringLiteral("/bin/sh"), {QStringLiteral("-c"), QStringLiteral("sleep 60 & wait")});
+#endif
+        QVERIFY(process.waitForStarted(10000));
+        ProcessTree tree;
+        QVERIFY(tree.attach(process));
+#ifdef Q_OS_WIN
+        QTRY_VERIFY_WITH_TIMEOUT(tree.activeProcesses() >= 2, 10000);
+#endif
+        QElapsedTimer timer;
+        timer.start();
+        tree.terminate();
+        QVERIFY(process.waitForFinished(10000));
+        QVERIFY(timer.elapsed() < 5000);
+#ifdef Q_OS_WIN
+        QTRY_COMPARE_WITH_TIMEOUT(tree.activeProcesses(), 0, 5000);
+#endif
+    }
+
+    void downloaderAcceptsOnlyTheExpectedFile()
+    {
+        QTemporaryDir tmp;
+        const QByteArray payload = QByteArray(300000, 'x') + "end";
+        const QString source = tmp.filePath(QStringLiteral("source.bin"));
+        QVERIFY(writeFile(source, payload));
+        const QByteArray sha = QCryptographicHash::hash(payload, QCryptographicHash::Sha256).toHex();
+        const QString target = tmp.filePath(QStringLiteral("загрузки/file.bin"));
+
+        Downloader bad;
+        QSignalSpy badDone(&bad, &Downloader::finished);
+        bad.start(QUrl::fromLocalFile(source), target, QByteArray(64, '0'));
+        QVERIFY(badDone.count() == 1 || badDone.wait(10000));
+        QCOMPARE(badDone.at(0).at(0).toBool(), false);
+        QVERIFY(badDone.at(0).at(1).toString().contains(QStringLiteral("Контрольная сумма")));
+        QVERIFY(!QFileInfo::exists(target));
+        QVERIFY(!QFileInfo::exists(target + QStringLiteral(".part")));
+
+        Downloader good;
+        QSignalSpy goodDone(&good, &Downloader::finished);
+        good.start(QUrl::fromLocalFile(source), target, sha);
+        QVERIFY(goodDone.count() == 1 || goodDone.wait(10000));
+        QCOMPARE(goodDone.at(0).at(0).toBool(), true);
+        QCOMPARE(readFile(target), payload);
+        QCOMPARE(Downloader::fileSha256(target), sha);
+
+        // An existing file with the right hash is reused without downloading.
+        Downloader again;
+        QSignalSpy againDone(&again, &Downloader::finished);
+        again.start(QUrl::fromLocalFile(tmp.filePath(QStringLiteral("gone.bin"))), target, sha);
+        QCOMPARE(againDone.count(), 1);
+        QCOMPARE(againDone.at(0).at(0).toBool(), true);
+
+        Downloader missing;
+        QSignalSpy missingDone(&missing, &Downloader::finished);
+        missing.start(QUrl::fromLocalFile(tmp.filePath(QStringLiteral("gone.bin"))), tmp.filePath(QStringLiteral("x.bin")), sha);
+        QVERIFY(missingDone.count() == 1 || missingDone.wait(10000));
+        QCOMPARE(missingDone.at(0).at(0).toBool(), false);
+        QVERIFY(!QFileInfo::exists(tmp.filePath(QStringLiteral("x.bin.part"))));
     }
 
     void odmCollectsAndDescribesOutputs()
