@@ -33,8 +33,7 @@ public:
         return {};
     }
 
-    // Runtimes the engine can use ("native", "docker"); empty selects automatically.
-    virtual void setPreferredBackend(const QString &backend) { Q_UNUSED(backend) }
+
 
     // Asynchronous: emits environmentChecked(). Must not block the caller.
     virtual void validateEnvironment() = 0;

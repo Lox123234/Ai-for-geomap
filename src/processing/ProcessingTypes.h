@@ -31,7 +31,7 @@ enum class JobOutcome { Succeeded, Failed, Cancelled };
 struct EngineCapabilities
 {
     QString id;                 // "odm"
-    QString displayName;        // "OpenDroneMap (Docker)"
+    QString displayName;        // "OpenDroneMap"
     QString version;            // engine version the adapter targets
     bool supportsCancel = true;
     bool supportsPause = false; // pause/resume only if the engine really supports it
@@ -44,8 +44,8 @@ struct EnvironmentReport
 {
     bool checked = false;
     bool available = false;     // everything needed to start a job is present
-    bool engineMissing = false; // nothing to run the engine with (no runtime, no Docker)
-    bool imageMissing = false;  // the engine itself is not installed / downloaded yet
+    bool engineMissing = false; // nothing to run the engine with
+    bool imageMissing = false;  // the engine is missing from the program (can be restored)
     QString engineVersion;
     QString summary;            // one line for the UI
     QStringList problems;       // blocking
@@ -53,8 +53,7 @@ struct EnvironmentReport
     QStringList hints;          // what the user can do
     int cpus = 0;
     qint64 memoryBytes = 0;
-    QString backend;            // runtime used for jobs: "native", "docker"; empty if none
-    QStringList backends;       // runtimes that are ready, for a user choice
+    QString backend;            // "native" when the built-in engine is ready; empty if none
     QString gpuName;            // usable GPU reported by the driver, empty if none
     bool canInstall = false;    // installRuntime() can fix what is missing
     QString installTitle;       // button text
@@ -112,7 +111,7 @@ struct ProcessingJob
     QString id;
     QString engine;
     QString engineVersion;
-    QString backend;            // runtime that runs the job: "native" or "docker"
+    QString backend;            // runtime of the job: "native" ("docker" only in jobs of 0.2.0)
     QString profile;
     QStringList arguments;      // final engine arguments
     QStringList notes;          // automatic adjustments of the request, shown and logged

@@ -16,6 +16,8 @@ class ProjectManager;
 class ProjectTreeModel : public QStandardItemModel
 {
     Q_OBJECT
+    // Grows on every rebuild/refresh: QML bindings over result() depend on it.
+    Q_PROPERTY(int revision READ revision NOTIFY revisionChanged)
 public:
     enum Roles {
         TitleRole = Qt::UserRole + 1,
@@ -36,6 +38,10 @@ public:
     QStandardItem *section(const QString &kind) const;
     // Newest result of a kind (orthophoto, dsm, dtm, pointcloud, mesh, report): {path, jobId, file}, or {}.
     Q_INVOKABLE QVariantMap result(const QString &kind) const;
+    int revision() const { return m_revision; }
+
+signals:
+    void revisionChanged();
 
 private:
     QStandardItem *addSection(QStandardItem *parent, const QString &kind, const QString &title, const QString &icon);
@@ -46,6 +52,7 @@ private:
     ProcessingService *m_processing;
     MapService *m_map;
     QTimer m_refreshTimer;
+    int m_revision = 0;
 };
 
 // Search field of the tree: keeps the rows whose title contains the text, with their parents.

@@ -245,10 +245,10 @@ private slots:
         QVERIFY(r.value("errors").toStringList().join(' ').contains(QStringLiteral("не меньше 2")));
 
         f.engine->env.available = false;
-        f.engine->env.problems = {QStringLiteral("Docker не найден")};
+        f.engine->env.problems = {QStringLiteral("Встроенный OpenDroneMap не найден")};
         QVERIFY(f.checkEnvironment());
         QVERIFY(!f.service->engineAvailable());
-        QVERIFY(f.service->preflight(QStringLiteral("fast")).value("errors").toStringList().contains(QStringLiteral("Docker не найден")));
+        QVERIFY(f.service->preflight(QStringLiteral("fast")).value("errors").toStringList().contains(QStringLiteral("Встроенный OpenDroneMap не найден")));
     }
 
     void warnsAboutMissingGps()
@@ -583,31 +583,31 @@ private slots:
 
     // ------------------------------------------------------------- OdmEngine
 
-    void odmRunArgumentsNeedNoShell()
+    // The engine is built into GeoMap AI: no Docker anywhere, old Docker jobs are refused clearly.
+    void odmIsBuiltInWithoutDocker()
     {
-        ProcessingJob job;
-        job.id = QStringLiteral("20261014-120000");
-        job.arguments = {QStringLiteral("--fast-orthophoto")};
-        const QString image = OdmEngine::imageReference();
-        QVERIFY(image.startsWith(QStringLiteral("opendronemap/odm@sha256:94a0dd27")));
-#ifdef Q_OS_WIN
-        const QString dir = QStringLiteral("C:/Users/Тест Пользователь/Проект, 1/jobs/20261014-120000");
-        const QStringList win = OdmEngine::runArguments(job, dir, true);
-        QCOMPARE(win, (QStringList{
-            QStringLiteral("run"), QStringLiteral("--rm"), QStringLiteral("--name"), QStringLiteral("geomap-odm-20261014-120000"),
-            QStringLiteral("-v"), QStringLiteral("C:\\Users\\Тест Пользователь\\Проект, 1\\jobs\\20261014-120000:/datasets/code"),
-            QStringLiteral("-v"), QStringLiteral("C:\\Users\\Тест Пользователь\\Проект, 1\\jobs\\20261014-120000\\images:/datasets/code/images:ro"),
-            image, QStringLiteral("--project-path"), QStringLiteral("/datasets"), QStringLiteral("code"),
-            QStringLiteral("--fast-orthophoto")}));
-#endif
-        const QString linuxDir = QDir(QStringLiteral("/data/Проект, \"1\"/jobs/20261014-120000")).absolutePath();
-        const QStringList lin = OdmEngine::runArguments(job, linuxDir, false);
-        const QString quoted = QStringLiteral("\"source=") + QString(linuxDir).replace(QStringLiteral("\""), QStringLiteral("\"\""));
-        QCOMPARE(lin.at(4), QStringLiteral("--mount"));
-        QCOMPARE(lin.at(5), QStringLiteral("type=bind,") + quoted + QStringLiteral("\",target=/datasets/code"));
-        QCOMPARE(lin.at(7), QStringLiteral("type=bind,") + quoted + QStringLiteral("/images\",target=/datasets/code/images,readonly"));
-    }
+        QTemporaryDir tmp;
+        OdmEngine engine;
+        engine.setNativeRoot(tmp.filePath(QStringLiteral("нет-odm")));
+        QSignalSpy checked(&engine, &IProcessingEngine::environmentChecked);
+        engine.validateEnvironment();
+        QTRY_COMPARE(checked.count(), 1);
+        const EnvironmentReport r = checked.first().first().value<EnvironmentReport>();
+        QVERIFY(r.checked);
+        QVERIFY(!r.available);
+        QVERIFY(r.backend.isEmpty());
+        QVERIFY(r.summary.contains(QStringLiteral("Встроенный OpenDroneMap не найден")));
+        const QString all = (r.problems + r.hints + r.warnings + QStringList{r.summary, r.installTitle, r.installPrompt}).join(QLatin1Char('\n'));
+        QVERIFY2(!all.contains(QStringLiteral("docker"), Qt::CaseInsensitive), qPrintable(all));
 
+        ProcessingJob old;
+        old.id = QStringLiteral("20261001-100000");
+        old.backend = QStringLiteral("docker");   // written by 0.2.0
+        QString error;
+        QVERIFY(!engine.start(old, tmp.path(), &error));
+        QVERIFY2(error.contains(QStringLiteral("0.2.0")), qPrintable(error));
+        QVERIFY(!engine.isRunning(old.id));
+    }
     void odmParsesStagesAndValidatesOptions()
     {
         QCOMPARE(OdmEngine::parseStage(QStringLiteral("[INFO]    Running opensfm stage")), QStringLiteral("opensfm"));

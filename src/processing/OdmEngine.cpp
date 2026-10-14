@@ -26,7 +26,6 @@ constexpr int RecentLines = 200;
 constexpr qint64 GiB = 1024LL * 1024 * 1024;
 constexpr qint64 MiB = 1024LL * 1024;
 const QString Native = QStringLiteral("native");
-const QString Docker = QStringLiteral("docker");
 
 const QLocale &ru()
 {
@@ -35,23 +34,6 @@ const QLocale &ru()
 }
 QString gigabytes(qint64 bytes) { return ru().toString(double(bytes) / GiB, 'f', 1); }
 QString megabytes(qint64 bytes) { return ru().toString(double(bytes) / MiB, 'f', 1); }
-
-QStringList bindMount(const QString &source, const QString &target, bool readOnly, bool windowsHost)
-{
-    if (windowsHost) {
-        // Docker on Windows parses the drive letter of "C:\dir:/target[:ro]" itself;
-        // Windows paths cannot contain other colons.
-        return {QStringLiteral("-v"), source + QLatin1Char(':') + target + (readOnly ? QStringLiteral(":ro") : QString())};
-    }
-    // --mount is CSV: quote the source field when it contains a comma or a quote.
-    QString src = QStringLiteral("source=") + source;
-    if (src.contains(QLatin1Char(',')) || src.contains(QLatin1Char('"')))
-        src = QLatin1Char('"') + src.replace(QLatin1String("\""), QLatin1String("\"\"")) + QLatin1Char('"');
-    QString spec = QStringLiteral("type=bind,") + src + QStringLiteral(",target=") + target;
-    if (readOnly) spec += QStringLiteral(",readonly");
-    return {QStringLiteral("--mount"), spec};
-}
-
 // "LAS/LAZ, N точек" from the public header block, or empty if the magic is wrong.
 QString describeLas(const QString &path)
 {
@@ -222,41 +204,13 @@ QStringList removeOption(QStringList args, const QString &flag, bool valued)
 }
 } // namespace
 
-OdmEngine::OdmEngine(QObject *parent) : IProcessingEngine(parent), m_docker(findDocker())
-{
-    m_preferred = qEnvironmentVariable("GEOMAP_ODM_BACKEND");
-}
+OdmEngine::OdmEngine(QObject *parent) : IProcessingEngine(parent) {}
 
 OdmEngine::~OdmEngine()
 {
     abort(m_runningJob);
     if (m_download) m_download->cancel();
 }
-
-QString OdmEngine::findDocker()
-{
-    // Explicit client, e.g. a Docker install outside PATH (docs/PROCESSING_ODM.md).
-    const QString custom = qEnvironmentVariable("GEOMAP_DOCKER");
-    if (!custom.isEmpty()) return custom;
-    QString docker = QStandardPaths::findExecutable(QStringLiteral("docker"));
-#ifdef Q_OS_WIN
-    if (docker.isEmpty()) {
-        // Docker Desktop per-user and per-machine installs; PATH may be stale in a running session.
-        const QStringList candidates = {
-            QDir(qEnvironmentVariable("LOCALAPPDATA")).filePath(QStringLiteral("Programs/DockerDesktop/resources/bin/docker.exe")),
-            QDir(qEnvironmentVariable("ProgramFiles")).filePath(QStringLiteral("Docker/Docker/resources/bin/docker.exe")),
-        };
-        for (const QString &c : candidates) if (QFileInfo(c).isFile()) return c;
-    }
-#endif
-    return docker;
-}
-
-QString OdmEngine::imageReference()
-{
-    return QStringLiteral("opendronemap/odm@") + QLatin1String(ImageDigest);
-}
-
 EngineCapabilities OdmEngine::capabilities() const
 {
     EngineCapabilities c;
@@ -367,28 +321,6 @@ QVariantList OdmEngine::optionDefinitions(const EnvironmentReport &env) const
     return list;
 }
 
-QString OdmEngine::containerName(const QString &jobId)
-{
-    return QStringLiteral("geomap-odm-") + jobId;
-}
-
-QStringList OdmEngine::runArguments(const ProcessingJob &job, const QString &jobDirectory, bool windowsHost)
-{
-    QString root = QDir(jobDirectory).absolutePath();
-    QString images = root + QStringLiteral("/images");
-    if (windowsHost) {
-        root = QDir::toNativeSeparators(root);
-        images = QDir::toNativeSeparators(images);
-    }
-    QStringList args{QStringLiteral("run"), QStringLiteral("--rm"), QStringLiteral("--name"), containerName(job.id)};
-    args += bindMount(root, QStringLiteral("/datasets/code"), false, windowsHost);
-    // Input photos read-only: they are hard links to the project copies.
-    args += bindMount(images, QStringLiteral("/datasets/code/images"), true, windowsHost);
-    args << imageReference() << QStringLiteral("--project-path") << QStringLiteral("/datasets") << QStringLiteral("code");
-    args += job.arguments;
-    return args;
-}
-
 QString OdmEngine::stripAnsi(const QString &line)
 {
     static const QRegularExpression ansi(QStringLiteral("\x1B\\[[0-9;]*[A-Za-z]"));
@@ -487,9 +419,7 @@ bool OdmEngine::createJob(ProcessingJob &job, const JobRequest &request, const E
     }
     const int sift = args.lastIndexOf(QStringLiteral("--feature-type"));
     if (sift >= 0 && sift + 1 < args.size() && args[sift + 1] == QLatin1String("sift")) {
-        if (env.backend == Docker)
-            notes << QStringLiteral("В режиме Docker SIFT считается на процессоре: образ ODM без поддержки GPU.");
-        else if (env.gpuName.isEmpty())
+        if (env.gpuName.isEmpty())
             notes << QStringLiteral("Видеокарта NVIDIA не найдена: SIFT будет считаться на процессоре.");
         else if (!args.contains(QStringLiteral("--no-gpu")))
             notes << QStringLiteral("Признаки SIFT ищутся на видеокарте %1.").arg(env.gpuName);
@@ -554,8 +484,8 @@ QStringList OdmEngine::nativeCandidates()
     QStringList roots;
     const QString home = qEnvironmentVariable("GEOMAP_ODM_HOME");
     if (!home.isEmpty()) roots << home;
+    roots << QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("engines/odm"));   // part of GeoMap AI
 #ifdef Q_OS_WIN
-    roots << QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("engines/odm"));   // bundled
     roots << managedNativeRoot();
     roots << QDir(Platform::dataDirectory()).filePath(QStringLiteral("engines/odm-") + QLatin1String(Version));
     roots << registeredNativeInstall();
@@ -574,15 +504,17 @@ QStringList OdmEngine::nativeCandidates()
 
 QString OdmEngine::nativeProblem(const QString &root)
 {
-#ifndef Q_OS_WIN
-    Q_UNUSED(root)
-    return QStringLiteral("Встроенный OpenDroneMap поставляется только для Windows; здесь используйте Docker.");
-#else
     const QDir dir(root);
     if (!dir.exists()) return QStringLiteral("папка не найдена");
+#ifdef Q_OS_WIN
     const QStringList required = {QStringLiteral("run.py"), QStringLiteral("VERSION"), QStringLiteral("venv/pyvenv.cfg"),
                                   QStringLiteral("venv/Scripts/python.exe"), QStringLiteral("SuperBuild/install/bin"),
                                   QStringLiteral("opendm"), QStringLiteral("stages")};
+#else
+    // A native Linux build of ODM (configure.sh install): run.sh sets up its environment.
+    const QStringList required = {QStringLiteral("run.sh"), QStringLiteral("run.py"), QStringLiteral("VERSION"),
+                                  QStringLiteral("SuperBuild/install"), QStringLiteral("opendm"), QStringLiteral("stages")};
+#endif
     for (const QString &r : required)
         if (!QFileInfo::exists(dir.filePath(r))) return QStringLiteral("нет %1").arg(QDir::toNativeSeparators(r));
     QFile versionFile(dir.filePath(QStringLiteral("VERSION")));
@@ -590,12 +522,29 @@ QString OdmEngine::nativeProblem(const QString &root)
     if (!version.startsWith(QLatin1String("3.6.")))
         return QStringLiteral("версия %1, нужна 3.6.x").arg(version.isEmpty() ? QStringLiteral("неизвестна") : version);
     return {};
+}
+
+QString OdmEngine::nativeProgram(const QString &root)
+{
+#ifdef Q_OS_WIN
+    return nativePython(root);
+#else
+    return QDir(root).filePath(QStringLiteral("run.sh"));
 #endif
 }
 
 QProcessEnvironment OdmEngine::nativeEnvironment(const QString &root, const QString &cacheDirectory,
                                                  const QProcessEnvironment &base)
 {
+#ifndef Q_OS_WIN
+    // run.sh of a native Linux build sets ODM's own paths.
+    Q_UNUSED(root)
+    QProcessEnvironment env = base;
+    env.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
+    env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
+    if (!cacheDirectory.isEmpty()) env.insert(QStringLiteral("PYTHONPYCACHEPREFIX"), cacheDirectory);
+    return env;
+#endif
     // Same variables as ODM's win32env.bat, without running a batch file.
     const QString r = QDir::toNativeSeparators(QDir::cleanPath(root));
     const QString bin = r + QStringLiteral("\\SuperBuild\\install\\bin");
@@ -622,13 +571,23 @@ QProcessEnvironment OdmEngine::nativeEnvironment(const QString &root, const QStr
 
 QStringList OdmEngine::nativeArguments(const ProcessingJob &job, const QString &root, const QString &projectPath)
 {
+#ifdef Q_OS_WIN
     return QStringList{QStringLiteral("-X"), QStringLiteral("utf8"), QDir::toNativeSeparators(QDir(root).filePath(QStringLiteral("run.py"))),
                        QStringLiteral("--project-path"), QDir::toNativeSeparators(projectPath), job.id}
            + job.arguments;
+#else
+    Q_UNUSED(root)
+    return QStringList{QStringLiteral("--project-path"), projectPath, job.id} + job.arguments;   // after run.sh
+#endif
 }
 
 bool OdmEngine::patchNativeVirtualEnv(const QString &root, QString *error)
 {
+#ifndef Q_OS_WIN
+    Q_UNUSED(root)
+    Q_UNUSED(error)
+    return true;   // the Windows build only: venv\pyvenv.cfg holds an absolute path
+#endif
     const QString r = QDir::toNativeSeparators(QDir::cleanPath(root));
     const QString scripts = r + QStringLiteral("\\venv\\Scripts");
     const QString cfgPath = QDir(root).filePath(QStringLiteral("venv/pyvenv.cfg"));
@@ -717,80 +676,54 @@ void OdmEngine::runTool(const QString &program, const QStringList &arguments, in
     timer->start(timeoutMs);
 }
 
-void OdmEngine::runDocker(const QStringList &arguments, int timeoutMs, DoneCallback done)
-{
-    runTool(m_docker, arguments, timeoutMs, std::move(done));
-}
-
 void OdmEngine::validateEnvironment()
 {
     EnvironmentReport report;
     report.checked = true;
     report.engineVersion = QLatin1String(Version);
-    if (m_docker.isEmpty()) m_docker = findDocker();
-    const bool dockerInstalled = !m_docker.isEmpty() && QFileInfo(m_docker).isFile();
-
-    if (m_preferred != Docker) {
-        QString root;
-        QStringList problems;
-        const QStringList candidates = m_nativeRoot.isEmpty() ? nativeCandidates() : QStringList{m_nativeRoot};
-        for (const QString &c : candidates) {
-            const QString problem = nativeProblem(c);
-            if (problem.isEmpty()) {
-                root = c;
-                break;
-            }
-            if (QFileInfo::exists(c)) problems << QStringLiteral("%1: %2").arg(QDir::toNativeSeparators(c), problem);
+    QString root;
+    QStringList problems;
+    const QStringList candidates = m_nativeRoot.isEmpty() ? nativeCandidates() : QStringList{m_nativeRoot};
+    for (const QString &c : candidates) {
+        const QString problem = nativeProblem(c);
+        if (problem.isEmpty()) {
+            root = c;
+            break;
         }
-        if (!root.isEmpty()) {
-            checkNative(report, root);
-            return;
-        }
-        report.warnings << problems;
-#ifdef Q_OS_WIN
-        if (m_preferred == Native || !dockerInstalled) {
-            report.imageMissing = true;
-            report.summary = QStringLiteral("OpenDroneMap не установлен");
-            report.problems << QStringLiteral("OpenDroneMap не установлен. Он нужен только для фотограмметрической обработки; "
-                                              "проекты, импорт и просмотр работают без него.");
-            QString otherVersion;
-            const QString other = registeredNativeInstall(&otherVersion);
-            if (!other.isEmpty()) {
-                report.problems << QStringLiteral("Найдена отдельная установка ODM %1 в %2, но она не подходит. Установщик ODM при "
-                                                  "установке удаляет другие версии, поэтому GeoMap AI её не трогает: обновите её до "
-                                                  "3.6.2 или удалите сами (Параметры Windows → Приложения), затем «Проверить снова».")
-                                       .arg(otherVersion, QDir::toNativeSeparators(other));
-            } else {
-                report.canInstall = true;
-            }
-            report.installTitle = QStringLiteral("Установить OpenDroneMap");
-            report.installPrompt = nativeInstallPrompt();
-            report.hints << QStringLiteral("Нажмите «Установить OpenDroneMap».");
-            if (dockerInstalled) report.hints << QStringLiteral("Либо выберите режим Docker, если Docker Desktop уже настроен.");
-            report.backends = dockerInstalled ? QStringList{Docker} : QStringList{};
-            report.cpus = Platform::cpuCount();
-            report.memoryBytes = Platform::totalMemoryBytes();
-            finishEnvironment(report, Native);
-            return;
-        }
-#endif
+        if (QFileInfo::exists(c)) problems << QStringLiteral("%1: %2").arg(QDir::toNativeSeparators(c), problem);
     }
-    if (!dockerInstalled) {
-        report.engineMissing = true;
-        report.summary = QStringLiteral("Docker не найден");
-        report.problems << QStringLiteral("Docker не найден. Он нужен только для фотограмметрической обработки; "
-                                          "проекты, импорт и просмотр работают без него.");
-#ifdef Q_OS_WIN
-        report.hints << QStringLiteral("Выберите встроенный OpenDroneMap — Docker для него не нужен.");
-#else
-        report.hints << QStringLiteral("Установите Docker Engine (https://docs.docker.com/engine/install/) и нажмите «Проверить снова».");
-#endif
-        finishEnvironment(report);
+    if (!root.isEmpty()) {
+        checkNative(report, root);
         return;
     }
-    checkDocker(report, m_preferred != Docker);
+    report.warnings << problems;
+    report.imageMissing = true;
+    report.cpus = Platform::cpuCount();
+    report.memoryBytes = Platform::totalMemoryBytes();
+    report.summary = QStringLiteral("Встроенный OpenDroneMap не найден");
+#ifdef Q_OS_WIN
+    report.problems << QStringLiteral("Встроенный OpenDroneMap не найден: в папке программы нет engines\\odm. Он входит в поставку "
+                                      "GeoMap AI; проекты, импорт, карта и просмотр работают и без него.");
+    QString otherVersion;
+    const QString other = registeredNativeInstall(&otherVersion);
+    if (!other.isEmpty()) {
+        report.problems << QStringLiteral("Найдена отдельная установка ODM %1 в %2, но она не подходит. Установщик ODM при "
+                                          "установке удаляет другие версии, поэтому GeoMap AI её не трогает: обновите её до "
+                                          "3.6.2 или удалите сами (Параметры Windows → Приложения), затем «Проверить снова».")
+                               .arg(otherVersion, QDir::toNativeSeparators(other));
+    } else {
+        report.canInstall = true;
+        report.installTitle = QStringLiteral("Восстановить OpenDroneMap");
+        report.installPrompt = nativeInstallPrompt();
+        report.hints << QStringLiteral("Переустановите GeoMap AI из полной поставки или нажмите «Восстановить OpenDroneMap».");
+    }
+#else
+    report.problems << QStringLiteral("OpenDroneMap для Linux не найден. Официальной сборки для Linux нет: соберите ODM 3.6 "
+                                      "(configure.sh install) и укажите его папку в переменной GEOMAP_ODM_HOME. "
+                                      "Проекты, импорт, карта и просмотр работают и без него.");
+#endif
+    finishEnvironment(report);
 }
-
 void OdmEngine::checkNative(EnvironmentReport report, const QString &installation)
 {
     QString error;
@@ -803,12 +736,18 @@ void OdmEngine::checkNative(EnvironmentReport report, const QString &installatio
     }
     const QString cache = QDir(Platform::dataDirectory()).filePath(QStringLiteral("cache/odm-pycache"));
     const QProcessEnvironment env = nativeEnvironment(root, cache, QProcessEnvironment::systemEnvironment());
+#ifdef Q_OS_WIN
     // Importing OpenCV and GDAL through the bundled Python proves the runtime, its DLL paths and
     // the venv configuration in under a second; ODM's own self-check (run.py --version) takes
     // ~15 s and runs after installation instead.
-    runTool(nativePython(root), {QStringLiteral("-X"), QStringLiteral("utf8"), QStringLiteral("-c"),
-                                 QStringLiteral("import sys, numpy, cv2; from osgeo import gdal; print(sys.prefix)")},
-            60000, [this, report, root](int code, const QByteArray &out) mutable {
+    const QString checkProgram = nativePython(root);
+    const QStringList checkArguments{QStringLiteral("-X"), QStringLiteral("utf8"), QStringLiteral("-c"),
+                                     QStringLiteral("import sys, numpy, cv2; from osgeo import gdal; print(sys.prefix)")};
+#else
+    const QString checkProgram = nativeProgram(root);
+    const QStringList checkArguments{QStringLiteral("--version")};
+#endif
+    runTool(checkProgram, checkArguments, 120000, [this, report, root](int code, const QByteArray &out) mutable {
         if (code != 0) {
             report.problems << QStringLiteral("OpenDroneMap найден в %1, но не запускается (код %2): %3")
                                    .arg(QDir::toNativeSeparators(root)).arg(code)
@@ -821,8 +760,6 @@ void OdmEngine::checkNative(EnvironmentReport report, const QString &installatio
         auto finish = [this, report, root](const QString &gpu) mutable {
             m_nativeRoot = root;
             report.backend = Native;
-            report.backends = {Native};
-            if (!m_docker.isEmpty() && QFileInfo(m_docker).isFile()) report.backends << Docker;
             report.gpuName = gpu;
             report.cpus = Platform::cpuCount();
             report.memoryBytes = Platform::totalMemoryBytes();
@@ -849,97 +786,21 @@ void OdmEngine::checkNative(EnvironmentReport report, const QString &installatio
     }, env);
 }
 
-void OdmEngine::checkDocker(EnvironmentReport report, bool fallback)
-{
-    runDocker({QStringLiteral("version"), QStringLiteral("--format"), QStringLiteral("{{.Server.Version}}")}, 20000,
-              [this, report, fallback](int code, const QByteArray &out) mutable {
-        const QString server = QString::fromUtf8(out).trimmed();
-        if (code != 0 || server.isEmpty() || server.contains(QLatin1Char(' '))) {
-            report.engineMissing = true;
-            report.summary = QStringLiteral("Docker не запущен");
-            report.problems << QStringLiteral("Docker установлен, но его служба не отвечает.");
-            report.hints << QStringLiteral("Запустите Docker Desktop, дождитесь готовности и нажмите «Проверить снова».");
-#ifdef Q_OS_WIN
-            report.hints << QStringLiteral("Или установите встроенный OpenDroneMap — Docker для него не нужен.");
-            report.canInstall = registeredNativeInstall().isEmpty();
-            report.installTitle = QStringLiteral("Установить OpenDroneMap");
-            report.installPrompt = nativeInstallPrompt();
-            finishEnvironment(report, Native);
-            return;
-#endif
-            finishEnvironment(report);
-            return;
-        }
-        runDocker({QStringLiteral("image"), QStringLiteral("inspect"), QStringLiteral("--format"), QStringLiteral("{{.Id}}"),
-                   imageReference()}, 20000, [this, report, server, fallback](int imageCode, const QByteArray &) mutable {
-            if (imageCode != 0) {
-                report.imageMissing = true;
-                report.problems << QStringLiteral("Образ OpenDroneMap %1 для Docker не загружен.").arg(QLatin1String(Version));
-                report.canInstall = true;
-                report.installTitle = QStringLiteral("Загрузить образ ODM");
-                report.installPrompt = QStringLiteral("Docker загрузит образ OpenDroneMap %1 (закреплён по контрольной сумме): "
-                                                      "около 630 МБ загрузки и около 2,4 ГБ на диске.\n\nOpenDroneMap распространяется "
-                                                      "по лицензии AGPL-3.0 отдельно от GeoMap AI.").arg(QLatin1String(Version));
-#ifdef Q_OS_WIN
-                // Automatic mode on Windows: the built-in engine needs no Docker and a smaller download.
-                if (fallback && registeredNativeInstall().isEmpty()) {
-                    report.installTitle = QStringLiteral("Установить OpenDroneMap");
-                    report.installPrompt = nativeInstallPrompt();
-                }
-#endif
-                report.hints << QStringLiteral("Нажмите «%1».").arg(report.installTitle);
-            }
-            runDocker({QStringLiteral("info"), QStringLiteral("--format"), QStringLiteral("{{.NCPU}} {{.MemTotal}}")}, 20000,
-                      [this, report, server, fallback](int infoCode, const QByteArray &info) mutable {
-                const QStringList parts = QString::fromUtf8(info).simplified().split(QLatin1Char(' '));
-                if (infoCode == 0 && parts.size() >= 2) {
-                    report.cpus = parts[0].toInt();
-                    report.memoryBytes = parts[1].toLongLong();
-                }
-                if (report.memoryBytes > 0 && report.memoryBytes < 8 * GiB)
-                    report.warnings << QStringLiteral("Docker выделено %1 ГБ памяти. ODM требует около 1 ГБ на поток; "
-                                                      "большие наборы снимков могут не поместиться.")
-                                           .arg(gigabytes(report.memoryBytes));
-                report.available = report.problems.isEmpty();
-                if (report.available) {
-                    report.backend = Docker;
-                    report.backends = {Docker};
-#ifdef Q_OS_WIN
-                    if (fallback)
-                        report.hints << QStringLiteral("Встроенный OpenDroneMap не установлен, поэтому используется Docker. "
-                                                       "Встроенному ODM Docker не нужен: его можно установить кнопкой ниже.");
-                    report.canInstall = report.canInstall || (fallback && registeredNativeInstall().isEmpty());
-                    if (!report.imageMissing) {
-                        report.installTitle = QStringLiteral("Установить OpenDroneMap");
-                        report.installPrompt = nativeInstallPrompt();
-                    }
-#endif
-                }
-                report.summary = report.available
-                    ? QStringLiteral("Docker %1 · OpenDroneMap %2 · %3 CPU, %4 ГБ памяти")
-                          .arg(server, QLatin1String(Version)).arg(report.cpus).arg(gigabytes(report.memoryBytes))
-                    : report.problems.constFirst();
-                finishEnvironment(report, report.installTitle == QStringLiteral("Загрузить образ ODM") ? Docker : Native);
-            });
-        });
-    });
-}
-
-void OdmEngine::finishEnvironment(EnvironmentReport report, const QString &installKind)
+void OdmEngine::finishEnvironment(EnvironmentReport report)
 {
     m_backend = report.backend;
-    m_installKind = report.canInstall ? installKind : QString();
+    m_canInstall = report.canInstall;
     m_lastReport = report;
     emit environmentChecked(report);
 }
-
 QString OdmEngine::nativeInstallPrompt()
 {
     return QStringLiteral(
-        "GeoMap AI загрузит официальный установщик OpenDroneMap %1 для Windows с GitHub (%2 МБ, подпись OpenDroneMap, "
-        "контрольная сумма проверяется) и установит его для текущего пользователя без прав администратора в папку\n%3\n"
-        "(около 1 ГБ). Docker и WSL не нужны.\n\nOpenDroneMap распространяется по лицензии AGPL-3.0 отдельно от GeoMap AI. "
-        "Установщик добавит запись «ODM» в список приложений Windows, через неё ODM можно удалить.")
+        "OpenDroneMap входит в полную поставку GeoMap AI. Чтобы восстановить его, GeoMap AI загрузит официальную сборку "
+        "OpenDroneMap %1 для Windows с GitHub (%2 МБ, подпись OpenDroneMap, контрольная сумма проверяется) и развернёт её "
+        "для текущего пользователя без прав администратора в папку\n%3\n(около 1 ГБ).\n\n"
+        "OpenDroneMap распространяется по лицензии AGPL-3.0 как отдельная программа в составе GeoMap AI. "
+        "Установщик ODM добавит запись «ODM» в список приложений Windows.")
         .arg(QLatin1String(Version), megabytes(NativeInstallerBytes), QDir::toNativeSeparators(managedNativeRoot()));
 }
 
@@ -947,39 +808,16 @@ QString OdmEngine::nativeInstallPrompt()
 
 void OdmEngine::installRuntime()
 {
-    if (m_installKind == Native) {
-        installNative();
+    if (!m_canInstall) {
+        emit installFinished(false, QStringLiteral("Восстанавливать нечего: сначала выполните проверку окружения."));
         return;
     }
-    if (m_installKind != Docker || m_docker.isEmpty()) {
-        emit installFinished(false, QStringLiteral("Нечего устанавливать: сначала выполните проверку окружения."));
-        return;
-    }
-    auto *process = new QProcess(this);
-    process->setProcessChannelMode(QProcess::MergedChannels);
-    connect(process, &QProcess::readyReadStandardOutput, this, [this, process] {
-        const QStringList lines = QString::fromUtf8(process->readAllStandardOutput()).split(QRegularExpression(QStringLiteral("[\r\n]+")),
-                                                                                           Qt::SkipEmptyParts);
-        for (const QString &line : lines) emit installProgress(stripAnsi(line).trimmed());
-    });
-    connect(process, &QProcess::finished, this, [this, process](int code, QProcess::ExitStatus status) {
-        process->deleteLater();
-        const bool ok = status == QProcess::NormalExit && code == 0;
-        emit installFinished(ok, ok ? QStringLiteral("Образ OpenDroneMap %1 загружен.").arg(QLatin1String(Version))
-                                    : QStringLiteral("Не удалось загрузить образ (код %1). Проверьте подключение к интернету и Docker.").arg(code));
-    });
-    connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError e) {
-        if (e != QProcess::FailedToStart) return;
-        process->deleteLater();
-        emit installFinished(false, QStringLiteral("Не удалось запустить docker"));
-    });
-    process->start(m_docker, {QStringLiteral("pull"), QLatin1String(ImageTag) + QLatin1Char('@') + QLatin1String(ImageDigest)});
+    installNative();
 }
-
 void OdmEngine::installNative()
 {
 #ifndef Q_OS_WIN
-    finishInstall(false, QStringLiteral("Встроенный OpenDroneMap поставляется только для Windows."));
+    finishInstall(false, QStringLiteral("Для Linux укажите собственную сборку ODM в GEOMAP_ODM_HOME."));
 #else
     if (m_download || m_installer) return;
     QString otherVersion;
@@ -1117,9 +955,10 @@ bool OdmEngine::start(const ProcessingJob &job, const QString &jobDirectory, QSt
         return false;
     };
     if (m_run) return fail(QStringLiteral("Движок уже выполняет задание %1").arg(m_runningJob));
-    const QString backend = job.backend.isEmpty() ? m_backend : job.backend;
+    if (!job.backend.isEmpty() && job.backend != Native)
+        return fail(QStringLiteral("Задание выполнялось в Docker (GeoMap AI 0.2.0); Docker больше не используется. "
+                                   "Запустите новую обработку."));
     m_runningJob = job.id;
-    m_runBackend = backend;
     m_cancelRequested = false;
     m_partialLine.clear();
     m_stage.clear();
@@ -1130,7 +969,7 @@ bool OdmEngine::start(const ProcessingJob &job, const QString &jobDirectory, QSt
 
     QString program;
     QStringList arguments;
-    if (backend == Native) {
+    {
         QString root = m_nativeRoot;
         if (root.isEmpty() || !nativeProblem(root).isEmpty()) {
             root.clear();
@@ -1152,25 +991,12 @@ bool OdmEngine::start(const ProcessingJob &job, const QString &jobDirectory, QSt
             m_workLink = link;
             projectPath = QFileInfo(link).absolutePath();
         }
-        program = nativePython(root);
+        program = nativeProgram(root);
         arguments = nativeArguments(job, root, projectPath);
         m_run = new QProcess(this);
         const QString cache = QDir(Platform::dataDirectory()).filePath(QStringLiteral("cache/odm-pycache"));
         m_run->setProcessEnvironment(nativeEnvironment(root, cache, QProcessEnvironment::systemEnvironment()));
         m_run->setWorkingDirectory(root);
-    } else if (backend == Docker) {
-        if (m_docker.isEmpty()) m_docker = findDocker();
-        if (m_docker.isEmpty()) return fail(QStringLiteral("Docker не найден"));
-#ifdef Q_OS_WIN
-        const bool windowsHost = true;
-#else
-        const bool windowsHost = false;
-#endif
-        program = m_docker;
-        arguments = runArguments(job, jobDirectory, windowsHost);
-        m_run = new QProcess(this);
-    } else {
-        return fail(QStringLiteral("OpenDroneMap не готов. Проверьте окружение."));
     }
     m_run->setProcessChannelMode(QProcess::MergedChannels);
     connect(m_run, &QProcess::readyReadStandardOutput, this, &OdmEngine::handleOutput);
@@ -1186,9 +1012,9 @@ bool OdmEngine::start(const ProcessingJob &job, const QString &jobDirectory, QSt
         emit finished(id, JobOutcome::Failed, -1, message);
     });
     emit logLine(job.id, QStringLiteral("$ ") + QDir::toNativeSeparators(program) + QLatin1Char(' ') + arguments.join(QLatin1Char(' ')));
-    if (m_runBackend == Native) ProcessTree::prepare(*m_run);
+    ProcessTree::prepare(*m_run);
     m_run->start(program, arguments);
-    if (m_run && m_runBackend == Native && m_run->processId() > 0) {
+    if (m_run && m_run->processId() > 0) {
         m_tree = std::make_unique<ProcessTree>();
         if (!m_tree->attach(*m_run))
             emit logLine(job.id, QStringLiteral("[GeoMap] Предупреждение: дочерние процессы ODM не привязаны к заданию; "
@@ -1275,29 +1101,15 @@ void OdmEngine::cancel(const QString &jobId)
 {
     if (!m_run || jobId != m_runningJob || m_cancelRequested) return;
     m_cancelRequested = true;
-    if (m_runBackend == Native) {
-        if (m_tree) m_tree->terminate();
-        else m_run->kill();
-        return;   // finished() of the process completes the cancellation
-    }
-    runDocker({QStringLiteral("stop"), QStringLiteral("-t"), QStringLiteral("10"), containerName(jobId)}, 60000,
-              [this, jobId](int, const QByteArray &) {
-        // The client exits once the container stops; if it does not (container never started,
-        // daemon unresponsive), end the client and make sure no container is left behind.
-        QTimer::singleShot(10000, this, [this, jobId] {
-            if (m_run && m_runningJob == jobId) {
-                forceRemoveContainer(jobId, false);
-                m_run->kill();
-            }
-        });
-    });
+    if (m_tree) m_tree->terminate();
+    else m_run->kill();
+    // finished() of the process completes the cancellation.
 }
 
 void OdmEngine::abort(const QString &jobId)
 {
     if (!m_run || jobId != m_runningJob) return;
     m_run->disconnect(this);
-    if (m_runBackend == Docker) forceRemoveContainer(jobId, true);
     if (m_tree) m_tree->terminate();
     m_run->kill();
     m_run->waitForFinished(5000);
@@ -1305,7 +1117,6 @@ void OdmEngine::abort(const QString &jobId)
     releaseRun();
     m_runningJob.clear();
 }
-
 bool OdmEngine::isRunning(const QString &jobId) const
 {
     return m_run && m_runningJob == jobId;
@@ -1455,23 +1266,7 @@ QVariantMap OdmEngine::qualityReport(const QString &jobDirectory) const
 
 void OdmEngine::cleanupInterrupted(const ProcessingJob &job)
 {
-    if (job.backend == Native) {
-        // The process tree died with GeoMap AI (kill-on-close); only the work link may remain.
-        const QString link = workLinkFor(job.id);
-        if (!link.isEmpty()) Platform::removeDirectoryLink(link);
-        return;
-    }
-    if (!m_docker.isEmpty()) forceRemoveContainer(job.id, false);
-}
-
-void OdmEngine::forceRemoveContainer(const QString &jobId, bool wait)
-{
-    const QStringList args{QStringLiteral("rm"), QStringLiteral("-f"), containerName(jobId)};
-    if (!wait) {
-        runDocker(args, 60000, [](int, const QByteArray &) {});
-        return;
-    }
-    QProcess process;
-    process.start(m_docker, args);
-    process.waitForFinished(30000);
+    // The process tree died with GeoMap AI (kill-on-close); only the work link may remain.
+    const QString link = workLinkFor(job.id);
+    if (!link.isEmpty()) Platform::removeDirectoryLink(link);
 }

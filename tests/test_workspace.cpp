@@ -59,7 +59,7 @@ private slots:
             QVERIFY2(doc.contains(QStringLiteral("`%1`").arg(c.id)), qPrintable(c.id + QStringLiteral(" not in UI_COMMANDS.md")));
         }
         // Unavailable commands say why, ready ones say what they do.
-        QVERIFY(r.unavailableReason(QStringLiteral("view.3d")).contains(QStringLiteral("D (0.4)")));
+        QVERIFY(r.unavailableReason(QStringLiteral("export.model")).contains(QStringLiteral("D (0.4)")));
         QVERIFY(r.unavailableReason(QStringLiteral("proc.optimize")).startsWith(QStringLiteral("Не поддерживается выбранным движком")));
         QVERIFY(r.unavailableReason(QStringLiteral("file.save")).isEmpty());
         QVERIFY(r.tooltip(QStringLiteral("file.save")).contains(QStringLiteral("Ctrl+S")));
@@ -81,7 +81,7 @@ private slots:
             QVERIFY2(conflict.contains(QStringLiteral("Сохранить")), qPrintable(conflict));
             QCOMPARE(r.shortcut(QStringLiteral("file.open")), QStringLiteral("Ctrl+O"));
             QVERIFY(!r.setShortcut(QStringLiteral("file.open"), QStringLiteral("Ctrl+Нечто")).isEmpty());
-            QVERIFY(!r.setShortcut(QStringLiteral("view.3d"), QStringLiteral("F9")).isEmpty());   // planned
+            QVERIFY(!r.setShortcut(QStringLiteral("view.slope"), QStringLiteral("F9")).isEmpty());   // planned
             // Removing a shortcut.
             QCOMPARE(r.setShortcut(QStringLiteral("tool.pan"), QString()), QString());
             QCOMPARE(r.shortcut(QStringLiteral("tool.pan")), QString());

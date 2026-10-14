@@ -5,7 +5,7 @@ import QtQuick.Dialogs
 
 // Main window of the professional workspace: menu bar and toolbar built from the command
 // registry, project tree and photos on the left, the active view in the centre (photos, map,
-// processing, GPS scheme; 3D is planned), properties on the right, jobs and journal at the
+// 3D scene, processing, GPS scheme), properties on the right, jobs and journal at the
 // bottom, status bar. Every menu item, toolbar button and shortcut runs runCommand(id).
 ApplicationWindow {
     id: window
@@ -43,7 +43,7 @@ ApplicationWindow {
     readonly property color muted: Theme.muted
     readonly property color white: Theme.text
     readonly property color accent: Theme.accent
-    property int activeView: 0   // 0 photo viewer, 1 GPS scheme, 2 processing, 3 map
+    property int activeView: 0   // 0 photo viewer, 1 GPS scheme, 2 processing, 3 map, 4 3D scene
     property real imageZoom: 1.0
     property string lastError: ""
     property string lastNotice: ""
@@ -150,8 +150,12 @@ ApplicationWindow {
         case "edit.redo": return has && gis.canRedo
         case "edit.delete": return window.activeView === 3 ? gis.hasSelection : (window.activeView === 0 && projects.selectedIndex >= 0 && idle)
         case "edit.deselect": return gis.hasSelection
-        case "edit.geometry": case "tool.select": case "tool.pan": case "tool.ruler": case "tool.area":
+        case "edit.geometry": case "tool.select": case "tool.area":
         case "tool.point": case "tool.line": case "tool.polygon": case "tool.vertices": return map
+        // Navigation and the ruler work in the 3D view too (without a map CRS).
+        case "tool.pan": case "tool.ruler": return window.activeView === 4 ? has : map
+        case "view.3d": case "view.pointCloud": case "import.pointCloud": case "import.model": case "tool.rotate": case "tool.scale":
+        case "view.projection": case "view.axes": case "view.top": case "view.front": case "view.side": case "view.iso": return has
         case "project.removePhoto": return projects.selectedIndex >= 0 && idle
         case "project.crs": case "project.reveal": return has
         case "proc.analyze": case "proc.align": case "proc.denseCloud": case "proc.mesh": case "proc.texture":
@@ -176,9 +180,14 @@ ApplicationWindow {
         case "view.gps": return window.activeView === 1
         case "view.processing": return window.activeView === 2
         case "view.map": return window.activeView === 3
-        case "tool.pan": return window.activeView === 3 && gis.tool === "pan"
+        case "view.3d": return window.activeView === 4
+        case "view.projection": return scene3d.orthographic
+        case "view.axes": return scene3d.showAxes
+        case "tool.rotate": return window.activeView === 4 && scene3d.tool === "orbit"
+        case "tool.scale": return window.activeView === 4 && scene3d.tool === "zoom"
+        case "tool.pan": return (window.activeView === 3 && gis.tool === "pan") || (window.activeView === 4 && scene3d.tool === "pan")
         case "tool.select": case "edit.geometry": case "tool.vertices": return window.activeView === 3 && gis.tool === "edit"
-        case "tool.ruler": return window.activeView === 3 && gis.tool === "length"
+        case "tool.ruler": return (window.activeView === 3 && gis.tool === "length") || (window.activeView === 4 && scene3d.tool === "measure")
         case "tool.area": return window.activeView === 3 && gis.tool === "area"
         case "tool.point": return window.activeView === 3 && gis.tool === "point"
         case "tool.line": return window.activeView === 3 && gis.tool === "line"
@@ -192,6 +201,27 @@ ApplicationWindow {
         return false
     }
     function setTool(tool) { window.activeView = 3; gis.tool = tool }
+    function set3DTool(tool) { window.activeView = 4; scene3d.tool = tool }
+    // Opens a file in the 3D view: point cloud, model, or a DEM as terrain (with the project's
+    // orthophoto as texture when it covers it). A file already in the scene is just shown.
+    function open3D(kind, path) {
+        if (!path) return
+        var orthophoto = projectTree.result("orthophoto")
+        var error = kind === "pointcloud" ? scene3d.addPointCloud(path)
+                  : kind === "mesh" ? scene3d.addModel(path)
+                  : kind === "dsm" || kind === "dtm" || kind === "terrain" ? scene3d.addTerrain(path, orthophoto.path || "")
+                  : scene3d.addFile(path)
+        window.activeView = 4
+        if (error.length > 0 && error.indexOf("уже в 3D") < 0) window.showError(error)
+    }
+    function open3DResult(kind) {
+        var r = projectTree.result(kind)
+        if (r.path === undefined) {
+            window.showNotice("В результатах проекта нет такого слоя. Постройте его (Обработка) или откройте файл: Файл → Импорт облака точек / 3D-модели.")
+            return
+        }
+        window.open3D(kind, r.path)
+    }
     function openProcessing(profile) {
         window.activeView = 2
         if (profile) window.profileId = profile
@@ -325,18 +355,30 @@ ApplicationWindow {
         "view.gps": function() { window.activeView = 1 },
         "view.processing": function() { window.activeView = 2 },
         "view.map": function() { window.activeView = 3 },
+        "view.3d": function() { window.activeView = 4 },
+        "view.pointCloud": function() { window.open3DResult("pointcloud") },
+        "import.pointCloud": function() { scene3dDialog.kind = "pointcloud"; scene3dDialog.open() },
+        "import.model": function() { scene3dDialog.kind = "mesh"; scene3dDialog.open() },
+        "view.projection": function() { window.activeView = 4; scene3d.orthographic = !scene3d.orthographic },
+        "view.axes": function() { window.activeView = 4; scene3d.showAxes = !scene3d.showAxes },
+        "view.top": function() { window.activeView = 4; scene3d.setPreset("top") },
+        "view.front": function() { window.activeView = 4; scene3d.setPreset("front") },
+        "view.side": function() { window.activeView = 4; scene3d.setPreset("left") },
+        "view.iso": function() { window.activeView = 4; scene3d.setPreset("iso") },
+        "tool.rotate": function() { window.set3DTool("orbit") },
+        "tool.scale": function() { window.set3DTool("zoom") },
         "view.dem": function() { window.showDem() },
         "view.hillshade": function() { gis.setLayerStyle(mapController.details.id, { hillshade: !(mapController.details.style.hillshade === true) }) },
         "view.cameras": function() { gis.setLayerVisible("photos", !window.photosShown) },
-        "view.reset": function() { if (window.activeView === 3) gis.zoomToAll(); else window.imageZoom = 1.0 },
+        "view.reset": function() { if (window.activeView === 3) gis.zoomToAll(); else if (window.activeView === 4) scene3d.fitAll(); else window.imageZoom = 1.0 },
         "view.panelProject": function() { window.showLeft = !window.showLeft },
         "view.panelProperties": function() { window.showRight = !window.showRight },
         "view.panelLog": function() { window.showBottom = !window.showBottom },
         "view.resetLayout": function() { window.resetLayout() },
         "tool.select": function() { window.setTool("edit") },
         "tool.vertices": function() { window.setTool("edit") },
-        "tool.pan": function() { window.setTool("pan") },
-        "tool.ruler": function() { window.setTool("length") },
+        "tool.pan": function() { if (window.activeView === 4) window.set3DTool("pan"); else window.setTool("pan") },
+        "tool.ruler": function() { if (window.activeView === 4) window.set3DTool("measure"); else window.setTool("length") },
         "tool.area": function() { window.setTool("area") },
         "tool.point": function() { window.setTool("point") },
         "tool.line": function() { window.setTool("line") },
@@ -382,7 +424,8 @@ ApplicationWindow {
         switch (item.kind) {
         case "project": case "photos": window.activeView = 0; return
         case "orthophoto": case "dsm": case "dtm": if (item.available) window.showResultOnMap(item.payload); return
-        case "pointcloud": case "mesh": case "report": if (item.available) processing.openOutput(item.jobId, item.file); return
+        case "pointcloud": case "mesh": if (item.available) window.open3D(item.kind, item.payload); return
+        case "report": if (item.available) processing.openOutput(item.jobId, item.file); return
         case "layers": window.activeView = 3; return
         case "layer": window.activeView = 3; gis.selectedLayer = item.payload; gis.zoomToLayer(item.payload); return
         case "jobs": window.activeView = 2; return
@@ -396,9 +439,13 @@ ApplicationWindow {
         case "project": return [{ id: "reveal", title: "Открыть папку проекта" }, { id: "close", title: "Закрыть проект" }]
         case "photos": return [{ id: "open", title: "Открыть просмотр снимков" }, { id: "import", title: "Импорт фотографий…" }]
         case "orthophoto": case "dsm": case "dtm":
-            return item.available ? [{ id: "open", title: "Показать на карте" }, { id: "external", title: "Открыть во внешней программе" },
+            return item.available ? [{ id: "open", title: "Показать на карте" }, { id: "open3d", title: "Открыть в 3D (рельеф)" },
+                                     { id: "external", title: "Открыть во внешней программе" },
                                      { id: "folder", title: "Открыть папку задания" }] : [{ id: "none", title: item.status, enabled: false }]
-        case "pointcloud": case "mesh": case "report":
+        case "pointcloud": case "mesh":
+            return item.available ? [{ id: "open3d", title: "Открыть в 3D" }, { id: "external", title: "Открыть во внешней программе" },
+                                     { id: "folder", title: "Открыть папку задания" }] : [{ id: "none", title: item.status, enabled: false }]
+        case "report":
             return item.available ? [{ id: "external", title: "Открыть во внешней программе" }, { id: "folder", title: "Открыть папку задания" }]
                                   : [{ id: "none", title: item.status, enabled: false }]
         case "layers": return [{ id: "add", title: "Импорт геоданных…" }]
@@ -411,6 +458,7 @@ ApplicationWindow {
     function runTreeAction(action, item) {
         switch (action) {
         case "open": window.openTreeItem(item); break
+        case "open3d": window.open3D(item.kind, item.payload); break
         case "reveal": window.runCommand("project.reveal"); break
         case "close": window.runCommand("file.close"); break
         case "import": window.runCommand("import.photos"); break
@@ -701,6 +749,18 @@ ApplicationWindow {
         id: photoFolderDialog
         title: "Выберите папку с фотографиями"
         onAccepted: projects.importFolder(selectedFolder)
+    }
+    FileDialog {
+        id: scene3dDialog
+        property string kind: "pointcloud"
+        title: kind === "pointcloud" ? "Импорт облака точек в 3D-сцену" : "Импорт 3D-модели в 3D-сцену"
+        nameFilters: kind === "pointcloud" ? ["Облака точек (*.ply *.las)", "Все файлы (*)"]
+                                           : ["3D-модели (*.obj *.ply)", "Все файлы (*)"]
+        onAccepted: {
+            var error = scene3d.addUrl(selectedFile, kind)
+            window.activeView = 4
+            if (error.length > 0 && error.indexOf("уже в 3D") < 0) window.showError(error)
+        }
     }
     FolderDialog {
         id: projectLocationDialog
@@ -1060,6 +1120,7 @@ ApplicationWindow {
                                 text: !projects.hasProject ? "" : window.activeView === 0 ? (projects.photoCount ? "ПРОСМОТР ФОТОГРАФИЙ" : "ПУСТОЙ ПРОЕКТ")
                                     : window.activeView === 1 ? "СХЕМА GPS-ТОЧЕК · НЕ КАРТА"
                                     : window.activeView === 3 ? "КАРТА · " + (gis.crsDefined ? gis.crsLabel.toUpperCase() : "CRS НЕ ЗАДАН")
+                                    : window.activeView === 4 ? "3D-СЦЕНА · " + scene3d.status.toUpperCase()
                                     : "ФОТОГРАММЕТРИЯ · " + processing.engineName.toUpperCase()
                                 color: Theme.muted; font.pixelSize: 10; font.letterSpacing: 0.7
                                 elide: Text.ElideRight
@@ -1272,6 +1333,12 @@ ApplicationWindow {
                         host: window
                         controller: mapController
                     }
+                    // 3D scene (View3DWorkspace.qml); its layers and settings are in the right panel.
+                    View3DWorkspace {
+                        anchors.fill: parent
+                        visible: projects.hasProject && window.activeView === 4
+                        host: window
+                    }
                     // Processing: environment, new job, job history and details. Everything shown
                     // comes from the engine (stages, log, files); there is no estimated percentage.
                     Item {
@@ -1321,20 +1388,7 @@ ApplicationWindow {
                                                     Layout.fillWidth: true
                                                     Label { text: processing.engineName + " " + processing.engineVersion; color: window.white; font.bold: true; font.pixelSize: 13 }
                                                     Item { Layout.fillWidth: true }
-                                                    // Runtime choice: bundled ODM (no Docker) or Docker; automatic prefers bundled.
-                                                    ComboBox {
-                                                        id: backendBox
-                                                        visible: processing.backends.length > 0 || processing.preferredBackend.length > 0
-                                                        implicitHeight: 28
-                                                        font.pixelSize: 11
-                                                        enabled: !processing.active && !processing.installing && !processing.checkingEnvironment
-                                                        textRole: "title"
-                                                        valueRole: "value"
-                                                        model: [{ value: "", title: "Режим: авто" }, { value: "native", title: "Встроенный" },
-                                                                { value: "docker", title: "Docker" }]
-                                                        currentIndex: indexOfValue(processing.preferredBackend)
-                                                        onActivated: processing.preferredBackend = currentValue
-                                                    }
+                                                    Label { text: "встроен в программу"; color: window.muted; font.pixelSize: 10 }
                                                 }
                                                 Label {
                                                     Layout.fillWidth: true
@@ -1902,6 +1956,11 @@ ApplicationWindow {
                                                             onClicked: window.showResultOnMap(outputRow.modelData.path)
                                                         }
                                                         FlatButton {
+                                                            text: "В 3D"; compact: true; implicitHeight: 28
+                                                            visible: ["pointcloud", "mesh", "dsm", "dtm"].indexOf(outputRow.modelData.kind) >= 0
+                                                            onClicked: window.open3D(outputRow.modelData.kind, outputRow.modelData.path)
+                                                        }
+                                                        FlatButton {
                                                             text: "Открыть"; compact: true; implicitHeight: 28
                                                             onClicked: processing.openOutput(window.selectedJobId, outputRow.modelData.file)
                                                         }
@@ -2065,6 +2124,11 @@ ApplicationWindow {
                         SplitView.fillHeight: true
                         SplitView.minimumHeight: 140
                     }
+                }
+                View3DPanel {
+                    anchors.fill: parent
+                    visible: projects.hasProject && window.activeView === 4
+                    host: window
                 }
                 // Processing: engine state and the selected job
                 ColumnLayout {

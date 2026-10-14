@@ -22,7 +22,9 @@
 #include "ProcessingService.h"
 #include "ProjectManager.h"
 #include "ProjectTreeModel.h"
+#include "Scene3DService.h"
 #include "ThumbnailProvider.h"
+#include "View3DItem.h"
 #include "WorkspaceState.h"
 
 Q_IMPORT_QML_PLUGIN(GeoMapAIPlugin)
@@ -38,6 +40,7 @@ struct Session
     ProjectManager projects;
     ProcessingService processing{new MockEngine(record)};
     MapService map;
+    Scene3DService scene3d;
     CommandRegistry commands;
     WorkspaceState workspace;
     AppLog log;
@@ -54,6 +57,7 @@ struct Session
         QObject::connect(&projects, &ProjectManager::projectChanged, &map, [this] {
             if (projects.projectPath() != map.projectDirectory()) map.setProject(projects.projectPath(), projects.photoModel());
         });
+        QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &scene3d, &Scene3DService::clear);
         treeView.setSourceModel(&tree);
         connectJournal(&log, &projects, &processing, &map);
         auto *thumbnails = new ThumbnailProvider;
@@ -64,6 +68,7 @@ struct Session
         c->setContextProperty("projects", &projects);
         c->setContextProperty("processing", &processing);
         c->setContextProperty("gis", &map);
+        c->setContextProperty("scene3d", &scene3d);
         c->setContextProperty("commands", &commands);
         c->setContextProperty("workspace", &workspace);
         c->setContextProperty("appLog", &log);
@@ -139,9 +144,9 @@ class UiTest : public QObject
         auto s = std::make_unique<Session>(m_data.filePath(QStringLiteral("logs")));
         if (s->window) {
             s->window->show();
-            QTest::qWaitForWindowExposed(s->window);
+            if (!QTest::qWaitForWindowExposed(s->window)) qWarning("window not exposed");
             s->window->requestActivate();
-            QTest::qWaitForWindowActive(s->window, 2000);
+            if (!QTest::qWaitForWindowActive(s->window, 2000)) qWarning("window not active");
         }
         return s;
     }
@@ -157,6 +162,7 @@ private slots:
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_settings.path());
         GisEnvironment::initialize(QCoreApplication::applicationDirPath());
         qmlRegisterType<MapView>("GeoMapAI.Map", 1, 0, "MapView");
+        qmlRegisterType<View3DItem>("GeoMapAI.View3D", 1, 0, "View3DItem");
     }
 
     void windowHasMenusToolbarAndHandlers()
@@ -179,8 +185,8 @@ private slots:
         QVERIFY(s->findByCommand(QStringLiteral("file.new"), "ToolIconButton")->property("enabled").toBool());
         QVERIFY(!s->findByCommand(QStringLiteral("file.save"), "ToolIconButton")->property("enabled").toBool());   // no project
         // Planned commands do not run and say why.
-        QVERIFY(!s->run(QStringLiteral("view.3d")));
-        QVERIFY(s->prop("transientMessage").toString().contains(QStringLiteral("D (0.4)")));
+        QVERIFY(!s->run(QStringLiteral("view.slope")));
+        QVERIFY(s->prop("transientMessage").toString().contains(QStringLiteral("C (0.3.x)")));
         QVERIFY(!s->run(QStringLiteral("proc.optimize")));
         QVERIFY(s->prop("transientMessage").toString().contains(QStringLiteral("движком")));
         s->shot(QStringLiteral("ui-01-welcome.png"));
@@ -299,6 +305,131 @@ private slots:
         s->shot(QStringLiteral("ui-04-map-orthophoto.png"));
         s->run(QStringLiteral("view.photo"));
         s->shot(QStringLiteral("ui-05-photos.png"));
+    }
+
+    // The 3D view: commands, tools without a map CRS, and an ODM point cloud opened from the
+    // project tree (the job's LAZ is shown through odm_filterpoints/point_cloud.ply). The
+    // software renderer cannot draw it: the view says so instead of showing an empty black area.
+    void scene3dInTheWindow()
+    {
+        QTemporaryDir tmp;
+        QString project;
+        {
+            ProjectManager pm;
+            QVERIFY(pm.createProject(QUrl::fromLocalFile(tmp.path()), QStringLiteral("Сцена 3D")));
+            project = pm.projectPath();
+        }
+        ProcessingJob job;
+        job.id = QStringLiteral("20261015-090000");
+        job.engine = QStringLiteral("mock");
+        job.profile = QStringLiteral("balanced");
+        job.state = JobState::Completed;
+        job.createdAt = QDateTime::currentDateTimeUtc();
+        job.outputs << Artifact{QStringLiteral("pointcloud"), QStringLiteral("odm_georeferencing/odm_georeferenced_model.laz"), 0, QStringLiteral("LAS 1.4")};
+        const QDir jobDir(QDir(project).filePath(QStringLiteral("jobs/") + job.id));
+        QVERIFY(QDir().mkpath(jobDir.filePath(QStringLiteral("odm_georeferencing"))));
+        QVERIFY(QDir().mkpath(jobDir.filePath(QStringLiteral("odm_filterpoints"))));
+        const auto write = [](const QString &path, const QByteArray &data) {
+            QFile f(path);
+            return f.open(QIODevice::WriteOnly) && f.write(data) == data.size();
+        };
+        QVERIFY(write(jobDir.filePath(QStringLiteral("odm_georeferencing/coords.txt")), "WGS84 UTM 15N\n576705 5188170\n"));
+        QVERIFY(write(jobDir.filePath(QStringLiteral("odm_georeferencing/odm_georeferenced_model.laz")), "LASF compressed"));
+        QByteArray ply = "ply\nformat ascii 1.0\nelement vertex 101\nproperty float x\nproperty float y\nproperty float z\n"
+                         "property uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n";
+        for (int i = 0; i < 100; ++i) ply += QByteArray::number(i % 10) + ' ' + QByteArray::number(i / 10) + " 160 200 180 120\n";
+        ply += "4.5 4.5 160 255 0 0\n";   // at the centre of the cloud's extent
+        QVERIFY(write(jobDir.filePath(QStringLiteral("odm_filterpoints/point_cloud.ply")), ply));
+        QVERIFY(write(jobDir.filePath(QStringLiteral("job.json")), QJsonDocument(job.toJson()).toJson()));
+
+        auto s = open();
+        QVERIFY(s->projects.openProject(QUrl::fromLocalFile(project)));
+        QTRY_VERIFY(!s->tree.result(QStringLiteral("pointcloud")).isEmpty());
+        // Ctrl+3 opens the 3D view; with an empty scene it offers the project's results.
+        QTest::keyClick(s->window, Qt::Key_3, Qt::ControlModifier);
+        QTRY_COMPARE(s->prop("activeView").toInt(), 4);
+        QVERIFY(s->checked(QStringLiteral("view.3d")));
+        QVERIFY(s->window->findChild<QQuickItem *>(QStringLiteral("view3d")));
+        // Navigation and measuring work in 3D without a map CRS.
+        QVERIFY(!s->map.crsDefined());
+        QVERIFY(s->run(QStringLiteral("tool.ruler")));
+        QCOMPARE(s->scene3d.tool(), QStringLiteral("measure"));
+        QCOMPARE(s->prop("activeView").toInt(), 4);
+        QVERIFY(s->checked(QStringLiteral("tool.ruler")));
+        QTest::keyClick(s->window, Qt::Key_R);
+        QTRY_COMPARE(s->scene3d.tool(), QStringLiteral("orbit"));
+        QVERIFY(s->checked(QStringLiteral("tool.rotate")));
+        QTest::keyClick(s->window, Qt::Key_H);
+        QTRY_COMPARE(s->scene3d.tool(), QStringLiteral("pan"));
+        QTest::keyClick(s->window, Qt::Key_Z);
+        QTRY_COMPARE(s->scene3d.tool(), QStringLiteral("zoom"));
+        QVERIFY(s->run(QStringLiteral("view.projection")));
+        QVERIFY(s->scene3d.orthographic());
+        QVERIFY(s->checked(QStringLiteral("view.projection")));
+        QVERIFY(s->run(QStringLiteral("view.projection")));
+        QVERIFY(!s->scene3d.orthographic());
+        QVERIFY(s->run(QStringLiteral("view.axes")));
+        QVERIFY(!s->scene3d.showAxes());
+        QVERIFY(s->run(QStringLiteral("view.axes")));
+
+        // The point cloud from the tree: context action "Открыть в 3D".
+        const QVariantMap result = s->tree.result(QStringLiteral("pointcloud"));
+        const QVariantMap item{{"kind", "pointcloud"}, {"title", "Плотное облако точек"}, {"available", true},
+                               {"payload", result.value("path")}, {"jobId", job.id}, {"file", job.outputs.first().file}};
+        const QVariantList actions = s->call("treeActions", item).toList();
+        QCOMPARE(actions.first().toMap().value("id").toString(), QStringLiteral("open3d"));
+        s->call("runTreeAction", QStringLiteral("open3d"), item);
+        QCOMPARE(s->scene3d.layerCount(), 1);
+        QTRY_VERIFY(!s->scene3d.loading());
+        const QVariantMap layer = s->scene3d.layersForQml().first().toMap();
+        QVERIFY2(layer.value("error").toString().isEmpty(), qPrintable(layer.value("error").toString()));
+        QVERIFY2(layer.value("info").toString().contains(QStringLiteral("point_cloud.ply")), qPrintable(layer.value("info").toString()));
+        QCOMPARE(s->scene3d.origin().x, 576705.0);
+        // Once more: not added twice.
+        s->call("runTreeAction", QStringLiteral("open3d"), item);
+        QCOMPARE(s->scene3d.layerCount(), 1);
+        QVERIFY(s->run(QStringLiteral("view.top")));
+        QVERIFY(s->scene3d.pitch() > 89.0f);
+        QVERIFY(s->run(QStringLiteral("view.reset")));
+        // Picking works on the data even without drawing: the centre of the view hits the cloud.
+        QVERIFY(s->scene3d.pickAt(400, 300, 800, 600));
+        QVERIFY(s->scene3d.pickText().contains(QStringLiteral("576")));
+        s->shot(QStringLiteral("ui-07-3d-software.png"));
+        // Closing the project empties the scene.
+        s->projects.closeProject();
+        QTRY_COMPARE(s->scene3d.layerCount(), 0);
+    }
+
+    // GEOMAP_UI_PROJECT=<project with processing results>: the real project in the window,
+    // screenshots of the views (with GEOMAP_TEST_OUTPUT). Skipped otherwise.
+    void realProjectViews()
+    {
+        const QString project = qEnvironmentVariable("GEOMAP_UI_PROJECT");
+        if (project.isEmpty()) QSKIP("GEOMAP_UI_PROJECT is not set");
+        auto s = open();
+        QVERIFY(s->projects.openProject(QUrl::fromLocalFile(project)));
+        QTRY_VERIFY_WITH_TIMEOUT(s->processing.jobCount() > 0, 10000);
+        s->run(QStringLiteral("view.photo"));
+        s->shot(QStringLiteral("real-01-photos.png"));
+        for (const QString &kind : {QStringLiteral("orthophoto"), QStringLiteral("dsm"), QStringLiteral("dtm")}) {
+            const QVariantMap result = s->tree.result(kind);
+            if (result.isEmpty()) continue;
+            s->call("openTreeItem", QVariantMap{{"kind", kind}, {"available", true}, {"payload", result.value("path")},
+                                              {"jobId", result.value("jobId")}, {"file", result.value("file")}});
+            QTRY_VERIFY_WITH_TIMEOUT([&] {
+                for (const MapLayer &l : s->map.layers()) if (l.type == MapLayer::Raster && (l.loading || !l.status.isEmpty())) return false;
+                return true;
+            }(), 60000);
+            s->shot(QStringLiteral("real-02-map-%1.png").arg(kind));
+        }
+        s->run(QStringLiteral("view.processing"));
+        s->processing.checkEnvironment();
+        s->window->setProperty("selectedJobId", s->tree.result(QStringLiteral("orthophoto")).value("jobId"));
+        QTest::qWait(1500);
+        s->shot(QStringLiteral("real-03-processing-results.png"));
+        s->window->setProperty("detailTab", 1);
+        QTest::qWait(500);
+        s->shot(QStringLiteral("real-04-processing-quality.png"));
     }
 
     void layoutIsSavedAndRestored()

@@ -10,11 +10,19 @@
 .PARAMETER OutDir
     Deployment folder. Default: dist\GeoMapAI. It is recreated on every run.
 .PARAMETER Zip
-    Also pack the deployment folder into GeoMapAI-<version>-win64[-odm].zip next to it.
+    Also pack the deployment folder into GeoMapAI-<version>-win64.zip next to it.
 .PARAMETER OdmDir
-    Folder of an installed OpenDroneMap 3.6.x for Windows (official ODM_Setup_3.6.x.exe, e.g. the
-    one GeoMap AI installs into %LOCALAPPDATA%\GeoMapAI\engines\odm-3.6.2). It is copied unmodified
-    to <OutDir>\engines\odm, so the deployment processes photos without Docker or any installation.
+    OpenDroneMap 3.6.x for Windows to build in. Default: <repo>\.odm\odm-3.6.2 (see -FetchOdm).
+    OpenDroneMap is part of every GeoMap AI deployment: it is copied unmodified to
+    <OutDir>\engines\odm, and the program runs it from there (no Docker, WSL or installation).
+.PARAMETER FetchOdm
+    Prepare <repo>\.odm\odm-3.6.2 once: download the official signed ODM_Setup_3.6.2.exe from GitHub
+    (233.5 MB, accepted only with the pinned SHA-256) unless -OdmInstaller gives it, and install it
+    silently for the current user into that folder (Windows lists it as "ODM" in installed apps).
+.PARAMETER OdmInstaller
+    Local ODM_Setup_3.6.2.exe for -FetchOdm instead of the download (its SHA-256 is still checked).
+.PARAMETER NoOdm
+    Developer/CI build without OpenDroneMap: everything works except processing.
 #>
 param(
     [string]$QtDir,
@@ -22,11 +30,39 @@ param(
     [switch]$SkipTests,
     [string]$OutDir,
     [switch]$Zip,
-    [string]$OdmDir
+    [string]$OdmDir,
+    [switch]$FetchOdm,
+    [string]$OdmInstaller,
+    [switch]$NoOdm
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+
+# OpenDroneMap 3.6.2 for Windows, pinned like in src/processing/OdmEngine.h.
+$odmInstallerUrl = 'https://github.com/OpenDroneMap/ODM/releases/download/v3.6.2/ODM_Setup_3.6.2.exe'
+$odmInstallerSha256 = 'c9dbfabf0d066529a7b6c753fd45bf3366a0314266160cd677373bab4caff294'
+$odmCache = Join-Path $root '.odm'
+if (!$NoOdm) {
+    if (!$OdmDir) { $OdmDir = Join-Path $odmCache 'odm-3.6.2' }
+    if ($FetchOdm -and !(Test-Path (Join-Path $OdmDir 'run.py'))) {
+        New-Item -ItemType Directory -Force -Path $odmCache | Out-Null
+        $installer = if ($OdmInstaller) { $OdmInstaller } else { Join-Path $odmCache 'ODM_Setup_3.6.2.exe' }
+        if (!(Test-Path $installer)) {
+            Write-Host "Downloading $odmInstallerUrl"
+            Invoke-WebRequest -Uri $odmInstallerUrl -OutFile $installer -UseBasicParsing
+        }
+        $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
+        if ($hash -ne $odmInstallerSha256) { throw "ODM installer has SHA-256 $hash, expected $odmInstallerSha256" }
+        $installArgs = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CURRENTUSER /NOICONS /DIR=`"$OdmDir`" /LOG=`"$(Join-Path $odmCache 'odm-install.log')`""
+        $proc = Start-Process -FilePath $installer -ArgumentList $installArgs -Wait -PassThru
+        if ($proc.ExitCode -ne 0) { throw "ODM installer failed (exit $($proc.ExitCode)), see $odmCache\odm-install.log" }
+    }
+    if (!(Test-Path (Join-Path $OdmDir 'run.py'))) {
+        throw "OpenDroneMap not found in $OdmDir. It is part of GeoMap AI: run with -FetchOdm (233.5 MB download), " +
+              "-OdmDir <installed ODM 3.6.x>, or -NoOdm for a developer build without processing."
+    }
+}
 
 function Get-QtKitVersion([string]$kit) {
     # <root>\<6.x.y>\<msvc20xx_64>
@@ -53,13 +89,13 @@ function Find-QtKit {
             if ($c.Name -notmatch '^msvc20\d\d_64$') { continue }   # MSVC x64 only, never MinGW/ARM
             if (!(Test-Path (Join-Path $c.FullName 'lib\cmake\Qt6\Qt6Config.cmake'))) { continue }
             $v = Get-QtKitVersion $c.FullName
-            if ($v -and $v -ge [version]'6.5') {
+            if ($v -and $v -ge [version]'6.7') {
                 $kits += [pscustomobject]@{ Path = $c.FullName; Version = $v; Msvc = $c.Name }
             }
         }
     }
     $best = $kits | Sort-Object Version, Msvc -Descending | Select-Object -First 1
-    if (!$best) { throw 'No Qt 6.5+ MSVC x64 kit found. Install Qt (MSVC 2022 64-bit) or pass -QtDir.' }
+    if (!$best) { throw 'No Qt 6.7+ MSVC x64 kit found. Install Qt (MSVC 2022 64-bit, with Qt Shader Tools) or pass -QtDir.' }
     return $best.Path
 }
 
@@ -152,8 +188,8 @@ try {
     Copy-Item (Join-Path $root 'docs\*.md') $docs -Force
     foreach ($file in 'README.md', 'CHANGELOG.md', 'LICENSE') { Copy-Item (Join-Path $root $file) $docs -Force }
 
-    if ($OdmDir) {
-        # Bundled OpenDroneMap (AGPL-3.0, a separate program): copied as installed, without the
+    if (!$NoOdm) {
+        # Built-in OpenDroneMap (AGPL-3.0, a separate program): copied as installed, without the
         # uninstaller that belongs to the source installation. GeoMap AI re-points its Python
         # environment to the new folder on first use (what ODM's winpostinstall.bat does).
         $odm = (Resolve-Path $OdmDir).Path
@@ -184,7 +220,7 @@ try {
     if ($Zip) {
         $cmake = Get-Content (Join-Path $root 'CMakeLists.txt') -Raw
         if ($cmake -notmatch 'project\(GeoMapAI VERSION ([0-9.]+)') { throw 'Project version not found in CMakeLists.txt' }
-        $suffix = if ($OdmDir) { '-odm' } else { '' }
+        $suffix = if ($NoOdm) { '-no-odm' } else { '' }
         $archive = Join-Path (Split-Path -Parent $out) "GeoMapAI-$($Matches[1])-win64$suffix.zip"
         if (Test-Path $archive) { Remove-Item -Force $archive }
         # bsdtar (Windows 10+) packs the ~20 000 files of ODM much faster than Compress-Archive.

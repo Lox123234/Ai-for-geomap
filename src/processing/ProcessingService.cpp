@@ -205,8 +205,7 @@ ProcessingService::ProcessingService(IProcessingEngine *engine, QObject *parent)
 {
     m_engine->setParent(this);
     m_profiles = m_engine->profiles();
-    m_preferredBackend = QSettings().value(QStringLiteral("processing/backend")).toString();
-    if (!m_preferredBackend.isEmpty()) m_engine->setPreferredBackend(m_preferredBackend);
+
     m_logNotify.setSingleShot(true);
     m_logNotify.setInterval(250);
     connect(&m_logNotify, &QTimer::timeout, this, [this] {
@@ -314,15 +313,6 @@ const ProcessingProfile *ProcessingService::profilePointer(const QString &id) co
     return nullptr;
 }
 
-void ProcessingService::setPreferredBackend(const QString &backend)
-{
-    if (backend == m_preferredBackend) return;
-    m_preferredBackend = backend;
-    QSettings().setValue(QStringLiteral("processing/backend"), backend);
-    m_engine->setPreferredBackend(backend);
-    emit environmentChanged();
-    if (!active()) checkEnvironment();
-}
 
 QVariantList ProcessingService::profilesForQml() const
 {
@@ -574,9 +564,8 @@ bool ProcessingService::resumeJob(const QString &id, const QString &profileId, c
     if (!job || isActive(job->state) || id == m_current) return false;
     if (!m_env.available) return fail(QStringLiteral("Движок обработки недоступен: проверьте окружение."));
     if (!job->backend.isEmpty() && job->runs > 0 && job->backend != m_env.backend)
-        return fail(QStringLiteral("Задание начато в режиме «%1», сейчас выбран «%2». Продолжить его можно только в том же режиме: "
-                                   "файлы промежуточных этапов содержат пути этого режима.")
-                        .arg(job->backend, m_env.backend));
+        return fail(QStringLiteral("Задание выполнялось в Docker (GeoMap AI 0.2.0). Docker больше не используется, а файлы "
+                                   "промежуточных этапов содержат его пути: запустите новую обработку."));
     for (const QString &file : job->images)
         if (!QFileInfo::exists(QDir(m_project).filePath(file)) && !QFileInfo::exists(QDir(jobDirectory(id)).filePath(
                                                                        QStringLiteral("images/") + QFileInfo(file).fileName())))

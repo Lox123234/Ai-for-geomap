@@ -58,8 +58,7 @@ class ProcessingService final : public QObject
     Q_PROPERTY(QStringList environmentWarnings READ environmentWarnings NOTIFY environmentChanged)
     Q_PROPERTY(QStringList environmentHints READ environmentHints NOTIFY environmentChanged)
     Q_PROPERTY(QString backend READ backend NOTIFY environmentChanged)
-    Q_PROPERTY(QStringList backends READ backends NOTIFY environmentChanged)
-    Q_PROPERTY(QString preferredBackend READ preferredBackend WRITE setPreferredBackend NOTIFY environmentChanged)
+
     Q_PROPERTY(QString gpuName READ gpuName NOTIFY environmentChanged)
     Q_PROPERTY(bool canInstall READ canInstall NOTIFY environmentChanged)
     Q_PROPERTY(QString installTitle READ installTitle NOTIFY environmentChanged)
@@ -103,10 +102,7 @@ public:
     QStringList environmentWarnings() const { return m_env.warnings; }
     QStringList environmentHints() const { return m_env.hints; }
     QString backend() const { return m_env.backend; }
-    QStringList backends() const { return m_env.backends; }
-    QString preferredBackend() const { return m_preferredBackend; }
-    // "", "native" or "docker"; stored in the settings and applied with a new check.
-    void setPreferredBackend(const QString &backend);
+
     QString gpuName() const { return m_env.gpuName; }
     bool canInstall() const { return m_env.canInstall; }
     QString installTitle() const { return m_env.installTitle; }
@@ -192,7 +188,7 @@ private:
     EnvironmentReport m_env;
     bool m_checking = false;
     bool m_installing = false;
-    QString m_preferredBackend;
+
     QVector<ProcessingProfile> m_profiles;   // the engine's profiles, kept for JobRequest pointers
     QStringList m_resumed;                   // jobs whose next start continues an earlier run
     QString m_installStatus;

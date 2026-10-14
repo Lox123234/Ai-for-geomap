@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | Компилятор C++17 | Visual Studio 2022 (Community или Build Tools), MSVC v143 x64, Windows SDK | GCC 11+ или Clang 14+ |
 | CMake | 3.21+ (3.22+ для запуска тестов через `ctest` без Qt в `PATH`) | 3.21+ |
-| Qt | 6.5+, комплект **MSVC 2022 64-bit**; модули Quick, Quick Controls, Quick Dialogs, Test; дополнение **Qt Image Formats** (TIFF) | 6.5+ из пакетов дистрибутива или онлайн-установщика |
+| Qt | 6.7+ (проверено 6.8.3), комплект **MSVC 2022 64-bit**; модули Quick, Quick Controls, Quick Dialogs, Test; дополнения **Qt Image Formats** (TIFF) и **Qt Shader Tools** (шейдеры 3D-вида, только для сборки) | 6.7+ (`QQuickRhiItem`): онлайн-установщик или пакеты дистрибутива с Qt 6.7+ |
 | Генератор | Visual Studio 17 2022 | Ninja |
 | GDAL ≥ 3.8, PROJ ≥ 9 | vcpkg (манифест `vcpkg.json`): копия из Visual Studio (`VC\vcpkg`, компонент «vcpkg package manager») или своя с `VCPKG_ROOT` | `libgdal-dev`, `libproj-dev` |
 
@@ -26,9 +26,11 @@ winget install --id Git.Git -e
 winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
 
-Qt — официальным [онлайн-установщиком](https://www.qt.io/download-qt-installer-oss) (open-source, нужна учётная запись Qt): **Qt 6.x → MSVC 2022 64-bit** и в *Additional Libraries* — **Qt Image Formats**.
+Qt — официальным [онлайн-установщиком](https://www.qt.io/download-qt-installer-oss) (open-source, нужна учётная запись Qt): **Qt 6.x → MSVC 2022 64-bit**, в *Additional Libraries* — **Qt Image Formats** и **Qt Shader Tools**.
 
-### Linux (Ubuntu 24.04+)
+### Linux
+
+3D-вид требует Qt 6.7+: в Ubuntu 24.04 пакеты Qt — 6.4, поэтому там Qt ставится онлайн-установщиком или aqtinstall (как в CI), а пакеты ниже нужны для остального. В дистрибутивах с Qt 6.7+ в пакетах добавьте `qt6-shadertools-dev`.
 
 ```bash
 sudo apt-get update
@@ -53,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 1. находит самый новый комплект Qt 6.5+ `msvc20xx_64` (`QTDIR`, `Qt6_DIR`, `qtpaths` в `PATH`, `<диск>:\Qt`, `%USERPROFILE%\Qt`);
 2. находит Visual Studio 2022 через `vswhere` и vcpkg (`VCPKG_ROOT`, `VCPKG_INSTALLATION_ROOT` или `VC\vcpkg` любой установленной Visual Studio), конфигурирует CMake (`Visual Studio 17 2022`, x64, toolchain vcpkg) в `build/` и собирает Release; vcpkg при этом собирает или берёт из кэша GDAL и PROJ;
 3. запускает тесты (`ctest`);
-4. пересоздаёт папку развёртывания, запускает `windeployqt` (DLL Qt, QML-модули, плагины), копирует рантайм MSVC, DLL GDAL/PROJ и их данные (`share\proj\proj.db`, `share\gdal`) рядом с EXE.
+4. пересоздаёт папку развёртывания, запускает `windeployqt` (DLL Qt, QML-модули, плагины), копирует рантайм MSVC, DLL GDAL/PROJ и их данные (`share\proj\proj.db`, `share\gdal`), документацию (`docs`) и **встроенный OpenDroneMap** (`engines\odm`).
 
 | Параметр | Назначение |
 | --- | --- |
@@ -61,9 +63,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 | `-SkipTests` | Не запускать тесты |
 | `-OutDir <папка>` | Папка развёртывания (по умолчанию `dist\GeoMapAI`). Скрипт отказывается очищать папку, которая не похожа на развёртывание GeoMap AI |
 | `-Zip` | Дополнительно создать `GeoMapAI-<версия>-win64.zip` рядом с папкой |
+| `-FetchOdm` | Один раз подготовить `.odm\odm-3.6.2`: загрузить официальный установщик ODM 3.6.2 (233,5 МБ, проверка SHA-256) и тихо установить в эту папку для текущего пользователя |
+| `-OdmInstaller <файл>` | Локальный `ODM_Setup_3.6.2.exe` для `-FetchOdm` вместо загрузки |
+| `-OdmDir <папка>` | Другая папка ODM 3.6.x вместо `.odm\odm-3.6.2` |
+| `-NoOdm` | Сборка разработчика без ODM (всё, кроме обработки); так собирает CI |
 | `-Generator "Visual Studio 18 2026"` | Другой экземпляр Visual Studio |
 
-Результат: `dist\GeoMapAI\GeoMapAI.exe` — переносимая папка (около 110 МБ, из них ~37 МБ — GDAL/PROJ и `proj.db`). Её можно скопировать на другой ПК с Windows 10/11 x64; Qt, Qt Creator, Python, GDAL, PROJ и VC++ Redistributable там не нужны.
+Результат: `dist\GeoMapAI\GeoMapAI.exe` — переносимая папка: около 110 МБ без ODM (из них ~37 МБ — GDAL/PROJ и `proj.db`) и около 1,1 ГБ с встроенным ODM (архив ~400 МБ). Без ODM скрипт не собирает поставку, если не указан `-NoOdm`. Её можно скопировать на другой ПК с Windows 10/11 x64 в папку с правом записи (не `Program Files`); Qt, Qt Creator, Python, GDAL, PROJ, Docker, WSL и VC++ Redistributable там не нужны.
 
 ## CMake-пресеты
 
@@ -83,7 +89,7 @@ ctest --preset linux-release          # QT_QPA_PLATFORM=offscreen
 
 Пресеты не выполняют развёртывание; для переносимой папки используйте скрипт.
 
-Интеграционный тест с настоящим OpenDroneMap включается параметром CMake `-DGEOMAP_ODM_DATASET=<папка со снимками>` (нужны Docker и образ ODM; см. `docs/TESTING.md`). Docker для сборки не нужен.
+Интеграционный тест с настоящим OpenDroneMap включается параметром CMake `-DGEOMAP_ODM_DATASET=<папка со снимками>`; ODM берётся из `GEOMAP_ODM_HOME` (см. `docs/TESTING.md`).
 
 ## CI
 
@@ -95,7 +101,6 @@ ctest --preset linux-release          # QT_QPA_PLATFORM=offscreen
 | --- | --- |
 | `--settings-dir <папка>` | Хранить настройки (недавние проекты) в `<папка>/GeoMapAI/GeoMap AI.ini` вместо реестра. Удобно для переносимого режима и тестов |
 | `--help`, `--version` | Справка и версия |
-| переменная `GEOMAP_DOCKER` | Полный путь к клиенту `docker`, если он не в `PATH` и не в стандартной папке Docker Desktop |
 
 ## Типичные проблемы
 
@@ -104,6 +109,8 @@ ctest --preset linux-release          # QT_QPA_PLATFORM=offscreen
 | Тест падает с `0xc0000135` | Не найдены DLL Qt. CMake 3.22+ добавляет `<Qt>\bin` в `PATH` тестов автоматически; на 3.21 добавьте вручную |
 | Окно не появляется, процесс сразу завершается | Ошибка загрузки QML. Запустите с `QT_FORCE_STDERR_LOGGING=1` и перенаправьте stderr в файл |
 | TIFF не импортируется | Не установлен модуль Qt Image Formats (нет `imageformats\qtiff.dll`) |
+| `Could not find a package configuration file provided by "Qt6ShaderTools"` | Не установлен Qt Shader Tools (онлайн-установщик → *Additional Libraries*) |
+| Вкладка «3D-сцена» пишет, что нужна аппаратная графика | Qt Quick запущен с программной отрисовкой (`QT_QUICK_BACKEND=software` или нет драйвера): уберите переменную, обновите драйвер видеокарты |
 | `Qt kit must be an MSVC 64-bit kit` | Указан комплект MinGW или 32-битный |
 | `Refusing to clear …` | `-OutDir` указывает на папку, которая не является развёртыванием GeoMap AI |
 | `vcpkg not found` | Нет ни `VCPKG_ROOT`, ни vcpkg в Visual Studio. Добавьте компонент «vcpkg package manager» в установщике Visual Studio или клонируйте https://github.com/microsoft/vcpkg и задайте `VCPKG_ROOT` |

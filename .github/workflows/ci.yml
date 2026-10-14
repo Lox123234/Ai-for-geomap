@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:   # manual runs also upload the portable Windows build
+    inputs:
+      with_odm:
+        description: 'Build in OpenDroneMap (downloads the 233.5 MB official installer; ~400 MB package)'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -23,7 +28,7 @@ jobs:
         with:
           version: ${{ env.QT_VERSION }}
           arch: win64_msvc2022_64
-          modules: qtimageformats
+          modules: qtimageformats qtshadertools
           cache: true
 
       # GDAL and PROJ come from vcpkg (vcpkg.json). The runner's vcpkg is moved to the
@@ -53,14 +58,18 @@ jobs:
 
       - name: Build, test and deploy
         shell: pwsh
-        run: ./scripts/build-windows.ps1 -QtDir "$env:QT_ROOT_DIR" -Zip
+        run: |
+          # Every release contains OpenDroneMap; push/PR checks build without it to stay fast.
+          $odm = @{ NoOdm = $true }
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.with_odm }}' -eq 'true') { $odm = @{ FetchOdm = $true } }
+          ./scripts/build-windows.ps1 -QtDir "$env:QT_ROOT_DIR" -Zip @odm
 
       - name: Upload portable build
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
           name: GeoMapAI-windows-x64
-          path: dist/GeoMapAI-*-win64.zip
+          path: dist/GeoMapAI-*-win64*.zip
           retention-days: 14
 
   linux:
@@ -78,7 +87,7 @@ jobs:
           version: ${{ env.QT_VERSION }}
           host: linux
           arch: linux_gcc_64
-          modules: qtimageformats
+          modules: qtimageformats qtshadertools
           cache: true
 
       - name: Configure

@@ -1,8 +1,8 @@
-# Architecture — GeoMap AI 0.3.1
+# Architecture — GeoMap AI 0.4.0
 
 ## Process
 
-Single native Qt process. C++ handles files, persistence and background work; Qt Quick/QML draws the interface. There is no browser, local HTTP service, sign-in or telemetry. Photogrammetric reconstruction runs as a separate program that GeoMap AI starts, watches and stops: OpenDroneMap's official Windows build ("native" runtime, with its own embedded Python) or OpenDroneMap in a Docker container. GeoMap AI itself never needs Docker or Python.
+Single native Qt process. C++ handles files, persistence and background work; Qt Quick/QML draws the interface. There is no browser, local HTTP service, sign-in or telemetry. Photogrammetric reconstruction is done by OpenDroneMap built into GeoMap AI: its official Windows build ships in `<app>\engines\odm` with its own Python and tools, and GeoMap AI starts, watches and stops it as a child process tree. No Docker, WSL or separate installation; ODM stays a separate process because it is AGPL-3.0 (GeoMap AI remains MIT) and so that its crashes or memory exhaustion cannot take the application down.
 
 ## Layers and targets
 
@@ -11,11 +11,14 @@ qml/Main.qml                 main window: menu bar and toolbar from the command 
                              runCommand/commandEnabled/commandChecked, dialogs, processing view
 qml/*.qml                    Theme (palette), MainToolBar, ToolIconButton, CommandMenuItem, ProjectTreePanel,
                              PhotoListPanel, PhotoInspector, BottomPanel, MapController (map dialogs), MapCanvas,
-                             MapLayersPanel, MapLayerProperties, ShortcutsDialog; qml/icons/*.svg (own icons)
+                             MapLayersPanel, MapLayerProperties, ShortcutsDialog, View3DWorkspace (3D view with
+                             its context bar and overlays), View3DPanel (scene layers, display); qml/icons/*.svg
 app/main.cpp                 composition root: services, workspace objects, QML engine
 ------------------------------------------------------------- GeoMapUi (static library + QML module "GeoMapAI")
 app/ThumbnailProvider        image://thumbs for QML (Qt Quick)
 app/MapView                  QQuickPaintedItem: paints the map through MapService, forwards mouse/wheel/keys
+app/View3DItem               QQuickRhiItem: draws a Scene3DService snapshot with the GPU (QRhi); mouse → camera
+shaders/*.vert|frag          GLSL 440 for points and meshes, compiled by qsb into every graphics API
 ------------------------------------------------------------- GeoMapCore (static library, no QML)
 app/ProjectManager           project lifecycle, selection, import orchestration, persistence
 app/PhotoModel               QAbstractListModel for the photo list
@@ -24,7 +27,7 @@ src/import/ImportJob         worker-thread import: scan, dedupe, metadata, copy,
 src/import/ThumbnailCache    <project>/cache/thumbs previews (thread-safe functions)
 src/core/ProjectFormat       file names and path rules of the project folder
 src/processing/IProcessingEngine   engine interface: capabilities, environment, jobs, outputs
-src/processing/OdmEngine           OpenDroneMap: native runtime (bundled/installed Windows build) or Docker;
+src/processing/OdmEngine           OpenDroneMap built in (engines\odm; restore from the pinned installer if missing);
                                    profiles, option whitelist, install, stage parsing, results, quality
 src/processing/Platform            data folder, ASCII-safe paths, NTFS junctions, process trees (job objects)
 src/processing/Downloader          HTTPS download accepted only with the pinned SHA-256
@@ -45,6 +48,11 @@ src/ui/workspace/WorkspaceState    window and panel layout in QSettings ("worksp
 src/ui/workspace/AppLog            operations journal (model + daily file in <data>/logs); Journal wires the services
 src/ui/workspace/ProjectTreeModel  tree of the project panel from the services; ProjectTreeFilter for the search
 src/ui/workspace/AppInfo           versions, documentation and log folders for the Help menu
+src/view3d/Scene3D                 3D data and loaders: PLY/LAS clouds, OBJ (MTL textures) and PLY meshes, DEM → terrain
+                                   mesh with orthophoto drape; float coordinates relative to a double origin
+src/view3d/Camera3D                orbit camera (Z up, yaw 0 = north), fitting to the data, rays; point and triangle picking
+src/view3d/Scene3DService          the 3D scene: layers loaded in the background, common origin, camera, picking and
+                                   measurements, display settings; QML API "scene3d"; no GPU or QML needed
 ```
 
 The interface is a QML module in the static library `GeoMapUi` (URI `GeoMapAI`, every file at the module root `qrc:/qt/qml/GeoMapAI/`), linked by the executable and by `GeoMapAIUiTests`, which loads the real window offscreen.
@@ -64,8 +72,7 @@ Every user action of the main window is a command of `src/ui/commands/commands.j
 | Thumbnail pool (`idealThreadCount / 2`, min 2) | cache lookups and missing thumbnails requested by QML |
 | QML pixmap reader / render thread | Qt Quick internals (full-size preview decoding) |
 | Job preparation (one per job start) | reads each input photo's header, hard-links or copies it into `jobs/<id>/images` |
-| `docker` client processes | `version` / `image inspect` / `info`, `pull`, `run` (ODM), `stop` / `rm -f`; their output is read asynchronously on the GUI thread |
-| Native ODM process tree | `python.exe run.py` and everything it starts, in one job object; output read asynchronously on the GUI thread |
+| ODM process tree | `python.exe run.py` and everything it starts, in one job object; output read asynchronously on the GUI thread |
 | Network (Qt) | the ODM installer download, streamed to disk with incremental SHA-256 |
 | Map tile pool (`idealThreadCount / 2`, min 2) | raster tiles: GDAL reads (with pyramids) and styling into 256×256 images; stale requests are dropped |
 | Global thread pool | per-layer preparation: band statistics, pyramid building with progress and cancel, vector loading |
@@ -89,15 +96,15 @@ Every user action of the main window is a command of `src/ui/commands/commands.j
 
 ```text
 QML ──Q_INVOKABLE──▶ ProcessingService ──createJob / start / cancel / abort──▶ IProcessingEngine (OdmEngine)
-    ◀── properties,       │ queue, one job at a time                              │ docker run --rm … (QProcess)
+    ◀── properties,       │ queue, one job at a time                              │ python run.py … (QProcess, job object)
         JobListModel      │ jobs/<id>/job.json (QSaveFile), log.txt               │ stageChanged / logLine / finished
                           ▼                                                       ▼
                   preparation thread → jobs/<id>/images            collectOutputs → verified Artifact list
 ```
 
 - States: `queued → preparing → running → completed | failed | cancelled`, with `cancelling` in between, and `interrupted` for jobs that were active when the application stopped or the project was closed. Each transition is written to `job.json` before signals go out.
-- Runtimes: the native runtime starts ODM's own `python.exe run.py` with the variables of ODM's `win32env.bat`; every process ODM spawns joins a Windows job object with kill-on-close, so cancel, exit and even a crash of GeoMap AI end the whole tree. Job folders whose path ODM's narrow-API components cannot open (spaces, non-Latin letters) are reached through a temporary NTFS junction in an ASCII-only folder. The Docker runtime bind-mounts the job folder and the photos read-only.
-- `cancel()` is asynchronous: native — terminate the job object; Docker — `docker stop -t 10`, then `docker rm -f` if the client does not exit. `abort()` is the synchronous stop used on exit and on project switch, after the user confirmed in the UI.
+- Runtime: ODM's own `python.exe run.py` with the variables of ODM's `win32env.bat`; every process ODM spawns joins a Windows job object with kill-on-close, so cancel, exit and even a crash of GeoMap AI end the whole tree. Job folders whose path ODM's narrow-API components cannot open (spaces, non-Latin letters) are reached through a temporary NTFS junction in an ASCII-only folder. On Linux a native ODM build is started through its `run.sh` (GEOMAP_ODM_HOME; not verified yet).
+- `cancel()` terminates the job object (the process's `finished()` completes the cancellation). `abort()` is the synchronous stop used on exit and on project switch, after the user confirmed in the UI. Jobs of 0.2.0 that ran in Docker stay readable but cannot be resumed.
 - Installation of the native runtime: `Downloader` fetches ODM's signed installer and accepts it only with the pinned SHA-256; the Inno Setup installer runs silently per user (no admin); the VC++ runtime shipped with GeoMap AI is copied next to ODM's tools; `run.py --version` verifies the result. An ODM installation registered elsewhere is never replaced (ODM's installer would uninstall it).
 - Jobs continue in place (`resumeJob`): the engine drops stage-limiting options and ODM reuses finished stages; a partial job (alignment only) continues with another profile. Quality figures come from ODM's `stats.json` via `qualityReport()`.
 - `ProcessingService::setProject` follows `ProjectManager::projectDirectoryChanged`: it stops the previous project's work, then loads `jobs/*/job.json`.
@@ -115,6 +122,16 @@ QML ──Q_INVOKABLE──▶ ProcessingService ──createJob / start / cance
 - Drawings: points, lines and polygons in `vectors/drawings.geojson` (WGS 84), every change is an undo command (add, remove, move vertex).
 - Exports: PNG at twice the view size; PDF on A4 landscape (10 mm margins, 200 dpi) with the printed scale; both with legend, CRS, date, scale bar, grid north and sources. Drawings export to GeoJSON (WGS 84), GeoPackage (map CRS) or KML.
 
+## 3D view
+
+`Scene3DService` (no GPU) holds layers with immutable shared data: point clouds (positions and colours), meshes (vertices, normals, UVs, colours, parts with textures), terrains built from a DEM (a grid of at most 1024×1024 vertices, nodata cells left as holes, the orthophoto cut to the DEM extent as texture when it has the same CRS). Data is loaded on a pool of two threads; a layer becomes drawable when its load finishes.
+
+- Coordinates: UTM values do not fit a float with centimetre precision, so every layer keeps float positions relative to its own origin (double): ODM outputs use the offset in `odm_georeferencing/coords.txt`, LAS the minimum of its header, other files their first point, a DEM its lower-left corner. The scene origin is the first loaded layer's; each layer is drawn with a float offset from it.
+- Georeferencing: a layer is georeferenced when its CRS is known (ODM `coords.txt`, a CRS record in LAS, a GeoTIFF CRS). Only a scene of georeferenced layers reports values in metres; otherwise picks and measurements are in file units, marked as such. Layers in different CRSs are not reprojected yet (ODM results of one project share one).
+- Rendering: `View3DItem` (a `QQuickRhiItem`, the same Direct3D/Vulkan/Metal/OpenGL device as Qt Quick) takes a snapshot of the scene in `synchronize()`, uploads changed layers once (immutable vertex and index buffers, mipmapped textures) and draws points as instanced screen-sized quads (round, by `discard`) and meshes with texture, vertex colours or a height ramp, two-sided sun lighting (azimuth 315°, elevation 45°) and a vertical exaggeration that is visual only (picking divides it out).
+- Clouds larger than the point budget are thinned on load (every k-th point); there is no level-of-detail structure yet.
+- With the software Qt Quick renderer there is no QRhi: the view says so; layers still load and can be measured.
+
 ## Invariants
 
 1. Imported images live in `photos/` under the project directory; originals are never modified or removed.
@@ -127,9 +144,10 @@ QML ──Q_INVOKABLE──▶ ProcessingService ──createJob / start / cance
 7. Engines run as separate processes started with argument lists, never through a shell; user-supplied engine options pass a whitelist first.
 8. A job writes only inside its `jobs/<id>/` directory; its input photos are mounted read-only.
 9. Nothing is reported as completed unless it was observed: jobs that were active at shutdown load as `interrupted`.
-10. GeoMap AI stays fully usable without Docker or ODM; only the processing view reports them missing.
+10. GeoMap AI stays fully usable without ODM (e.g. a developer build); only the processing view reports it missing.
 11. Downloaded executables are run only after their SHA-256 matches a value pinned in the source.
-12. Native engine processes never outlive GeoMap AI (kill-on-close job object, also on a crash). Docker containers are removed on exit, or when the project is opened again after a crash.
+12. Engine processes never outlive GeoMap AI (kill-on-close job object, also on a crash).
 13. A CRS is never guessed for data that has none; automatic choices (UTM zone of the data) are deterministic and shown.
 14. GIS source files are opened read-only; derived data (pyramids) lives in the project cache and can be deleted.
 15. GDAL and PROJ run offline: no network access, no `.aux.xml` files next to the user's data (`GDAL_PAM_ENABLED=NO`).
+16. Metric values (metres) are shown only for data in a known CRS; ungeoreferenced 3D data is measured in file units, labelled.

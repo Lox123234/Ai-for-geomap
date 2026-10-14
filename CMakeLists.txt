@@ -4,13 +4,13 @@ if(CMAKE_HOST_WIN32 AND NOT DEFINED VCPKG_TARGET_TRIPLET)
     set(VCPKG_TARGET_TRIPLET x64-windows-geomap CACHE STRING "vcpkg triplet")
     set(VCPKG_HOST_TRIPLET x64-windows-geomap CACHE STRING "vcpkg host triplet")
 endif()
-project(GeoMapAI VERSION 0.3.1 LANGUAGES CXX)
+project(GeoMapAI VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Network Qml Quick QuickControls2)
+find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Network Qml Quick QuickControls2 ShaderTools)
 qt_standard_project_setup(REQUIRES 6.5)
 
 # GIS: GDAL/OGR and PROJ. Windows: vcpkg manifest (vcpkg.json) through the vcpkg toolchain;
@@ -80,8 +80,14 @@ qt_add_library(GeoMapCore STATIC
     src/ui/workspace/ProjectTreeModel.cpp
     src/ui/workspace/Journal.h
     src/ui/workspace/Journal.cpp
+    src/view3d/Scene3D.h
+    src/view3d/Scene3D.cpp
+    src/view3d/Camera3D.h
+    src/view3d/Camera3D.cpp
+    src/view3d/Scene3DService.h
+    src/view3d/Scene3DService.cpp
 )
-target_include_directories(GeoMapCore PUBLIC app src/core src/import src/processing src/gis src/ui/commands src/ui/workspace)
+target_include_directories(GeoMapCore PUBLIC app src/core src/import src/processing src/gis src/ui/commands src/ui/workspace src/view3d)
 target_link_libraries(GeoMapCore PUBLIC Qt6::Core Qt6::Gui Qt6::Network GDAL::GDAL PROJ::proj)
 target_compile_definitions(GeoMapCore PRIVATE
     GEOMAP_PROJ_DATA="${GEOMAP_GIS_SHARE}/proj" GEOMAP_GDAL_DATA="${GEOMAP_GIS_SHARE}/gdal"
@@ -95,7 +101,7 @@ set(GEOMAP_QML_FILES
     qml/Main.qml qml/Theme.qml qml/FlatButton.qml qml/SectionTitle.qml qml/ToolIconButton.qml
     qml/CommandMenuItem.qml qml/MainToolBar.qml qml/ProjectTreePanel.qml qml/PhotoListPanel.qml
     qml/PhotoInspector.qml qml/BottomPanel.qml qml/MapController.qml qml/MapLayersPanel.qml
-    qml/MapLayerProperties.qml qml/MapCanvas.qml qml/ShortcutsDialog.qml)
+    qml/MapLayerProperties.qml qml/MapCanvas.qml qml/ShortcutsDialog.qml qml/View3DWorkspace.qml qml/View3DPanel.qml)
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 foreach(file IN LISTS GEOMAP_QML_FILES)
     get_filename_component(name ${file} NAME)
@@ -112,6 +118,8 @@ qt_add_library(GeoMapUi STATIC
     app/ThumbnailProvider.cpp
     app/MapView.h
     app/MapView.cpp
+    app/View3DItem.h
+    app/View3DItem.cpp
 )
 # The module directory would otherwise be <build>/GeoMapAI, the path of the Linux executable.
 qt_add_qml_module(GeoMapUi
@@ -121,7 +129,13 @@ qt_add_qml_module(GeoMapUi
     QML_FILES ${GEOMAP_QML_FILES}
     RESOURCES ${GEOMAP_ICONS}
 )
-target_link_libraries(GeoMapUi PUBLIC GeoMapCore Qt6::Core Qt6::Gui Qt6::Quick Qt6::QuickControls2)
+# 3D view shaders, compiled for every graphics API by qsb (:/qt/qml/GeoMapAI/shaders/*.qsb).
+qt_add_shaders(GeoMapUi "geomap_shaders"
+    PREFIX "/qt/qml/GeoMapAI"
+    FILES shaders/points.vert shaders/points.frag shaders/mesh.vert shaders/mesh.frag
+)
+# QQuickRhiItem (Qt 6.7+) and QRhi are semi-public: Qt6::GuiPrivate.
+target_link_libraries(GeoMapUi PUBLIC GeoMapCore Qt6::Core Qt6::Gui Qt6::GuiPrivate Qt6::Quick Qt6::QuickControls2)
 
 qt_add_executable(GeoMapAI app/main.cpp)
 target_compile_definitions(GeoMapAI PRIVATE GEOMAP_VERSION="${PROJECT_VERSION}")
@@ -181,17 +195,28 @@ if(BUILD_TESTING)
         target_link_libraries(GeoMapAIUiTests PRIVATE GeoMapUi GeoMapUiplugin Qt6::Test Qt6::Quick)
         add_test(NAME GeoMapAIUiTests COMMAND GeoMapAIUiTests)
         set_tests_properties(GeoMapAIUiTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        # 3D: loaders (PLY, LAS, OBJ, DEM with drape), camera, picking, the scene service
+        # (GEOMAP_3D_JOB=<ODM job folder> also checks real reconstruction results).
+        qt_add_executable(GeoMapAIView3DTests tests/test_view3d.cpp)
+        target_link_libraries(GeoMapAIView3DTests PRIVATE GeoMapCore Qt6::Test)
+        add_test(NAME GeoMapAIView3DTests COMMAND GeoMapAIView3DTests)
+        # The 3D view rendered by the GPU into a texture (no window on the screen); skipped
+        # without a GPU API. GEOMAP_TEST_OUTPUT keeps the images.
+        qt_add_executable(GeoMapAIView3DRenderTest tests/test_view3d_render.cpp)
+        target_link_libraries(GeoMapAIView3DRenderTest PRIVATE GeoMapUi GeoMapUiplugin Qt6::Test Qt6::Quick Qt6::GuiPrivate)
+        add_test(NAME GeoMapAIView3DRenderTest COMMAND GeoMapAIView3DRenderTest)
         set(geomap_tests GeoMapAITests GeoMapAIProjectTests GeoMapAIImportTests GeoMapAIProcessingTests GeoMapAIGisTests
-            GeoMapAIWorkspaceTests GeoMapAIUiTests)
+            GeoMapAIWorkspaceTests GeoMapAIUiTests GeoMapAIView3DTests GeoMapAIView3DRenderTest)
 
-        # Real reconstruction with Docker and the pinned ODM image; minutes to hours, so only
-        # when configured with -DGEOMAP_ODM_DATASET=<folder with overlapping drone photos>.
+        # Real reconstruction with the built-in OpenDroneMap and a check of all its results;
+        # minutes to an hour, so only when configured with -DGEOMAP_ODM_DATASET=<folder with
+        # overlapping drone photos>. GEOMAP_ODM_HOME points at ODM when it is not in engines\odm.
         qt_add_executable(GeoMapAIOdmIntegrationTest tests/test_odm_integration.cpp)
         target_link_libraries(GeoMapAIOdmIntegrationTest PRIVATE GeoMapCore Qt6::Test)
         if(GEOMAP_ODM_DATASET)
             add_test(NAME GeoMapAIOdmIntegrationTest COMMAND GeoMapAIOdmIntegrationTest)
             set_tests_properties(GeoMapAIOdmIntegrationTest PROPERTIES
-                ENVIRONMENT "GEOMAP_ODM_DATASET=${GEOMAP_ODM_DATASET}" TIMEOUT 7200 LABELS integration)
+                ENVIRONMENT "GEOMAP_ODM_DATASET=${GEOMAP_ODM_DATASET};QTEST_FUNCTION_TIMEOUT=21600000" TIMEOUT 21600 LABELS integration)
             list(APPEND geomap_tests GeoMapAIOdmIntegrationTest)
         endif()
 

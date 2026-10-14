@@ -109,7 +109,11 @@ void ProjectTreeModel::rebuild()
 {
     m_refreshTimer.stop();
     clear();
-    if (!m_projects || !m_projects->hasProject()) return;
+    if (!m_projects || !m_projects->hasProject()) {
+        ++m_revision;
+        emit revisionChanged();
+        return;
+    }
     QStandardItem *root = invisibleRootItem();
     QStandardItem *project = addSection(root, QStringLiteral("project"), m_projects->projectName(), QStringLiteral("project"));
     QStandardItem *chunk = addSection(project, QStringLiteral("chunk"), QStringLiteral("Блок 1"), QStringLiteral("chunk"));
@@ -230,6 +234,8 @@ void ProjectTreeModel::refresh()
         }
         setStatus(jobsItem, QString::number(jobs.size()), true);
     }
+    ++m_revision;
+    emit revisionChanged();
 }
 
 // ------------------------------------------------------------------ filter

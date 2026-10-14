@@ -20,7 +20,9 @@
 #include "ProcessingService.h"
 #include "ProjectManager.h"
 #include "ProjectTreeModel.h"
+#include "Scene3DService.h"
 #include "ThumbnailProvider.h"
+#include "View3DItem.h"
 #include "WorkspaceState.h"
 
 // The user interface is a QML module in the static library GeoMapUi.
@@ -74,6 +76,10 @@ int main(int argc, char *argv[])
     QObject::connect(&projects, &ProjectManager::selectionChanged, &map,
                      [&map, &projects] { map.setSelectedPhoto(projects.selectedIndex()); });
     qmlRegisterType<MapView>("GeoMapAI.Map", 1, 0, "MapView");
+    // 3D view: point clouds, models and terrains of the open project.
+    Scene3DService scene3d;
+    QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &scene3d, &Scene3DService::clear);
+    qmlRegisterType<View3DItem>("GeoMapAI.View3D", 1, 0, "View3DItem");
 
     // Professional workspace: commands, layout, journal, project tree.
     CommandRegistry commands;
@@ -84,6 +90,8 @@ int main(int argc, char *argv[])
     ProjectTreeFilter projectTreeView;
     projectTreeView.setSourceModel(&projectTree);
     connectJournal(&appLog, &projects, &processing, &map);
+    QObject::connect(&scene3d, &Scene3DService::errorOccurred, &appLog,
+                     [&appLog](const QString &message) { appLog.add(AppLog::Error, QStringLiteral("3D"), message); });
     appLog.add(AppLog::Info, QStringLiteral("Программа"),
                QStringLiteral("GeoMap AI %1 запущена · %2").arg(QCoreApplication::applicationVersion(), map.gisVersion()));
 
@@ -95,6 +103,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("projects", &projects);
     engine.rootContext()->setContextProperty("processing", &processing);
     engine.rootContext()->setContextProperty("gis", &map);
+    engine.rootContext()->setContextProperty("scene3d", &scene3d);
     engine.rootContext()->setContextProperty("commands", &commands);
     engine.rootContext()->setContextProperty("workspace", &workspace);
     engine.rootContext()->setContextProperty("appLog", &appLog);
