@@ -8,6 +8,8 @@
 #include <QScreen>
 #include <QSettings>
 #include <QWindow>
+#include "OdmEngine.h"
+#include "ProcessingService.h"
 #include "ProjectManager.h"
 #include "ThumbnailProvider.h"
 
@@ -36,12 +38,20 @@ int main(int argc, char *argv[])
     }
 
     ProjectManager projects;
+    // Declared after projects and before the QML engine: on exit a running job is stopped and
+    // recorded while its project is still open, after the UI is gone.
+    ProcessingService processing(new OdmEngine);
+    QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &processing,
+                     [&processing, &projects](const QString &directory) {
+                         processing.setProject(directory, projects.photoModel());
+                     });
     QQmlApplicationEngine engine;
     auto *thumbnails = new ThumbnailProvider;   // owned by the engine
     QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, thumbnails,
                      [thumbnails](const QString &directory) { thumbnails->setProjectDirectory(directory); });
     engine.addImageProvider(QStringLiteral("thumbs"), thumbnails);
     engine.rootContext()->setContextProperty("projects", &projects);
+    engine.rootContext()->setContextProperty("processing", &processing);
     engine.loadFromModule("GeoMapAI", "Main");
     if (engine.rootObjects().isEmpty())
         return -1;

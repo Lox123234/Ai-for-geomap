@@ -78,9 +78,11 @@ ctest --preset linux-release          # QT_QPA_PLATFORM=offscreen
 
 Пресеты не выполняют развёртывание; для переносимой папки используйте скрипт.
 
+Интеграционный тест с настоящим OpenDroneMap включается параметром CMake `-DGEOMAP_ODM_DATASET=<папка со снимками>` (нужны Docker и образ ODM; см. `docs/TESTING.md`). Docker для сборки не нужен.
+
 ## CI
 
-`.github/workflows/ci.yml` собирает и тестирует проект на Windows (MSVC, через `build-windows.ps1`) и Linux (GCC, через пресеты) для Qt 6.8.3. Архив Windows-сборки выкладывается артефактом только при ручном запуске (`workflow_dispatch`). Workflow ещё не запускался: у репозитория нет удалённого хранилища на GitHub.
+`.github/workflows/ci.yml` собирает и тестирует проект на Windows (MSVC, через `build-windows.ps1`) и Linux (GCC, через пресеты) для Qt 6.8.3. Архив Windows-сборки выкладывается артефактом только при ручном запуске (`workflow_dispatch`). Интеграционный тест с ODM в CI не запускается.
 
 ## Параметры запуска приложения
 
@@ -88,6 +90,7 @@ ctest --preset linux-release          # QT_QPA_PLATFORM=offscreen
 | --- | --- |
 | `--settings-dir <папка>` | Хранить настройки (недавние проекты) в `<папка>/GeoMapAI/GeoMap AI.ini` вместо реестра. Удобно для переносимого режима и тестов |
 | `--help`, `--version` | Справка и версия |
+| переменная `GEOMAP_DOCKER` | Полный путь к клиенту `docker`, если он не в `PATH` и не в стандартной папке Docker Desktop |
 
 ## Типичные проблемы
 

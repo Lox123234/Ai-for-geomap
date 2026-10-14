@@ -40,6 +40,63 @@ ApplicationWindow {
     // Set only when the user confirms a folder: FolderDialog.selectedFolder already
     // holds the dialog's start folder as soon as it opens, even if it is cancelled.
     property url newProjectFolder: ""
+    // Processing view (activeView 2): selected profile, last pre-flight check, selected job.
+    property string profileId: "fast"
+    property var preflightResult: ({})
+    property string selectedJobId: ""
+    property var jobInfo: ({})
+    property string activeJobText: ""
+    property int clockTick: 0
+    // Confirmations before stopping a running job (closing the window or the project).
+    property bool closeConfirmed: false
+    property var pendingProjectAction: null
+
+    onSelectedJobIdChanged: refreshJob()
+
+    function durationText(seconds) {
+        if (seconds === undefined || seconds === null || seconds < 0) return "—"
+        var s = Math.floor(seconds), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60)
+        return h > 0 ? h + " ч " + m + " мин" : m > 0 ? m + " мин " + (s % 60) + " с" : s + " с"
+    }
+    function stateColor(state) {
+        switch (state) {
+        case "completed": return "#82d7b7"
+        case "failed": return "#f4a6a6"
+        case "running": case "preparing": return "#56b6f7"
+        case "cancelling": case "cancelled": case "interrupted": return "#f5cf7c"
+        default: return "#8d9aaa"
+        }
+    }
+    function refreshPreflight() {
+        window.preflightResult = projects.hasProject ? processing.preflight(window.profileId, extraOptionsField.text) : ({})
+    }
+    function refreshJob() {
+        var info = window.selectedJobId.length > 0 ? processing.jobDetails(window.selectedJobId) : ({})
+        if (window.selectedJobId.length > 0 && info.id === undefined) {
+            window.selectedJobId = ""   // deleted, or another project
+            return
+        }
+        window.jobInfo = info
+        // Follow the log end unless the user scrolled up to read.
+        var bar = logScroll.ScrollBar.vertical
+        var follow = bar.position + bar.size >= 0.98
+        logArea.text = info.log || ""
+        if (follow) Qt.callLater(function() { bar.position = Math.max(0, 1 - bar.size) })
+    }
+    function refreshActiveJob() {
+        if (!processing.active) { window.activeJobText = ""; return }
+        if (processing.activeJobId.length === 0) { window.activeJobText = "Обработка: в очереди"; return }
+        var info = processing.jobDetails(processing.activeJobId)
+        window.activeJobText = "Обработка: " + (info.stageIndex > 0
+            ? "этап " + info.stageIndex + " из " + info.stageCount + " · " + info.stageTitle
+            : info.stateText)
+    }
+    // Runs a project switch now, or after the user agrees to stop the running job.
+    function guardProcessing(action) {
+        if (!processing.active) { action(); return }
+        window.pendingProjectAction = action
+        stopProcessingDialog.open()
+    }
 
     function prettyBytes(b) {
         if (b === undefined || b === null) return "—"
@@ -106,7 +163,7 @@ ApplicationWindow {
     Shortcut { sequence: StandardKey.New; enabled: !projects.busy; onActivated: createDialog.open() }
     Shortcut { sequence: StandardKey.Open; enabled: !projects.busy; onActivated: openProjectDialog.open() }
     Shortcut { sequence: StandardKey.Save; enabled: !projects.busy; onActivated: projects.saveProject() }
-    Shortcut { sequence: "Ctrl+W"; enabled: !projects.busy; onActivated: projects.closeProject() }
+    Shortcut { sequence: "Ctrl+W"; enabled: !projects.busy; onActivated: window.guardProcessing(function() { projects.closeProject() }) }
     Shortcut { sequence: "Ctrl+I"; enabled: projects.hasProject && !projects.busy; onActivated: photoDialog.open() }
 
     Connections {
@@ -120,9 +177,14 @@ ApplicationWindow {
         function onProjectChanged() {
             window.activeView = 0
             window.imageZoom = 1.0
+            window.selectedJobId = ""
+            window.jobInfo = ({})
             if (gpsCanvas.visible) gpsCanvas.requestPaint()
         }
-        function onPhotosChanged() { if (gpsCanvas.visible) gpsCanvas.requestPaint() }
+        function onPhotosChanged() {
+            if (gpsCanvas.visible) gpsCanvas.requestPaint()
+            preflightTimer.restart()
+        }
         function onSelectionChanged() {
             window.imageZoom = 1.0
             if (gpsCanvas.visible) gpsCanvas.requestPaint()
@@ -130,6 +192,32 @@ ApplicationWindow {
         function onImportFinished() {
             if (window.closeAfterImport) window.close()
         }
+    }
+
+    Connections {
+        target: processing
+        function onErrorOccurred(message) {
+            window.lastError = message
+            errorDialog.open()
+        }
+        function onJobUpdated(id) {
+            if (id === window.selectedJobId) window.refreshJob()
+            window.refreshActiveJob()
+        }
+        function onLogUpdated(id) { if (id === window.selectedJobId) window.refreshJob() }
+        function onJobsChanged() {
+            window.refreshActiveJob()
+            preflightTimer.restart()
+        }
+        function onEnvironmentChanged() { preflightTimer.restart() }
+    }
+    // The pre-flight check reads every photo's size and the free disk space; coalesce triggers.
+    Timer { id: preflightTimer; interval: 300; onTriggered: if (processingWorkspace.visible) window.refreshPreflight() }
+    // Elapsed time of the running job in the details panel.
+    Timer {
+        interval: 1000; repeat: true
+        running: processingWorkspace.visible && window.jobInfo.running === true
+        onTriggered: window.clockTick++
     }
 
     FileDialog {
@@ -155,7 +243,10 @@ ApplicationWindow {
     FolderDialog {
         id: openProjectDialog
         title: "Выберите папку существующего GeoMap AI проекта"
-        onAccepted: projects.openProject(selectedFolder)
+        onAccepted: {
+            var folder = selectedFolder
+            window.guardProcessing(function() { projects.openProject(folder) })
+        }
     }
 
     Dialog {
@@ -211,9 +302,9 @@ ApplicationWindow {
                     text: "Создать"
                     emphasis: true
                     enabled: projectNameField.text.trim().length > 0 && window.newProjectFolder.toString().length > 0
-                    onClicked: {
+                    onClicked: window.guardProcessing(function() {
                         if (projects.createProject(window.newProjectFolder, projectNameField.text)) createDialog.close()
-                    }
+                    })
                 }
             }
         }
@@ -282,7 +373,87 @@ ApplicationWindow {
         if (projects.busy) {
             close.accepted = false
             closeDuringImportDialog.open()
+        } else if (processing.active && !window.closeConfirmed) {
+            close.accepted = false
+            closeDuringProcessingDialog.open()
         }
+    }
+    Dialog {
+        id: closeDuringProcessingDialog
+        title: "Идёт обработка"
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        width: 460
+        background: Rectangle { color: "#202936"; border.color: "#566176"; radius: 12 }
+        contentItem: Label {
+            text: "Остановить обработку и закрыть программу? Задание будет отмечено как прерванное; "
+                + "файлы, которые движок уже создал, останутся в папке задания."
+            color: window.white
+            wrapMode: Text.Wrap
+            padding: 22
+        }
+        standardButtons: Dialog.Yes | Dialog.Cancel
+        onAccepted: {
+            window.closeConfirmed = true
+            window.close()
+        }
+    }
+    Dialog {
+        id: stopProcessingDialog
+        title: "Идёт обработка"
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        width: 460
+        background: Rectangle { color: "#202936"; border.color: "#566176"; radius: 12 }
+        contentItem: Label {
+            text: "В текущем проекте выполняется обработка. Остановить её? Задание будет отмечено как прерванное."
+            color: window.white
+            wrapMode: Text.Wrap
+            padding: 22
+        }
+        standardButtons: Dialog.Yes | Dialog.Cancel
+        onAccepted: {
+            var action = window.pendingProjectAction
+            window.pendingProjectAction = null
+            if (action) action()
+        }
+        onRejected: window.pendingProjectAction = null
+    }
+    Dialog {
+        id: installDialog
+        title: "Загрузить OpenDroneMap?"
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        width: 500
+        background: Rectangle { color: "#202936"; border.color: "#566176"; radius: 12 }
+        contentItem: Label {
+            text: "Docker загрузит образ OpenDroneMap " + processing.engineVersion
+                + " (закреплён по контрольной сумме): около 630 МБ загрузки и около 2,4 ГБ на диске.\n\n"
+                + "OpenDroneMap распространяется по лицензии AGPL-3.0 отдельно от GeoMap AI. "
+                + "Он нужен только для фотограмметрической обработки."
+            color: window.white
+            wrapMode: Text.Wrap
+            padding: 22
+        }
+        standardButtons: Dialog.Yes | Dialog.Cancel
+        onAccepted: processing.installRuntime()
+    }
+    Dialog {
+        id: deleteJobDialog
+        title: "Удалить задание?"
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        width: 460
+        background: Rectangle { color: "#202936"; border.color: "#566176"; radius: 12 }
+        contentItem: Label {
+            text: "Папка задания " + (window.jobInfo.id || "") + " со всеми результатами и журналом будет удалена безвозвратно. "
+                + "Снимки проекта не затрагиваются."
+            color: window.white
+            wrapMode: Text.Wrap
+            padding: 22
+        }
+        standardButtons: Dialog.Yes | Dialog.Cancel
+        onAccepted: if (processing.deleteJob(window.selectedJobId)) window.selectedJobId = ""
     }
     Dialog {
         id: closeDuringImportDialog
@@ -342,10 +513,15 @@ ApplicationWindow {
             FlatButton { text: "Сохранить"; compact: true; enabled: projects.hasProject && !projects.busy; onClicked: projects.saveProject() }
             Rectangle { width: 1; height: 28; color: window.line }
             Rectangle {
-                implicitWidth: 91; height: 28; radius: 7
+                implicitWidth: versionBadge.implicitWidth + 24; height: 28; radius: 7
                 color: "#1b3230"
                 border.color: "#305c51"
-                Label { anchors.centerIn: parent; text: "LOCAL  •  0.1"; color: "#82d7b7"; font.pixelSize: 10; font.bold: true }
+                Label {
+                    id: versionBadge
+                    anchors.centerIn: parent
+                    text: "LOCAL  •  " + Qt.application.version.split(".").slice(0, 2).join(".")
+                    color: "#82d7b7"; font.pixelSize: 10; font.bold: true
+                }
             }
         }
     }
@@ -516,9 +692,17 @@ ApplicationWindow {
                             enabled: projects.hasProject
                             onClicked: window.activeView = 1
                         }
+                        FlatButton {
+                            text: "◈  Обработка"; compact: true
+                            emphasis: window.activeView === 2
+                            enabled: projects.hasProject
+                            onClicked: window.activeView = 2
+                        }
                         Item { Layout.fillWidth: true }
                         Label {
-                            text: window.activeView === 0 ? (projects.photoCount ? "ПРОСМОТР ФОТОГРАФИЙ" : "ПУСТОЙ ПРОЕКТ") : "СХЕМА GPS-ТОЧЕК · БЕЗ ПОДЛОЖКИ"
+                            text: window.activeView === 0 ? (projects.photoCount ? "ПРОСМОТР ФОТОГРАФИЙ" : "ПУСТОЙ ПРОЕКТ")
+                                : window.activeView === 1 ? "СХЕМА GPS-ТОЧЕК · БЕЗ ПОДЛОЖКИ"
+                                : "ФОТОГРАММЕТРИЯ · " + processing.engineName.toUpperCase()
                             color: window.muted; font.pixelSize: 10; font.letterSpacing: 0.7
                         }
                     }
@@ -577,7 +761,7 @@ ApplicationWindow {
                     ColumnLayout {
                         anchors.centerIn: parent
                         spacing: 14
-                        visible: projects.hasProject && projects.photoCount === 0
+                        visible: projects.hasProject && projects.photoCount === 0 && window.activeView === 0
                         Label { Layout.alignment: Qt.AlignHCenter; text: "▧"; color: "#517996"; font.pixelSize: 64 }
                         Label { Layout.alignment: Qt.AlignHCenter; text: "Загрузите первую съёмку"; color: window.white; font.pixelSize: 21; font.bold: true }
                         Label {
@@ -722,6 +906,475 @@ ApplicationWindow {
                             }
                         }
                     }
+
+                    // Processing: environment, new job, job history and details. Everything shown
+                    // comes from the engine (stages, log, files); there is no estimated percentage.
+                    Item {
+                        id: processingWorkspace
+                        anchors.fill: parent
+                        visible: projects.hasProject && window.activeView === 2
+                        onVisibleChanged: {
+                            if (!visible) return
+                            if (!processing.environmentChecked && !processing.checkingEnvironment) processing.checkEnvironment()
+                            window.refreshPreflight()
+                            window.refreshJob()
+                        }
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.margins: 16
+                            spacing: 16
+
+                            // Settings scroll; the start button below stays visible on short screens.
+                            ColumnLayout {
+                                Layout.preferredWidth: 340
+                                Layout.maximumWidth: 340
+                                Layout.fillHeight: true
+                                spacing: 8
+                                ScrollView {
+                                    id: processingSetup
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    contentWidth: availableWidth
+                                    clip: true
+                                    ColumnLayout {
+                                        width: processingSetup.availableWidth - 10
+                                        spacing: 10
+                                        SectionTitle { text: "ДВИЖОК РЕКОНСТРУКЦИИ" }
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            implicitHeight: envColumn.implicitHeight + 24
+                                            radius: 10
+                                            color: "#1a2430"
+                                            border.color: !processing.environmentChecked ? "#354459"
+                                                : processing.engineAvailable ? "#305c51" : "#6a3d45"
+                                            ColumnLayout {
+                                                id: envColumn
+                                                anchors.fill: parent
+                                                anchors.margins: 12
+                                                spacing: 6
+                                                Label { text: processing.engineName; color: window.white; font.bold: true; font.pixelSize: 13 }
+                                                Label {
+                                                    Layout.fillWidth: true
+                                                    wrapMode: Text.Wrap
+                                                    font.pixelSize: 12
+                                                    text: processing.checkingEnvironment ? "Проверка окружения…"
+                                                        : processing.environmentChecked ? processing.environmentSummary : "Окружение не проверено"
+                                                    color: processing.checkingEnvironment || !processing.environmentChecked ? window.muted
+                                                        : processing.engineAvailable ? "#82d7b7" : "#f4a6a6"
+                                                }
+                                                Repeater {
+                                                    model: processing.environmentProblems
+                                                    delegate: Label {
+                                                        required property string modelData
+                                                        Layout.fillWidth: true
+                                                        visible: modelData !== processing.environmentSummary
+                                                        text: modelData; wrapMode: Text.Wrap; color: "#f4c6c6"; font.pixelSize: 11
+                                                    }
+                                                }
+                                                Repeater {
+                                                    model: processing.environmentWarnings
+                                                    delegate: Label {
+                                                        required property string modelData
+                                                        Layout.fillWidth: true
+                                                        text: "⚠ " + modelData; wrapMode: Text.Wrap; color: "#f5cf7c"; font.pixelSize: 11
+                                                    }
+                                                }
+                                                Repeater {
+                                                    model: processing.environmentHints
+                                                    delegate: Label {
+                                                        required property string modelData
+                                                        Layout.fillWidth: true
+                                                        text: modelData; wrapMode: Text.Wrap; color: window.muted; font.pixelSize: 11
+                                                    }
+                                                }
+                                                RowLayout {
+                                                    Layout.topMargin: 4
+                                                    spacing: 8
+                                                    FlatButton {
+                                                        text: "Проверить снова"; compact: true
+                                                        enabled: !processing.checkingEnvironment && !processing.installing
+                                                        onClicked: processing.checkEnvironment()
+                                                    }
+                                                    FlatButton {
+                                                        text: "Загрузить образ ODM"; compact: true; emphasis: true
+                                                        visible: processing.runtimeMissing && !processing.engineMissing
+                                                        enabled: !processing.installing && !processing.checkingEnvironment
+                                                        onClicked: installDialog.open()
+                                                    }
+                                                }
+                                                Label {
+                                                    Layout.fillWidth: true
+                                                    visible: processing.installStatus.length > 0
+                                                    text: (processing.installing ? "Загрузка: " : "") + processing.installStatus
+                                                    color: processing.installing ? "#e2edfa" : window.muted
+                                                    font.pixelSize: 11; elide: Text.ElideRight
+                                                }
+                                            }
+                                        }
+
+                                        SectionTitle { text: "НОВАЯ ОБРАБОТКА"; Layout.topMargin: 10 }
+                                        Repeater {
+                                            model: processing.profiles
+                                            delegate: Rectangle {
+                                                id: profileCard
+                                                required property var modelData
+                                                readonly property bool chosen: window.profileId === modelData.id
+                                                Layout.fillWidth: true
+                                                implicitHeight: profileText.implicitHeight + 20
+                                                radius: 9
+                                                color: chosen ? "#25465f" : profileMouse.containsMouse ? "#263341" : "#1a2430"
+                                                border.color: chosen ? "#4e95c2" : "#354459"
+                                                ColumnLayout {
+                                                    id: profileText
+                                                    anchors.fill: parent
+                                                    anchors.margins: 10
+                                                    spacing: 4
+                                                    Label { text: (profileCard.chosen ? "● " : "○ ") + profileCard.modelData.title; color: window.white; font.bold: true; font.pixelSize: 12 }
+                                                    Label {
+                                                        Layout.fillWidth: true
+                                                        text: profileCard.modelData.description
+                                                        wrapMode: Text.Wrap; color: "#b7c6d8"; font.pixelSize: 11
+                                                    }
+                                                    Label {
+                                                        Layout.fillWidth: true
+                                                        visible: profileCard.chosen
+                                                        text: profileCard.modelData.arguments
+                                                        wrapMode: Text.WrapAnywhere; color: window.muted; font.pixelSize: 10; font.family: "Consolas"
+                                                    }
+                                                }
+                                                MouseArea {
+                                                    id: profileMouse
+                                                    anchors.fill: parent
+                                                    hoverEnabled: true
+                                                    onClicked: {
+                                                        window.profileId = profileCard.modelData.id
+                                                        window.refreshPreflight()
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Label { text: "Дополнительные параметры ODM (необязательно)"; color: window.muted; font.pixelSize: 11; Layout.topMargin: 4 }
+                                        TextField {
+                                            id: extraOptionsField
+                                            Layout.fillWidth: true
+                                            placeholderText: "например: --dsm --orthophoto-resolution 3"
+                                            selectByMouse: true
+                                            color: window.white
+                                            placeholderTextColor: "#66768a"
+                                            font.family: "Consolas"; font.pixelSize: 12
+                                            background: Rectangle { color: "#121b26"; radius: 7; border.color: "#405066" }
+                                            onTextChanged: preflightTimer.restart()
+                                        }
+
+                                        // Pre-flight check of the current project for the chosen profile.
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            Layout.topMargin: 4
+                                            implicitHeight: checkColumn.implicitHeight + 20
+                                            radius: 9
+                                            color: "#151d27"
+                                            border.color: window.line
+                                            visible: window.preflightResult.images !== undefined
+                                            ColumnLayout {
+                                                id: checkColumn
+                                                anchors.fill: parent
+                                                anchors.margins: 10
+                                                spacing: 4
+                                                Label {
+                                                    Layout.fillWidth: true; wrapMode: Text.Wrap
+                                                    text: "Снимков в задании: " + window.preflightResult.images
+                                                        + " (с GPS: " + window.preflightResult.withGps + "), " + window.preflightResult.inputText
+                                                    color: window.white; font.pixelSize: 11
+                                                }
+                                                Label {
+                                                    Layout.fillWidth: true; wrapMode: Text.Wrap
+                                                    text: "Место на диске проекта: нужно около " + window.preflightResult.neededText
+                                                        + ", свободно " + window.preflightResult.freeText
+                                                    color: window.muted; font.pixelSize: 11
+                                                }
+                                                Repeater {
+                                                    model: window.preflightResult.errors || []
+                                                    delegate: Label {
+                                                        required property string modelData
+                                                        Layout.fillWidth: true
+                                                        text: "✕ " + modelData; wrapMode: Text.Wrap; color: "#f4a6a6"; font.pixelSize: 11
+                                                    }
+                                                }
+                                                Repeater {
+                                                    model: window.preflightResult.warnings || []
+                                                    delegate: Label {
+                                                        required property string modelData
+                                                        Layout.fillWidth: true
+                                                        text: "⚠ " + modelData; wrapMode: Text.Wrap; color: "#f5cf7c"; font.pixelSize: 11
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: "Время и качество реконструкции зависят от перекрытия и качества снимков, GPS/GCP и ресурсов компьютера; они не гарантируются."
+                                            wrapMode: Text.Wrap; color: "#6f7f92"; font.pixelSize: 10
+                                        }
+                                    }
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    visible: projects.busy
+                                    text: "Дождитесь окончания импорта."
+                                    color: "#f5cf7c"; font.pixelSize: 11
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    visible: !projects.busy && window.preflightResult.ok === false
+                                    text: "Запуск недоступен: см. проверку выше."
+                                    color: "#f4a6a6"; font.pixelSize: 11
+                                }
+                                FlatButton {
+                                    Layout.fillWidth: true
+                                    text: processing.active ? "Добавить в очередь" : "Запустить обработку"
+                                    emphasis: true
+                                    enabled: window.preflightResult.ok === true && !projects.busy
+                                    onClicked: {
+                                        var id = processing.startJob(window.profileId, extraOptionsField.text)
+                                        if (id.length > 0) window.selectedJobId = id
+                                    }
+                                }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                spacing: 10
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    SectionTitle { text: "ЗАДАНИЯ" }
+                                    Item { Layout.fillWidth: true }
+                                    Label { text: processing.jobCount.toString(); color: window.muted; font.pixelSize: 11 }
+                                }
+                                ListView {
+                                    id: jobList
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: Math.max(60, Math.min(contentHeight, 230))
+                                    clip: true
+                                    spacing: 4
+                                    model: processing.jobModel
+                                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                                    delegate: Rectangle {
+                                        id: jobRow
+                                        required property string jobId
+                                        required property string jobState
+                                        required property string stateText
+                                        required property string profileTitle
+                                        required property var createdAt
+                                        required property string stageTitle
+                                        required property int stageIndex
+                                        required property int stageCount
+                                        required property string message
+                                        required property bool active
+                                        width: jobList.width - 10
+                                        height: 50
+                                        radius: 8
+                                        color: window.selectedJobId === jobId ? "#25465f" : jobMouse.containsMouse ? "#263341" : "#1a2430"
+                                        border.color: window.selectedJobId === jobId ? "#4e95c2" : "transparent"
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 10; anchors.rightMargin: 10
+                                            spacing: 10
+                                            Rectangle {
+                                                implicitWidth: stateLabel.implicitWidth + 14; implicitHeight: 22; radius: 6
+                                                color: "#121922"
+                                                border.color: window.stateColor(jobRow.jobState)
+                                                Label { id: stateLabel; anchors.centerIn: parent; text: jobRow.stateText; color: window.stateColor(jobRow.jobState); font.pixelSize: 10; font.bold: true }
+                                            }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 3
+                                                Label {
+                                                    text: jobRow.profileTitle + " · " + Qt.formatDateTime(jobRow.createdAt, "dd.MM.yyyy hh:mm") + " · " + jobRow.jobId
+                                                    color: window.white; font.pixelSize: 11; font.bold: true
+                                                    Layout.fillWidth: true; elide: Text.ElideRight
+                                                }
+                                                Label {
+                                                    text: jobRow.active && jobRow.stageIndex > 0
+                                                        ? "Этап " + jobRow.stageIndex + " из " + jobRow.stageCount + " · " + jobRow.stageTitle
+                                                        : jobRow.message
+                                                    color: window.muted; font.pixelSize: 10
+                                                    Layout.fillWidth: true; elide: Text.ElideRight
+                                                }
+                                            }
+                                        }
+                                        MouseArea {
+                                            id: jobMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            onClicked: window.selectedJobId = jobRow.jobId
+                                        }
+                                    }
+                                    Label {
+                                        anchors.centerIn: parent
+                                        visible: processing.jobCount === 0
+                                        text: "Заданий пока нет"
+                                        color: window.muted; font.pixelSize: 12
+                                    }
+                                }
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    radius: 10
+                                    color: "#151d27"
+                                    border.color: window.line
+                                    Label {
+                                        anchors.centerIn: parent
+                                        width: parent.width - 40
+                                        horizontalAlignment: Text.AlignHCenter
+                                        wrapMode: Text.Wrap
+                                        visible: window.jobInfo.id === undefined
+                                        text: processing.jobCount > 0 ? "Выберите задание, чтобы увидеть этапы, журнал и результаты" : ""
+                                        color: window.muted; font.pixelSize: 12
+                                    }
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 14
+                                        spacing: 8
+                                        visible: window.jobInfo.id !== undefined
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 8
+                                            Label { text: "Задание " + (window.jobInfo.id || ""); color: window.white; font.bold: true; font.pixelSize: 14 }
+                                            Label { text: window.jobInfo.stateText || ""; color: window.stateColor(window.jobInfo.state); font.bold: true; font.pixelSize: 12 }
+                                            Item { Layout.fillWidth: true }
+                                            FlatButton {
+                                                text: "Отменить"; compact: true; caution: true
+                                                visible: window.jobInfo.active === true
+                                                enabled: window.jobInfo.state !== "cancelling"
+                                                onClicked: processing.cancelJob(window.selectedJobId)
+                                            }
+                                            FlatButton { text: "Открыть папку"; compact: true; onClicked: processing.revealJob(window.selectedJobId) }
+                                            FlatButton {
+                                                text: "Удалить"; compact: true; caution: true
+                                                visible: window.jobInfo.active === false
+                                                onClicked: deleteJobDialog.open()
+                                            }
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true; wrapMode: Text.Wrap
+                                            // clockTick re-evaluates the elapsed time of a running job every second.
+                                            text: {
+                                                window.clockTick
+                                                var info = window.jobInfo
+                                                var started = info.startedMs !== undefined && info.startedMs >= 0
+                                                var elapsed = info.running && started ? (Date.now() - info.startedMs) / 1000 : info.seconds
+                                                return (info.engine || "") + " · " + (info.profileTitle || "") + " · снимков: " + info.imageCount
+                                                    + (started ? " · время: " + window.durationText(elapsed) : "")
+                                            }
+                                            color: "#b7c6d8"; font.pixelSize: 11
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            visible: window.jobInfo.stageIndex > 0
+                                            text: "Этап " + window.jobInfo.stageIndex + " из " + window.jobInfo.stageCount + ": " + window.jobInfo.stageTitle
+                                                + (window.jobInfo.active ? "" : " (последний выполнявшийся)")
+                                            color: window.white; font.pixelSize: 12
+                                        }
+                                        Row {
+                                            spacing: 3
+                                            visible: window.jobInfo.stageCount > 0 && window.jobInfo.stageIndex > 0
+                                            Repeater {
+                                                model: window.jobInfo.stageCount || 0
+                                                delegate: Rectangle {
+                                                    required property int index
+                                                    width: 20; height: 5; radius: 2
+                                                    color: index < window.jobInfo.stageIndex - 1 ? "#3f7fa8"
+                                                        : index === window.jobInfo.stageIndex - 1 ? window.stateColor(window.jobInfo.state)
+                                                        : "#26303b"
+                                                }
+                                            }
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true; wrapMode: Text.Wrap
+                                            visible: window.jobInfo.active === true
+                                            text: "Этапы ODM сильно различаются по длительности, поэтому номер этапа не означает долю выполненной работы."
+                                            color: "#6f7f92"; font.pixelSize: 10
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true; wrapMode: Text.Wrap
+                                            text: window.jobInfo.message || ""
+                                            color: window.jobInfo.state === "failed" ? "#f4c6c6" : "#d4e2f2"; font.pixelSize: 12
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true; wrapMode: Text.WrapAnywhere
+                                            text: "Параметры: " + (window.jobInfo.arguments || "")
+                                            color: window.muted; font.pixelSize: 10; font.family: "Consolas"
+                                        }
+
+                                        SectionTitle { text: "РЕЗУЛЬТАТЫ"; visible: (window.jobInfo.outputs || []).length > 0; Layout.topMargin: 4 }
+                                        Repeater {
+                                            model: window.jobInfo.outputs || []
+                                            delegate: RowLayout {
+                                                id: outputRow
+                                                required property var modelData
+                                                Layout.fillWidth: true
+                                                spacing: 10
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 2
+                                                    Label {
+                                                        text: outputRow.modelData.title + " · " + outputRow.modelData.size
+                                                        color: window.white; font.pixelSize: 12; font.bold: true
+                                                    }
+                                                    Label {
+                                                        Layout.fillWidth: true; elide: Text.ElideMiddle
+                                                        text: outputRow.modelData.details + "  ·  " + outputRow.modelData.file
+                                                        color: window.muted; font.pixelSize: 10
+                                                    }
+                                                }
+                                                FlatButton {
+                                                    text: "Открыть"; compact: true; implicitHeight: 28
+                                                    onClicked: processing.openOutput(window.selectedJobId, outputRow.modelData.file)
+                                                }
+                                            }
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true; wrapMode: Text.Wrap
+                                            visible: (window.jobInfo.missing || []).length > 0
+                                            text: "Не созданы в этом режиме: " + (window.jobInfo.missing || []).join(", ")
+                                            color: window.muted; font.pixelSize: 11
+                                        }
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Layout.topMargin: 4
+                                            SectionTitle { text: "ЖУРНАЛ" }
+                                            Item { Layout.fillWidth: true }
+                                            Label {
+                                                text: "последние строки · полностью: log.txt в папке задания"
+                                                color: "#6f7f92"; font.pixelSize: 10
+                                            }
+                                        }
+                                        ScrollView {
+                                            id: logScroll
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            Layout.minimumHeight: 120
+                                            clip: true
+                                            background: Rectangle { color: "#0f141b"; radius: 7; border.color: "#2a3646" }
+                                            TextArea {
+                                                id: logArea
+                                                readOnly: true
+                                                selectByMouse: true
+                                                wrapMode: TextEdit.NoWrap
+                                                font.family: "Consolas"; font.pixelSize: 11
+                                                color: "#c9d6e4"
+                                                selectionColor: "#2f5d80"
+                                                background: null
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Bottom photo strip
@@ -758,10 +1411,11 @@ ApplicationWindow {
             }
         }
 
-        // Right properties inspector
+        // Right properties inspector (photo details; the processing view uses the width itself)
         Rectangle {
             Layout.preferredWidth: 275
             Layout.fillHeight: true
+            visible: window.activeView !== 2
             color: window.surface
             border.color: window.line
             ColumnLayout {
@@ -810,7 +1464,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     text: "Закрыть проект"
                     enabled: projects.hasProject && !projects.busy
-                    onClicked: projects.closeProject()
+                    onClicked: window.guardProcessing(function() { projects.closeProject() })
                 }
                 FlatButton {
                     Layout.fillWidth: true
@@ -873,6 +1527,17 @@ ApplicationWindow {
                 text: "Пропущенные файлы: " + projects.importIssues.length
                 compact: true; implicitHeight: 24
                 onClicked: issuesDialog.open()
+            }
+            // Running processing job (real engine stage), also while another view is shown.
+            FlatButton {
+                visible: processing.active
+                text: window.activeJobText.length > 0 ? window.activeJobText : "Обработка"
+                compact: true; implicitHeight: 24
+                Layout.maximumWidth: 380
+                onClicked: {
+                    window.activeView = 2
+                    if (processing.activeJobId.length > 0) window.selectedJobId = processing.activeJobId
+                }
             }
             Label { text: "OFFLINE  /  OPEN SOURCE  /  v" + Qt.application.version; color: "#71849a"; font.pixelSize: 10; font.letterSpacing: 0.6 }
         }

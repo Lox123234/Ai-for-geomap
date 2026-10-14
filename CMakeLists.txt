@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(GeoMapAI VERSION 0.1.1 LANGUAGES CXX)
+project(GeoMapAI VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,8 +21,17 @@ qt_add_library(GeoMapCore STATIC
     app/PhotoModel.cpp
     app/ExifReader.h
     app/ExifReader.cpp
+    src/processing/ProcessingTypes.h
+    src/processing/ProcessingTypes.cpp
+    src/processing/IProcessingEngine.h
+    src/processing/GeoTiffInfo.h
+    src/processing/GeoTiffInfo.cpp
+    src/processing/OdmEngine.h
+    src/processing/OdmEngine.cpp
+    src/processing/ProcessingService.h
+    src/processing/ProcessingService.cpp
 )
-target_include_directories(GeoMapCore PUBLIC app src/core src/import)
+target_include_directories(GeoMapCore PUBLIC app src/core src/import src/processing)
 target_link_libraries(GeoMapCore PUBLIC Qt6::Core Qt6::Gui)
 
 qt_add_executable(GeoMapAI
@@ -78,11 +87,32 @@ if(BUILD_TESTING)
         target_link_libraries(GeoMapAIImportTests PRIVATE GeoMapCore Qt6::Test)
         add_test(NAME GeoMapAIImportTests COMMAND GeoMapAIImportTests)
 
+        qt_add_executable(GeoMapAIProcessingTests
+            tests/test_processing.cpp
+            tests/MockEngine.h
+            tests/TestImages.h
+        )
+        target_link_libraries(GeoMapAIProcessingTests PRIVATE GeoMapCore Qt6::Test)
+        add_test(NAME GeoMapAIProcessingTests COMMAND GeoMapAIProcessingTests)
+        set(geomap_tests GeoMapAITests GeoMapAIProjectTests GeoMapAIImportTests GeoMapAIProcessingTests)
+
+        # Real reconstruction with Docker and the pinned ODM image; minutes to hours, so only
+        # when configured with -DGEOMAP_ODM_DATASET=<folder with overlapping drone photos>.
+        qt_add_executable(GeoMapAIOdmIntegrationTest tests/test_odm_integration.cpp)
+        target_link_libraries(GeoMapAIOdmIntegrationTest PRIVATE GeoMapCore Qt6::Test)
+        if(GEOMAP_ODM_DATASET)
+            add_test(NAME GeoMapAIOdmIntegrationTest COMMAND GeoMapAIOdmIntegrationTest)
+            set_tests_properties(GeoMapAIOdmIntegrationTest PROPERTIES
+                ENVIRONMENT "GEOMAP_ODM_DATASET=${GEOMAP_ODM_DATASET}" TIMEOUT 7200 LABELS integration)
+            list(APPEND geomap_tests GeoMapAIOdmIntegrationTest)
+        endif()
+
         # On Windows the test executables are not deployed; let them find the Qt DLLs
         # (ENVIRONMENT_MODIFICATION needs CMake 3.22+; with 3.21 put <Qt>\bin on PATH).
+        # Without a console window Qt sends test output to the debugger; keep it in ctest logs.
         if(WIN32)
-            set_tests_properties(GeoMapAITests GeoMapAIProjectTests GeoMapAIImportTests PROPERTIES
-                ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+            set_tests_properties(${geomap_tests} PROPERTIES
+                ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_FORCE_STDERR_LOGGING=set:1")
         endif()
     endif()
 endif()
