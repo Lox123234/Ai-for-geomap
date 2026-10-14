@@ -8,6 +8,10 @@
 #include <QScreen>
 #include <QSettings>
 #include <QWindow>
+#include <QQmlEngine>
+#include "GisEnvironment.h"
+#include "MapService.h"
+#include "MapView.h"
 #include "OdmEngine.h"
 #include "Platform.h"
 #include "ProcessingService.h"
@@ -51,6 +55,18 @@ int main(int argc, char *argv[])
                      [&processing, &projects](const QString &directory) {
                          processing.setProject(directory, projects.photoModel());
                      });
+    // GDAL/OGR and PROJ; data folders next to the executable in deployed builds.
+    GisEnvironment::initialize(QCoreApplication::applicationDirPath());
+    MapService map;
+    // After the photo model was reset (projectChanged), unlike projectDirectoryChanged.
+    QObject::connect(&projects, &ProjectManager::projectChanged, &map, [&map, &projects] {
+        if (projects.projectPath() != map.projectDirectory()) map.setProject(projects.projectPath(), projects.photoModel());
+    });
+    QObject::connect(&projects, &ProjectManager::photosChanged, &map, &MapService::photosChanged);
+    QObject::connect(&projects, &ProjectManager::selectionChanged, &map,
+                     [&map, &projects] { map.setSelectedPhoto(projects.selectedIndex()); });
+    qmlRegisterType<MapView>("GeoMapAI.Map", 1, 0, "MapView");
+
     QQmlApplicationEngine engine;
     auto *thumbnails = new ThumbnailProvider;   // owned by the engine
     QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, thumbnails,
@@ -58,6 +74,7 @@ int main(int argc, char *argv[])
     engine.addImageProvider(QStringLiteral("thumbs"), thumbnails);
     engine.rootContext()->setContextProperty("projects", &projects);
     engine.rootContext()->setContextProperty("processing", &processing);
+    engine.rootContext()->setContextProperty("gis", &map);
     engine.loadFromModule("GeoMapAI", "Main");
     if (engine.rootObjects().isEmpty())
         return -1;

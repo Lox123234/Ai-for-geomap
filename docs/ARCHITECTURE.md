@@ -1,4 +1,4 @@
-# Architecture — GeoMap AI 0.2.1
+# Architecture — GeoMap AI 0.3.0
 
 ## Process
 
@@ -7,9 +7,10 @@ Single native Qt process. C++ handles files, persistence and background work; Qt
 ## Layers and targets
 
 ```text
-qml/Main.qml                 UI (QML)
-app/main.cpp                 composition root: QML engine, image provider, settings, processing service
+qml/Main.qml                 UI (QML); qml/MapWorkspace.qml — the map view, FlatButton/SectionTitle — shared controls
+app/main.cpp                 composition root: QML engine, image provider, settings, GIS, processing and map services
 app/ThumbnailProvider        image://thumbs for QML (Qt Quick)
+app/MapView                  QQuickPaintedItem: paints the map through MapService, forwards mouse/wheel/keys
 ------------------------------------------------------------- GeoMapCore (static library, no QML)
 app/ProjectManager           project lifecycle, selection, import orchestration, persistence
 app/PhotoModel               QAbstractListModel for the photo list
@@ -25,9 +26,18 @@ src/processing/Downloader          HTTPS download accepted only with the pinned 
 src/processing/ProcessingService   job queue, states, jobs/<id>/job.json, log, QML API, JobListModel
 src/processing/GeoTiffInfo         bounded (Big)TIFF/GeoKeys reader for result panels
 src/processing/ProcessingTypes     JobState, ProcessingJob, Artifact, EnvironmentReport (+ JSON)
+src/gis/GisEnvironment             GDAL/PROJ start-up: data folders (proj.db), offline settings, versions, problems
+src/gis/Crs                        CRS value type (EPSG/WKT/user input without network) and coordinate transforms
+src/gis/Geodesy                    geodesic length/area on the ellipsoid (PROJ geodesic.h, Karney)
+src/gis/RasterSource               GeoTIFF/COG/DEM: metadata, reprojection to the map CRS (warped VRT), tiles,
+                                   styles (RGB, ramp, hillshade), values under the cursor; PyramidBuilder (cache)
+src/gis/VectorSource               GeoJSON/KML/GeoPackage reading (OGR) and writing
+app/MapTiles                       tile cache (256 MB) and rendering pool
+app/MapService                     the map: layers and their model, view, tools, measurements, drawings with
+                                   undo/redo, map.json, exports (PNG/PDF, GeoJSON/GPKG/KML); QML API "gis"
 ```
 
-`GeoMapCore` is linked by the app and by the test executables; it depends on Qt Core and Gui only. The layout evolves towards the `src/core`, `src/import`, `src/processing`, … structure of the master specification; the remaining `app/` classes move there when they are next reworked.
+`GeoMapCore` is linked by the app and by the test executables; it depends on Qt Core, Gui and Network, GDAL and PROJ (no QML). The layout evolves towards the `src/core`, `src/import`, `src/processing`, … structure of the master specification; the remaining `app/` classes move there when they are next reworked.
 
 ## Threads
 
@@ -41,6 +51,9 @@ src/processing/ProcessingTypes     JobState, ProcessingJob, Artifact, Environmen
 | `docker` client processes | `version` / `image inspect` / `info`, `pull`, `run` (ODM), `stop` / `rm -f`; their output is read asynchronously on the GUI thread |
 | Native ODM process tree | `python.exe run.py` and everything it starts, in one job object; output read asynchronously on the GUI thread |
 | Network (Qt) | the ODM installer download, streamed to disk with incremental SHA-256 |
+| Map tile pool (`idealThreadCount / 2`, min 2) | raster tiles: GDAL reads (with pyramids) and styling into 256×256 images; stale requests are dropped |
+| Global thread pool | per-layer preparation: band statistics, pyramid building with progress and cancel, vector loading |
+| Export thread (one per export) | map PNG/PDF rendering from a snapshot of the layers and view |
 
 `ImportJob` never touches the model. It publishes results into a mutex-protected buffer and raises `resultsAvailable` once until the GUI thread drains it with `takeResults()`; progress is throttled to ~10 updates per second. Cancellation is checked between files, so a file is either fully copied and registered or not copied at all. `ProjectManager` appends batches to the model, writes manifest checkpoints every 2 s, and on finish writes the manifest and reports per-reason skip counts. Destroying `ProjectManager` during an import (window closed) cancels, joins the worker and records everything copied.
 
@@ -76,6 +89,16 @@ QML ──Q_INVOKABLE──▶ ProcessingService ──createJob / start / cance
 - Progress is the engine's real stage (k of N); there is no percentage, because ODM stages differ by orders of magnitude in duration.
 - A result is registered only if its file exists, is non-empty and its header matches (GeoTIFF GeoKeys, `LASF`, `%PDF`). Exit code 0 without any result is a failure.
 
+## Map (GIS)
+
+`MapService` owns the layers of the open project (`map.json`) in one **map CRS**. Rasters are reprojected on the fly with a warped VRT; vectors are transformed once on load. The view is a centre and a resolution (map units per screen pixel); `MapView` only forwards input and asks the service to paint.
+
+- CRS policy: the map CRS is the saved one; a new map takes the UTM zone (WGS 84) of the photos' GPS positions, or else the CRS of the first layer added (the UTM zone of its centre if it is in degrees). The choice is deterministic and shown as a note; the user can change it at any time ("CRS карты"). A layer without CRS is **never placed by guessing**: it shows "CRS не задан" until the user enters one (EPSG/WKT) and sees its description first. GeoJSON and KML are WGS 84 by their specifications.
+- Rasters: tiles in a per-layer grid in map CRS, level L covers 256·2^L source pixels. Large files without overviews (> 4096 px) get pyramids built in the background into `<project>/cache/maps/<hash>.vrt(.ovr)`; the source file is opened read-only and never modified. Until a tile is ready the nearest coarser cached tile is drawn.
+- Measurements: geodesic on the ellipsoid of the map CRS (Karney, PROJ); planar values in the map CRS are shown alongside. The scale bar measures ground distance at the centre of the view.
+- Drawings: points, lines and polygons in `vectors/drawings.geojson` (WGS 84), every change is an undo command (add, remove, move vertex).
+- Exports: PNG at twice the view size; PDF on A4 landscape (10 mm margins, 200 dpi) with the printed scale; both with legend, CRS, date, scale bar, grid north and sources. Drawings export to GeoJSON (WGS 84), GeoPackage (map CRS) or KML.
+
 ## Invariants
 
 1. Imported images live in `photos/` under the project directory; originals are never modified or removed.
@@ -91,3 +114,6 @@ QML ──Q_INVOKABLE──▶ ProcessingService ──createJob / start / cance
 10. GeoMap AI stays fully usable without Docker or ODM; only the processing view reports them missing.
 11. Downloaded executables are run only after their SHA-256 matches a value pinned in the source.
 12. Native engine processes never outlive GeoMap AI (kill-on-close job object, also on a crash). Docker containers are removed on exit, or when the project is opened again after a crash.
+13. A CRS is never guessed for data that has none; automatic choices (UTM zone of the data) are deterministic and shown.
+14. GIS source files are opened read-only; derived data (pyramids) lives in the project cache and can be deleted.
+15. GDAL and PROJ run offline: no network access, no `.aux.xml` files next to the user's data (`GDAL_PAM_ENABLED=NO`).

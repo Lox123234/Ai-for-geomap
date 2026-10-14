@@ -37,6 +37,7 @@ ApplicationWindow {
     property int activeView: 0   // 0 photo viewer, 1 geo coverage
     property real imageZoom: 1.0
     property string lastError: ""
+    property string lastNotice: ""
     // Set only when the user confirms a folder: FolderDialog.selectedFolder already
     // holds the dialog's start folder as soon as it opens, even if it is cancelled.
     property url newProjectFolder: ""
@@ -123,44 +124,6 @@ ApplicationWindow {
         return (b / 1073741824).toFixed(2) + " GB"
     }
     function coord(x) { return Number(x).toFixed(6) + "°" }
-
-    component FlatButton: Button {
-        id: flat
-        property bool emphasis: false
-        property bool caution: false
-        property bool compact: false
-        implicitHeight: compact ? 32 : 40
-        implicitWidth: label.implicitWidth + (compact ? 24 : 32)
-        padding: 0
-        font.pixelSize: compact ? 12 : 13
-        font.weight: Font.DemiBold
-        hoverEnabled: true
-        contentItem: Text {
-            id: label
-            text: flat.text
-            font: flat.font
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            color: !flat.enabled ? "#637080" : flat.emphasis ? "#0c1c29"
-                : flat.caution ? "#ffb5b5" : "#dce8f5"
-            elide: Text.ElideRight
-        }
-        background: Rectangle {
-            radius: 8
-            color: !flat.enabled ? "#26303b" : flat.emphasis
-                ? (flat.hovered ? "#88d2ff" : "#56b6f7")
-                : flat.caution ? (flat.hovered ? "#4d2b36" : "#352630")
-                : flat.hovered ? "#344255" : "#283341"
-            border.color: flat.emphasis ? "transparent" : "#3b4a5d"
-        }
-    }
-
-    component SectionTitle: Text {
-        color: "#8494a8"
-        font.pixelSize: 10
-        font.bold: true
-        font.letterSpacing: 1.8
-    }
 
     component DetailLine: ColumnLayout {
         id: detailLine
@@ -340,6 +303,22 @@ ApplicationWindow {
         contentItem: Label {
             text: window.lastError
             color: "#f4c6c6"
+            wrapMode: Text.Wrap
+            padding: 22
+        }
+        standardButtons: Dialog.Ok
+    }
+
+    Dialog {
+        id: noticeDialog
+        title: "Готово"
+        width: 450
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        background: Rectangle { color: "#202936"; border.color: "#566176"; radius: 12 }
+        contentItem: Label {
+            text: window.lastNotice
+            color: window.white
             wrapMode: Text.Wrap
             padding: 22
         }
@@ -710,6 +689,12 @@ ApplicationWindow {
                             onClicked: window.activeView = 1
                         }
                         FlatButton {
+                            text: "▦  Карта"; compact: true
+                            emphasis: window.activeView === 3
+                            enabled: projects.hasProject
+                            onClicked: window.activeView = 3
+                        }
+                        FlatButton {
                             text: "◈  Обработка"; compact: true
                             emphasis: window.activeView === 2
                             enabled: projects.hasProject
@@ -719,6 +704,7 @@ ApplicationWindow {
                         Label {
                             text: window.activeView === 0 ? (projects.photoCount ? "ПРОСМОТР ФОТОГРАФИЙ" : "ПУСТОЙ ПРОЕКТ")
                                 : window.activeView === 1 ? "СХЕМА GPS-ТОЧЕК · БЕЗ ПОДЛОЖКИ"
+                                : window.activeView === 3 ? "КАРТА · " + (gis.crsDefined ? gis.crsLabel.toUpperCase() : "CRS НЕ ЗАДАН")
                                 : "ФОТОГРАММЕТРИЯ · " + processing.engineName.toUpperCase()
                             color: window.muted; font.pixelSize: 10; font.letterSpacing: 0.7
                         }
@@ -922,6 +908,14 @@ ApplicationWindow {
                                 font.pixelSize: 11
                             }
                         }
+                    }
+
+                    // GIS map: layers, tools, measurements (MapWorkspace.qml).
+                    MapWorkspace {
+                        anchors.fill: parent
+                        visible: projects.hasProject && window.activeView === 3
+                        onErrorMessage: function(text) { window.lastError = text; errorDialog.open() }
+                        onNoticeMessage: function(text) { window.lastNotice = text; noticeDialog.open() }
                     }
 
                     // Processing: environment, new job, job history and details. Everything shown
@@ -1549,6 +1543,15 @@ ApplicationWindow {
                                                             }
                                                         }
                                                         FlatButton {
+                                                            text: "На карту"; compact: true; implicitHeight: 28
+                                                            visible: ["orthophoto", "dsm", "dtm"].indexOf(outputRow.modelData.kind) >= 0
+                                                            onClicked: {
+                                                                var error = gis.addLayerFile(outputRow.modelData.path)
+                                                                if (error.length > 0) { window.lastError = error; errorDialog.open() }
+                                                                else window.activeView = 3
+                                                            }
+                                                        }
+                                                        FlatButton {
                                                             text: "Открыть"; compact: true; implicitHeight: 28
                                                             onClicked: processing.openOutput(window.selectedJobId, outputRow.modelData.file)
                                                         }
@@ -1686,7 +1689,7 @@ ApplicationWindow {
         Rectangle {
             Layout.preferredWidth: 275
             Layout.fillHeight: true
-            visible: window.activeView !== 2
+            visible: window.activeView !== 2 && window.activeView !== 3
             color: window.surface
             border.color: window.line
             ColumnLayout {

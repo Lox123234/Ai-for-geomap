@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.21)
-project(GeoMapAI VERSION 0.2.1 LANGUAGES CXX)
+# vcpkg (Windows): release-only DLLs built with the application's toolset, see triplets/.
+if(CMAKE_HOST_WIN32 AND NOT DEFINED VCPKG_TARGET_TRIPLET)
+    set(VCPKG_TARGET_TRIPLET x64-windows-geomap CACHE STRING "vcpkg triplet")
+    set(VCPKG_HOST_TRIPLET x64-windows-geomap CACHE STRING "vcpkg host triplet")
+endif()
+project(GeoMapAI VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -7,6 +12,21 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Network Qml Quick QuickControls2)
 qt_standard_project_setup(REQUIRES 6.5)
+
+# GIS: GDAL/OGR and PROJ. Windows: vcpkg manifest (vcpkg.json) through the vcpkg toolchain;
+# Linux: distribution packages (libgdal-dev, libproj-dev). See docs/BUILD.md.
+find_package(GDAL 3.8 CONFIG QUIET)
+if(NOT GDAL_FOUND)
+    find_package(GDAL 3.8 REQUIRED)
+endif()
+find_package(PROJ CONFIG REQUIRED)
+# Where the build finds proj.db and GDAL's data before deployment (deployed builds use
+# <app>/share/proj and <app>/share/gdal).
+if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    set(GEOMAP_GIS_SHARE "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share")
+else()
+    set(GEOMAP_GIS_SHARE "/usr/share")
+endif()
 
 # Project, import and metadata logic without QML; shared by the app and the tests.
 qt_add_library(GeoMapCore STATIC
@@ -34,14 +54,32 @@ qt_add_library(GeoMapCore STATIC
     src/processing/OdmEngine.cpp
     src/processing/ProcessingService.h
     src/processing/ProcessingService.cpp
+    src/gis/GisEnvironment.h
+    src/gis/GisEnvironment.cpp
+    src/gis/Crs.h
+    src/gis/Crs.cpp
+    src/gis/Geodesy.h
+    src/gis/Geodesy.cpp
+    src/gis/RasterSource.h
+    src/gis/RasterSource.cpp
+    src/gis/VectorSource.h
+    src/gis/VectorSource.cpp
+    app/MapTiles.h
+    app/MapTiles.cpp
+    app/MapService.h
+    app/MapService.cpp
 )
-target_include_directories(GeoMapCore PUBLIC app src/core src/import src/processing)
-target_link_libraries(GeoMapCore PUBLIC Qt6::Core Qt6::Gui Qt6::Network)
+target_include_directories(GeoMapCore PUBLIC app src/core src/import src/processing src/gis)
+target_link_libraries(GeoMapCore PUBLIC Qt6::Core Qt6::Gui Qt6::Network GDAL::GDAL PROJ::proj)
+target_compile_definitions(GeoMapCore PRIVATE
+    GEOMAP_PROJ_DATA="${GEOMAP_GIS_SHARE}/proj" GEOMAP_GDAL_DATA="${GEOMAP_GIS_SHARE}/gdal")
 
 qt_add_executable(GeoMapAI
     app/main.cpp
     app/ThumbnailProvider.h
     app/ThumbnailProvider.cpp
+    app/MapView.h
+    app/MapView.cpp
 )
 target_compile_definitions(GeoMapAI PRIVATE GEOMAP_VERSION="${PROJECT_VERSION}")
 
@@ -52,7 +90,7 @@ qt_add_qml_module(GeoMapAI
     URI GeoMapAI
     VERSION 1.0
     OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/qml/GeoMapAI
-    QML_FILES qml/Main.qml
+    QML_FILES qml/Main.qml qml/MapWorkspace.qml qml/FlatButton.qml qml/SectionTitle.qml
 )
 
 target_link_libraries(GeoMapAI PRIVATE
@@ -98,7 +136,10 @@ if(BUILD_TESTING)
         )
         target_link_libraries(GeoMapAIProcessingTests PRIVATE GeoMapCore Qt6::Test)
         add_test(NAME GeoMapAIProcessingTests COMMAND GeoMapAIProcessingTests)
-        set(geomap_tests GeoMapAITests GeoMapAIProjectTests GeoMapAIImportTests GeoMapAIProcessingTests)
+        qt_add_executable(GeoMapAIGisTests tests/test_gis.cpp)
+        target_link_libraries(GeoMapAIGisTests PRIVATE GeoMapCore Qt6::Test)
+        add_test(NAME GeoMapAIGisTests COMMAND GeoMapAIGisTests)
+        set(geomap_tests GeoMapAITests GeoMapAIProjectTests GeoMapAIImportTests GeoMapAIProcessingTests GeoMapAIGisTests)
 
         # Real reconstruction with Docker and the pinned ODM image; minutes to hours, so only
         # when configured with -DGEOMAP_ODM_DATASET=<folder with overlapping drone photos>.

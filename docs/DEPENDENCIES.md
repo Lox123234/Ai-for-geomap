@@ -41,12 +41,36 @@ Qt подключается **динамически** (DLL рядом с EXE), 
 
 Полный перечень с хэшами — в SBOM-файлах Qt.
 
+### GIS: GDAL, PROJ и их библиотеки (с 0.3.0)
+
+Собираются из исходников через vcpkg (`vcpkg.json`, baseline `9e593bb18ea69cc5095e012465dcd675a822ed0d` = тег vcpkg 2026.07.29, триплет `triplets/x64-windows-geomap`: DLL, только Release, MSVC v143) и подключаются **динамически** (DLL рядом с EXE). Лицензии проверены по файлам `copyright` установленных пакетов (`build/vcpkg_installed/x64-windows-geomap/share/<пакет>/copyright`). GPL/LGPL-компонентов среди них нет. GDAL собран без сетевых драйверов (curl), без GEOS и без PDF/HDF/NetCDF: только то, что нужно для GeoTIFF/COG, VRT, JPEG/PNG и векторов GeoJSON/KML/GeoPackage.
+
+| Компонент | Версия | Лицензия (по `copyright`) | DLL в поставке |
+| --- | --- | --- | --- |
+| GDAL/OGR | 3.12.4 | MIT/X11 (`LICENSE.TXT` GDAL; отдельные файлы — BSD-подобные и public domain, перечислены там же) | `gdal.dll` |
+| PROJ | 9.8.1 | MIT | `proj_9.dll` |
+| `proj.db` (база CRS PROJ, включает данные EPSG Geodetic Parameter Dataset, IOGP) | из PROJ 9.8.1 | данные EPSG — условия использования EPSG (распространение без изменений с указанием источника); остальное — MIT | `share\proj\proj.db` |
+| libgeotiff | 1.7.4 | MIT / public domain | `geotiff.dll` |
+| libtiff | 4.7.2 | libtiff (BSD-подобная) | `tiff.dll` |
+| libjpeg-turbo | 3.2.0 | IJG + BSD-3-Clause + Zlib | `jpeg62.dll`, `turbojpeg.dll` |
+| libpng | 1.6.58 | PNG Reference Library License v2 | `libpng16.dll` |
+| zlib | 1.3.2 | Zlib | `z.dll` |
+| liblzma (XZ Utils) | 5.8.3 | 0BSD | `liblzma.dll` |
+| SQLite | 3.53.4 | public domain | `sqlite3.dll` |
+| Expat | 2.8.2 | MIT | `libexpat.dll` |
+| json-c | 0.19 | MIT | `json-c.dll` |
+| Данные GDAL (`share\gdal`) | 3.12.4 | MIT | файлы данных |
+
+Только для сборки PROJ (в поставку не входят): nlohmann-json 3.12.0 (MIT, заголовки), pkgconf (ISC).
+
+Linux-сборка использует системные пакеты `libgdal-dev` и `libproj-dev` (Ubuntu 24.04: GDAL 3.8, PROJ 9.4); их лицензии и состав определяет дистрибутив.
+
 ### Обязанности при публикации поставки (не выполнены — блокер публикации)
 
 Папка `dist/GeoMapAI` пока **не содержит текстов лицензий**. До любой публикации архива (этап F):
 
 1. приложить тексты LGPL-3.0, GPL-3.0 и уведомление Qt о лицензиях;
-2. приложить уведомления и лицензии сторонних компонентов из таблиц выше;
+2. приложить уведомления и лицензии сторонних компонентов из таблиц выше, включая файлы `copyright` GDAL, PROJ и их библиотек и условия EPSG для `proj.db`;
 3. указать, где получить исходный код использованной версии Qt (6.8.3);
 4. сохранить динамическую компоновку с Qt и не запрещать замену библиотек Qt пользователем;
 5. приложить лицензию GeoMap AI (MIT) и `docs/DEPENDENCIES.md`.
@@ -59,13 +83,14 @@ Qt подключается **динамически** (DLL рядом с EXE), 
 | MSVC (Visual Studio 2022 Build Tools / Community) | Microsoft | Условия использования определяет лицензия Visual Studio |
 | Инструменты Qt: moc, rcc, qmlcachegen, qmltyperegistrar, windeployqt | LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0 | Исключение Qt позволяет использовать результат их работы без ограничений GPL |
 | Git | GPL-2.0 | — |
+| vcpkg (инструмент и порты) | MIT | Собирает GDAL/PROJ из исходников; на Windows подходит копия из Visual Studio (`VC\vcpkg`) или `VCPKG_ROOT` |
 
 ## 3. Только для тестов и CI (не поставляются)
 
 | Компонент | Лицензия |
 | --- | --- |
 | Qt Test | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only OR коммерческая |
-| GitHub Actions: `actions/checkout`, `actions/upload-artifact` | MIT |
+| GitHub Actions: `actions/checkout`, `actions/upload-artifact`, `actions/cache` | MIT |
 | `jurplel/install-qt-action` (использует aqtinstall) | MIT |
 
 ## 4. Модули Qt, требующие отдельного решения
@@ -107,9 +132,7 @@ GeoMap AI не содержит кода этих программ и не ли�
 
 | Компонент | Этап | Ожидаемая лицензия | Что проверить |
 | --- | --- | --- | --- |
-| GDAL / OGR | C | MIT | Транзитивные зависимости (PROJ, GEOS, libtiff, curl и др.) |
-| PROJ | C | MIT | База EPSG (условия использования данных) |
-| SQLite | A–F | Public domain | — |
+
 | VTK или Open3D | D | BSD-3-Clause / MIT | Упаковка, размер, драйверы |
 | ONNX Runtime | E | MIT | Провайдеры GPU и их лицензии |
 | Модели сегментации | E | Разные | Карточка модели: лицензия весов и датасета обучения |

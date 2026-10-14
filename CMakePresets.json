@@ -5,17 +5,18 @@
     {
       "name": "windows-msvc",
       "displayName": "Windows x64 (Visual Studio 2022, MSVC)",
-      "description": "Set QT_ROOT_DIR to the Qt kit, e.g. C:\\Qt\\6.8.3\\msvc2022_64.",
+      "description": "Set QT_ROOT_DIR to the Qt kit (e.g. C:\\Qt\\6.8.3\\msvc2022_64) and VCPKG_ROOT to a vcpkg checkout (GDAL/PROJ from vcpkg.json).",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": { "CMAKE_PREFIX_PATH": "$env{QT_ROOT_DIR}" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
       "name": "linux-release",
       "displayName": "Linux x64 Release (Ninja)",
-      "description": "Uses the system Qt 6, or the kit in QT_ROOT_DIR when set.",
+      "description": "Uses the system Qt 6 (or the kit in QT_ROOT_DIR) and the system GDAL/PROJ (libgdal-dev, libproj-dev).",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-linux",
       "cacheVariables": {

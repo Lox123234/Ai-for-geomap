@@ -81,9 +81,23 @@ $vsPath = & $vswhere -products * -version "[$vsMajor.0,$($vsMajor + 1).0)" `
 if (!$vsPath) { throw "No Visual Studio $vsMajor installation with MSVC x64 tools found." }
 Write-Host "Visual Studio: $vsPath"
 
+# vcpkg provides GDAL and PROJ (vcpkg.json, triplet x64-windows-geomap): VCPKG_ROOT,
+# the GitHub runner's copy, or the one bundled with Visual Studio.
+function Find-VcpkgToolchain {
+    $roots = @($env:VCPKG_ROOT, $env:VCPKG_INSTALLATION_ROOT)
+    $roots += & $vswhere -all -products * -property installationPath | ForEach-Object { Join-Path $_ 'VC\vcpkg' }
+    foreach ($r in ($roots | Where-Object { $_ })) {
+        $file = Join-Path $r 'scripts\buildsystems\vcpkg.cmake'
+        if (Test-Path $file) { return $file }
+    }
+    throw 'vcpkg not found: install it (https://vcpkg.io) and set VCPKG_ROOT, or add the vcpkg component of Visual Studio.'
+}
+$toolchain = Find-VcpkgToolchain
+Write-Host "vcpkg toolchain: $toolchain"
+
 Push-Location $root
 try {
-    cmake -S . -B build -G $Generator -A x64 "-DCMAKE_PREFIX_PATH=$QtDir"
+    cmake -S . -B build -G $Generator -A x64 "-DCMAKE_PREFIX_PATH=$QtDir" "-DCMAKE_TOOLCHAIN_FILE=$toolchain" "-DCMAKE_GENERATOR_INSTANCE=$vsPath"
     if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
     cmake --build build --config Release --parallel
     if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
@@ -122,6 +136,15 @@ try {
     } else {
         Write-Warning 'MSVC runtime DLLs not found; target PCs will need the VC++ 2015-2022 x64 Redistributable.'
     }
+
+    # GDAL/PROJ and their libraries, plus proj.db and GDAL's data (found by GeoMap AI in share\).
+    $gis = Join-Path $root 'build\vcpkg_installed\x64-windows-geomap'
+    if (!(Test-Path (Join-Path $gis 'bin\gdal.dll'))) { throw "GDAL not found in $gis" }
+    Get-ChildItem (Join-Path $gis 'bin\*.dll') | Where-Object { $_.Name -notlike 'pkgconf*' } | ForEach-Object { Copy-Item $_.FullName $out -Force }
+    New-Item -ItemType Directory -Force -Path (Join-Path $out 'share') | Out-Null
+    Copy-Item (Join-Path $gis 'share\proj') (Join-Path $out 'share\proj') -Recurse -Force
+    Copy-Item (Join-Path $gis 'share\gdal') (Join-Path $out 'share\gdal') -Recurse -Force
+    Write-Host "GDAL/PROJ: $gis"
 
     if ($OdmDir) {
         # Bundled OpenDroneMap (AGPL-3.0, a separate program): copied as installed, without the

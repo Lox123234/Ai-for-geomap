@@ -1,0 +1,4 @@
+{
+  "$comment": "Triplet x64-windows-geomap: release-only DLLs built with the application's MSVC toolset (v143).",
+  "overlay-triplets": ["./triplets"]
+}

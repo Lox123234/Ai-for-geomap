@@ -919,7 +919,7 @@ void OdmEngine::checkDocker(EnvironmentReport report, bool fallback)
                     ? QStringLiteral("Docker %1 · OpenDroneMap %2 · %3 CPU, %4 ГБ памяти")
                           .arg(server, QLatin1String(Version)).arg(report.cpus).arg(gigabytes(report.memoryBytes))
                     : report.problems.constFirst();
-                finishEnvironment(report, report.installTitle == QLatin1String("Загрузить образ ODM") ? Docker : Native);
+                finishEnvironment(report, report.installTitle == QStringLiteral("Загрузить образ ODM") ? Docker : Native);
             });
         });
     });

@@ -26,6 +26,31 @@ jobs:
           modules: qtimageformats
           cache: true
 
+      # GDAL and PROJ come from vcpkg (vcpkg.json). The runner's vcpkg is moved to the
+      # manifest's baseline, so the tool and the port versions match what is pinned there.
+      - name: Prepare vcpkg
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          $vcpkg = $env:VCPKG_INSTALLATION_ROOT
+          git -C $vcpkg fetch --quiet origin
+          if ($LASTEXITCODE) { exit 1 }
+          git -C $vcpkg checkout --quiet $baseline
+          if ($LASTEXITCODE) { exit 1 }
+          & "$vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE) { exit 1 }
+          $archives = Join-Path $env:RUNNER_TEMP 'vcpkg-archives'
+          New-Item -ItemType Directory -Force -Path $archives | Out-Null
+          "VCPKG_ROOT=$vcpkg" >> $env:GITHUB_ENV
+          "VCPKG_BINARY_SOURCES=clear;files,$archives,readwrite" >> $env:GITHUB_ENV
+
+      # Built GDAL/PROJ packages; a cold build takes ~20 minutes.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}\vcpkg-archives
+          key: vcpkg-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'triplets/**') }}
+
       - name: Build, test and deploy
         shell: pwsh
         run: ./scripts/build-windows.ps1 -QtDir "$env:QT_ROOT_DIR" -Zip
@@ -44,8 +69,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libgl1-mesa-dev libxkbcommon-dev
+      - name: Install build tools, GDAL and PROJ
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libgl1-mesa-dev libxkbcommon-dev libgdal-dev libproj-dev
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
