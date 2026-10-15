@@ -145,6 +145,7 @@ ApplicationWindow {
         case "import.photos": case "import.folder": case "project.addPhotos": return has && idle
         case "import.data": case "import.orthophoto": case "import.dem": case "import.vector": return has
         case "export.map": return map && !gis.exporting
+        case "export.all": case "export.dem": case "export.model": case "export.pointCloud": case "export.report": return has && !exporter.busy
         case "export.drawings": return has && gis.drawingCount > 0
         case "edit.undo": return has && gis.canUndo
         case "edit.redo": return has && gis.canRedo
@@ -335,6 +336,11 @@ ApplicationWindow {
         "import.dem": function() { window.activeView = 3; mapController.addLayer("raster", "Импорт DEM/DSM/DTM") },
         "import.vector": function() { window.activeView = 3; mapController.addLayer("vector", "Импорт векторных данных") },
         "export.map": function() { window.activeView = 3; mapController.exportMap() },
+        "export.all": function() { exportDialog.openFor("") },
+        "export.dem": function() { exportDialog.openFor("dem") },
+        "export.model": function() { exportDialog.openFor("mesh") },
+        "export.pointCloud": function() { exportDialog.openFor("pointcloud") },
+        "export.report": function() { exportDialog.openFor("report") },
         "export.drawings": function() { mapController.exportDrawings() },
         "edit.undo": function() { gis.undo() },
         "edit.redo": function() { gis.redo() },
@@ -601,6 +607,7 @@ ApplicationWindow {
     header: MainToolBar { host: window }
 
     TerrainDialog { id: terrainDialog }
+    ExportDialog { id: exportDialog; host: window }
     // Results of terrain analysis started while the dialog was closed (or after it was closed).
     Connections {
         target: gis
@@ -1852,7 +1859,12 @@ ApplicationWindow {
                                                         processing.resumeJob(window.selectedJobId)
                                                 }
                                             }
-                                            FlatButton { text: "Открыть папку"; compact: true; onClicked: processing.revealJob(window.selectedJobId) }
+                                            FlatButton {
+                                            text: "Экспорт…"; compact: true
+                                            visible: (window.jobInfo.outputs || []).length > 0
+                                            onClicked: exportDialog.openFor("")
+                                        }
+                                        FlatButton { text: "Открыть папку"; compact: true; onClicked: processing.revealJob(window.selectedJobId) }
                                             FlatButton {
                                                 text: "Удалить"; compact: true; caution: true
                                                 visible: window.jobInfo.active === false

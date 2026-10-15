@@ -137,9 +137,9 @@
 
 | ID | Что делает Metashape | Как работает GeoMap AI | Алгоритм / движок | Состояние | Данные | Ограничения | Реализация и тесты | Приор. | Версия |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| EXP-01 | Экспорт ортофотоплана/DEM в выбранной CRS, тайлами | Окно экспорта (CRS, границы, разрешение, сжатие, тайлы) | GDAL Translate/Warp | Planned | — | Сейчас файлы ODM доступны в папке задания | `export.all`, `export.dem` | P1 | F |
+| EXP-01 | Экспорт ортофотоплана/DEM в выбранной CRS, тайлами | Окно «Экспорт результатов»: GeoTIFF или COG (DEFLATE), своя CRS / CRS карты / WGS 84 / любая EPSG-WKT, размер ячейки | GDAL Translate/Warp (билинейно) | Tested | Результаты задания | Нет обрезки по границе, тайлов (MBTiles/XYZ), выбора сжатия; экспорт любого слоя карты — нет | `export.all`, `export.dem`; `GeoMapAIExportTests` | P1 | 0.4.4 |
 | EXP-02 | Экспорт векторов | GeoJSON, GeoPackage, KML | OGR | Tested | — | SHP, DXF — позже | `vectorsLoadAndRoundTrip` | P1 | 0.3 |
-| EXP-03 | Экспорт облаков, моделей | LAS/LAZ/PLY, OBJ/glTF | PDAL, tinygltf (MIT) | Planned | — | — | `export.pointCloud`, `export.model` | P2 | D |
+| EXP-03 | Экспорт облаков, моделей | Копия облака задания (LAZ/LAS) и модели OBJ со всеми MTL и текстурами | Копирование с разбором MTL | Implemented | Результаты задания | Без преобразования форматов (PLY↔LAS, OBJ→glTF) и CRS облака | `export.pointCloud`, `export.model`; `GeoMapAIExportTests` | P2 | 0.4.4 |
 | REP-01 | Отчёт обработки | Отчёт ODM (PDF); свой отчёт с GCP | ODM | Implemented | — | Свой отчёт — этап F | результаты задания | P1 | 0.2 |
 | AUT-01 | Пакетная обработка, сеть | Пакеты, режим без GUI, распределённая обработка | — | Planned | — | — | `proc.batch` | P2 | F / после 1.0 |
 

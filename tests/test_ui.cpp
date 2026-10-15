@@ -23,6 +23,7 @@
 #include "ProcessingService.h"
 #include "ProjectManager.h"
 #include "ProjectTreeModel.h"
+#include "ResultExporter.h"
 #include "Scene3DService.h"
 #include "ThumbnailProvider.h"
 #include "View3DItem.h"
@@ -42,6 +43,7 @@ struct Session
     ProcessingService processing{new MockEngine(record)};
     MapService map;
     Scene3DService scene3d;
+    ResultExporter exporter{&processing};
     CommandRegistry commands;
     WorkspaceState workspace;
     AppLog log;
@@ -70,6 +72,7 @@ struct Session
         c->setContextProperty("processing", &processing);
         c->setContextProperty("gis", &map);
         c->setContextProperty("scene3d", &scene3d);
+        c->setContextProperty("exporter", &exporter);
         c->setContextProperty("commands", &commands);
         c->setContextProperty("workspace", &workspace);
         c->setContextProperty("appLog", &log);
@@ -304,6 +307,23 @@ private slots:
         QCOMPARE(gcpActions.size(), 1);
         QCOMPARE(gcpActions.first().toMap().value("enabled").toBool(), false);
         s->shot(QStringLiteral("ui-04-map-orthophoto.png"));
+        // Export of the results: the command opens the dialog with the job's results checked.
+        QVERIFY(s->run(QStringLiteral("export.all")));
+        QObject *exportDialog = s->window->findChild<QObject *>(QStringLiteral("exportDialog"));
+        QVERIFY(exportDialog);
+        QTRY_VERIFY(exportDialog->property("visible").toBool());
+        QCOMPARE(exportDialog->property("jobId").toString(), job.id);
+        QCOMPARE(exportDialog->property("count").toInt(), 1);
+        QVERIFY(exportDialog->property("anyRaster").toBool());
+        const QString exportFolder = QDir(tmp.path()).filePath(QStringLiteral("export"));
+        QSignalSpy exported(&s->exporter, &ResultExporter::finished);
+        QCOMPARE(s->exporter.start(job.id, {job.outputs.first().file}, QUrl::fromLocalFile(exportFolder), {{"crs", "4326"}}), QString());
+        QVERIFY(exported.wait(30000));
+        QVERIFY2(exported.first().at(0).toBool(), qPrintable(exported.first().at(1).toString()));
+        QVERIFY(QFileInfo::exists(exportFolder + QStringLiteral("/20261014-130000-odm_orthophoto-epsg4326.tif")));
+        QTRY_VERIFY(exportDialog->property("resultText").toString().contains(QStringLiteral("Сохранено 1")));
+        s->shot(QStringLiteral("ui-12-export.png"));
+        QMetaObject::invokeMethod(exportDialog, "close");
         s->run(QStringLiteral("view.photo"));
         s->shot(QStringLiteral("ui-05-photos.png"));
     }

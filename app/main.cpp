@@ -22,6 +22,7 @@
 #include "ProcessingService.h"
 #include "ProjectManager.h"
 #include "ProjectTreeModel.h"
+#include "ResultExporter.h"
 #include "Scene3DService.h"
 #include "ThumbnailProvider.h"
 #include "View3DItem.h"
@@ -81,6 +82,8 @@ int main(int argc, char *argv[])
     QObject::connect(&projects, &ProjectManager::selectionChanged, &map,
                      [&map, &projects] { map.setSelectedPhoto(projects.selectedIndex()); });
     qmlRegisterType<MapView>("GeoMapAI.Map", 1, 0, "MapView");
+    // Copies of processing results in a folder of the user's choice.
+    ResultExporter exporter(&processing);
     // 3D view: point clouds, models and terrains of the open project.
     Scene3DService scene3d;
     QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &scene3d, &Scene3DService::clear);
@@ -109,6 +112,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("processing", &processing);
     engine.rootContext()->setContextProperty("gis", &map);
     engine.rootContext()->setContextProperty("scene3d", &scene3d);
+    engine.rootContext()->setContextProperty("exporter", &exporter);
     engine.rootContext()->setContextProperty("commands", &commands);
     engine.rootContext()->setContextProperty("workspace", &workspace);
     engine.rootContext()->setContextProperty("appLog", &appLog);
