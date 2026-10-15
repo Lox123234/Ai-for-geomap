@@ -521,6 +521,7 @@ void MapService::loadState()
             if (o.contains("color")) l.color = QColor(o.value("color").toString());
             if (!o.value("crs").toString().isEmpty()) l.assignedCrs = Crs::fromWkt(o.value("crs").toString());
             if (o.contains("style")) l.style = RasterStyle::fromVariant(o.value("style").toObject().toVariantMap(), l.style);
+        l.basemap = o.value("basemap").toBool();
             l.status = o.contains("style") ? QStringLiteral("style") : QString();   // marker: keep the saved style
             if (l.id.isEmpty()) continue;
             m_layers << l;
@@ -572,6 +573,7 @@ void MapService::saveState() const
         if (!l.vectorLayer.isEmpty()) o.insert("layer", l.vectorLayer);
         if (l.assignedCrs.isValid()) o.insert("crs", l.assignedCrs.wkt());
         if (l.type == MapLayer::Raster && l.rasterInfo.valid) o.insert("style", QJsonObject::fromVariantMap(l.style.toVariant()));
+    if (l.basemap) o.insert("basemap", true);
         layers.append(o);
     }
     const QJsonObject state{{"schemaVersion", 1}, {"crs", m_crs.isValid() ? m_crs.wkt() : QString()},
@@ -1037,6 +1039,7 @@ void MapService::moveLayer(const QString &id, int delta)
     const int i = indexOf(id);
     const int j = i + delta;
     if (i < 0 || j < 0 || j >= m_layers.size()) return;
+    if (m_layers[i].basemap || m_layers[j].basemap) return;   // the background stays at the bottom
     m_layers.move(i, j);
     m_model->reset();
     emit layersChanged();
@@ -1960,7 +1963,7 @@ QString uniquePath(const QString &dir, const QString &stem, const QString &suffi
 
 bool MapService::isElevation(const MapLayer &l) const
 {
-    return l.type == MapLayer::Raster && l.rasterInfo.valid && l.rasterInfo.bands == 1 && l.raster && !l.needsCrs;
+    return l.type == MapLayer::Raster && !l.basemap && l.rasterInfo.valid && l.rasterInfo.bands == 1 && l.raster && !l.needsCrs;
 }
 
 QVariantList MapService::elevationLayers() const
@@ -2469,4 +2472,50 @@ void MapService::saveMeasurements() const
     if (!f.open(QIODevice::WriteOnly)) return;
     f.write(QJsonDocument(QJsonObject{{"schemaVersion", 1}, {"measurements", list}}).toJson(QJsonDocument::Indented));
     f.commit();
+}
+
+// ----------------------------------------------------------------- basemap
+
+QString MapService::addBasemap(const QUrl &url)
+{
+    return addBasemapFromPath(url.isLocalFile() ? url.toLocalFile() : url.toString());
+}
+
+QString MapService::addBasemapFromPath(const QString &path)
+{
+    const QString error = addLayerFromPath(path, false);
+    if (!error.isEmpty()) return error;
+    const int i = indexOf(layerIdForSource(path));
+    if (i < 0) return QStringLiteral("Подложка не добавлена.");
+    if (m_layers[i].type != MapLayer::Raster) {
+        removeLayer(m_layers[i].id);
+        return QStringLiteral("Подложкой может быть только растр (MBTiles, GeoPackage, GeoTIFF).");
+    }
+    MapLayer l = m_layers.takeAt(i);
+    l.basemap = true;
+    l.name = QStringLiteral("Подложка · ") + l.name;
+    m_layers.insert(0, l);   // under everything
+    m_model->reset();
+    scheduleSave();
+    emit layersChanged();
+    emit repaint();
+    return {};
+}
+
+bool MapService::hasBasemap() const
+{
+    for (const MapLayer &l : m_layers) if (l.basemap) return true;
+    return false;
+}
+
+bool MapService::basemapVisible() const
+{
+    for (const MapLayer &l : m_layers) if (l.basemap && l.visible) return true;
+    return false;
+}
+
+void MapService::setBasemapVisible(bool visible)
+{
+    for (const MapLayer &l : m_layers)
+        if (l.basemap) setLayerVisible(l.id, visible);
 }

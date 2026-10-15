@@ -186,7 +186,7 @@ private slots:
         QVERIFY(s->findByCommand(QStringLiteral("file.new"), "ToolIconButton")->property("enabled").toBool());
         QVERIFY(!s->findByCommand(QStringLiteral("file.save"), "ToolIconButton")->property("enabled").toBool());   // no project
         // Planned commands do not run and say why.
-        QVERIFY(!s->run(QStringLiteral("view.basemap")));
+        QVERIFY(!s->run(QStringLiteral("view.grid")));
         QVERIFY(s->prop("transientMessage").toString().contains(QStringLiteral("C (0.3.x)")));
         QVERIFY(!s->run(QStringLiteral("proc.optimize")));
         QVERIFY(s->prop("transientMessage").toString().contains(QStringLiteral("движком")));

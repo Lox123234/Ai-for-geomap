@@ -27,6 +27,7 @@ Item {
         addLayerDialog.nameFilters = kind === "raster" ? rasterFilters : kind === "vector" ? vectorFilters : allFilters
         addLayerDialog.open()
     }
+    function addBasemap() { basemapDialog.open() }
     function exportMap() { exportMapDialog.open() }
     function exportDrawings() { exportDrawingsDialog.open() }
     function chooseMapCrs() { controller.crsTarget = ""; crsDialog.open() }
@@ -47,6 +48,16 @@ Item {
         nameFilters: controller.allFilters
         onAccepted: {
             var error = gis.addLayerFromUrl(selectedFile)
+            if (error.length > 0) controller.errorMessage(error)
+        }
+    }
+    FileDialog {
+        id: basemapDialog
+        title: "Подложка карты из файла"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["Подложки (*.mbtiles *.gpkg *.tif *.tiff *.vrt)", "Все файлы (*)"]
+        onAccepted: {
+            var error = gis.addBasemap(selectedFile)
             if (error.length > 0) controller.errorMessage(error)
         }
     }

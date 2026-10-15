@@ -33,6 +33,7 @@ struct MapLayer
     QString source;          // absolute path (raster/vector)
     QString vectorLayer;     // OGR layer name
     bool visible = true;
+    bool basemap = false;    // background raster (MBTiles, GeoPackage, GeoTIFF): always the bottom layer
     double opacity = 1.0;
     QColor color = QColor(255, 196, 61);
     Crs assignedCrs;         // chosen by the user when the file has no CRS
@@ -110,6 +111,9 @@ class MapService final : public QObject
     // Saved measurements of the project (measurements.json): name, kind, values, method, CRS, geometry.
     Q_PROPERTY(QVariantList measurements READ measurementsForQml NOTIFY measurementsChanged)
     Q_PROPERTY(bool canSaveMeasurement READ canSaveMeasurement NOTIFY measurementChanged)
+    // Offline background map from a file (no tiles are downloaded).
+    Q_PROPERTY(bool hasBasemap READ hasBasemap NOTIFY layersChanged)
+    Q_PROPERTY(bool basemapVisible READ basemapVisible NOTIFY layersChanged)
     Q_PROPERTY(QString shownMeasurement READ shownMeasurement NOTIFY measurementsChanged)
 
 public:
@@ -235,6 +239,13 @@ public:
     Q_INVOKABLE void renameMeasurement(const QString &id, const QString &name);
     Q_INVOKABLE void showMeasurement(const QString &id);   // highlight and zoom to it; "" hides
     Q_INVOKABLE QString exportMeasurements(const QUrl &url);   // CSV with WKT geometry (WGS 84)
+    // Adds a raster file (MBTiles, GeoPackage tiles, GeoTIFF/COG, VRT) as the background of the
+    // map, below every layer. "" on success, else the reason.
+    Q_INVOKABLE QString addBasemap(const QUrl &url);
+    QString addBasemapFromPath(const QString &path);
+    Q_INVOKABLE void setBasemapVisible(bool visible);
+    bool hasBasemap() const;
+    bool basemapVisible() const;
     QVariantList measurementsForQml() const;
     bool canSaveMeasurement() const;
     QString shownMeasurement() const { return m_shownMeasurement; }

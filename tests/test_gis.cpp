@@ -8,6 +8,7 @@
 #include <QTemporaryDir>
 #include <cmath>
 #include <functional>
+#include <cpl_error.h>
 #include <gdal.h>
 #include <ogr_api.h>
 #include <ogr_srs_api.h>
@@ -414,6 +415,64 @@ private slots:
             }
     }
 
+    // An offline background map from a local MBTiles file (Web Mercator tiles in SQLite): placed
+    // under every layer, kept there, switched on and off, remembered in map.json.
+    void basemapFromMbtiles()
+    {
+        GDALDriverH mbtiles = GDALGetDriverByName("MBTiles");
+        if (!mbtiles) QSKIP("This GDAL build has no MBTiles driver");
+        QTemporaryDir tmp;
+        const QString project = tmp.filePath(QStringLiteral("p"));
+        QVERIFY(QDir().mkpath(project));
+        // RGB GeoTIFF in Web Mercator around (-92°, 46.8°), then MBTiles from it (GDAL tiles it).
+        const QString tif = tmp.filePath(QStringLiteral("base.tif"));
+        const double gt[6] = {-10241500, 2.0, 0, 5916500, 0, -2.0};
+        QVERIFY(makeRaster(tif, 256, 256, 3, GDT_Byte, gt, 3857, [](int b, int x, int y) { return b == 1 ? x : b == 2 ? y : 128; }));
+        const QString base = tmp.filePath(QStringLiteral("osm-extract.mbtiles"));
+        GDALDatasetH src = GDALOpen(tif.toUtf8().constData(), GA_ReadOnly);
+        QVERIFY(src);
+        GDALDatasetH dst = GDALCreateCopy(mbtiles, base.toUtf8().constData(), src, FALSE, nullptr, nullptr, nullptr);
+        GDALClose(src);
+        QVERIFY2(dst, CPLGetLastErrorMsg());
+        GDALClose(dst);
+
+        const QString dem = tmp.filePath(QStringLiteral("dsm.tif"));
+        const double dgt[6] = {576600, 1, 0, 5188300, 0, -1};
+        QVERIFY(makeRaster(dem, 50, 50, 1, GDT_Float32, dgt, 32615, [](int, int x, int) { return 150.0 + x; }));
+        {
+            MapService service;
+            service.setViewSize(QSizeF(800, 600));
+            service.setProject(project, nullptr);
+            QCOMPARE(service.addLayerFromPath(dem), QString());
+            QVERIFY(!service.hasBasemap());
+            QCOMPARE(service.addBasemapFromPath(base), QString());
+            QVERIFY(service.hasBasemap());
+            QVERIFY(service.basemapVisible());
+            QCOMPARE(service.layers().first().source, QFileInfo(base).absoluteFilePath());
+            QVERIFY(service.layers().first().basemap);
+            QVERIFY(service.layers().first().rasterInfo.valid);
+            QVERIFY(service.layers().first().name.startsWith(QStringLiteral("Подложка")));
+            // Other layers cannot go under it; it is not a DEM for terrain tools.
+            const QString demId = service.layerIdForSource(dem);
+            service.moveLayer(demId, -1);
+            QVERIFY(service.layers().first().basemap);
+            QCOMPARE(service.elevationLayers().size(), 1);
+            service.setBasemapVisible(false);
+            QVERIFY(!service.basemapVisible());
+            // A vector file is refused as a basemap.
+            const QString gj = tmp.filePath(QStringLiteral("v.geojson"));
+            QVERIFY(writeText(gj, R"({"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[-92,46.8]}}]})"));
+            QVERIFY(!service.addBasemapFromPath(gj).isEmpty());
+            QVERIFY(service.layerIdForSource(gj).isEmpty());
+            service.setProject(QString(), nullptr);   // saves map.json
+        }
+        MapService reopened;
+        reopened.setViewSize(QSizeF(800, 600));
+        reopened.setProject(project, nullptr);
+        QVERIFY(reopened.hasBasemap());
+        QVERIFY(!reopened.basemapVisible());
+        QVERIFY(reopened.layers().first().basemap);
+    }
     void mapServiceMeasuresDrawsAndPersists()
     {
         QTemporaryDir tmp;

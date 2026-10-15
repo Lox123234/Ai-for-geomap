@@ -4,7 +4,7 @@
 
 `v0.4.0` — Qt 6/QML desktop application written in **C++17**, with no Python runtime, embedded website, accounts or subscription. Photos and projects stay on your computer.
 
-> Reconstruction (orthophoto, point cloud, elevation models, textured model) is done by **OpenDroneMap built into GeoMap AI**: its official Windows build ships inside the program folder (`engines\odm`) and runs as part of the application — no Docker, no WSL, nothing to install separately, no administrator rights. Projects, import, browsing and the map work even without it. The **map** (GDAL/PROJ, bundled) shows results and other geodata in a real coordinate system, offline, and the **3D view** shows point clouds, textured models and terrain on the GPU; machine learning is a milestone for later versions (see [docs/ROADMAP.md](docs/ROADMAP.md)). There is no background basemap (no map tiles are downloaded).
+> Reconstruction (orthophoto, point cloud, elevation models, textured model) is done by **OpenDroneMap built into GeoMap AI**: its official Windows build ships inside the program folder (`engines\odm`) and runs as part of the application — no Docker, no WSL, nothing to install separately, no administrator rights. Projects, import, browsing and the map work even without it. The **map** (GDAL/PROJ, bundled) shows results and other geodata in a real coordinate system, offline, and the **3D view** shows point clouds, textured models and terrain on the GPU; machine learning is a milestone for later versions (see [docs/ROADMAP.md](docs/ROADMAP.md)). A background basemap can be added from a local file (MBTiles, GeoPackage, GeoTIFF); no map tiles are downloaded.
 
 ## Available in v0.4.0
 

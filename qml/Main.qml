@@ -168,6 +168,7 @@ ApplicationWindow {
         case "proc.stop": return processing.active
         case "view.photo": case "view.map": case "view.processing": case "view.gps": case "view.reset":
         case "view.cameras": case "view.dem": return has
+        case "view.basemap": return has
         case "view.hillshade": return window.activeView === 3 && mapController.details.type === "raster"
                                       && mapController.details.style !== undefined && mapController.details.style.mode === "single"
         case "file.exit": case "edit.preferences": case "view.panelProject": case "view.panelProperties": case "view.panelLog":
@@ -202,6 +203,7 @@ ApplicationWindow {
         case "view.panelProperties": return window.showRight
         case "view.panelLog": return window.showBottom
         case "view.cameras": return window.photosShown
+        case "view.basemap": return gis.hasBasemap && gis.basemapVisible
         case "view.hillshade": return mapController.details.style !== undefined && mapController.details.style.hillshade === true
         }
         return false
@@ -376,6 +378,11 @@ ApplicationWindow {
         "view.dem": function() { window.showDem() },
         "view.hillshade": function() { gis.setLayerStyle(mapController.details.id, { hillshade: !(mapController.details.style.hillshade === true) }) },
         "view.cameras": function() { gis.setLayerVisible("photos", !window.photosShown) },
+        "view.basemap": function() {
+            window.activeView = 3
+            if (gis.hasBasemap) gis.setBasemapVisible(!gis.basemapVisible)
+            else mapController.addBasemap()
+        },
         "view.reset": function() { if (window.activeView === 3) gis.zoomToAll(); else if (window.activeView === 4) scene3d.fitAll(); else window.imageZoom = 1.0 },
         "view.panelProject": function() { window.showLeft = !window.showLeft },
         "view.panelProperties": function() { window.showRight = !window.showRight },
