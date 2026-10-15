@@ -6,6 +6,7 @@
 #include "VectorSource.h"
 #include <QAbstractListModel>
 #include <QColor>
+#include <QDateTime>
 #include <QObject>
 #include <QPointF>
 #include <QPointer>
@@ -106,6 +107,10 @@ class MapService final : public QObject
     Q_PROPERTY(QString volumeBase READ volumeBase WRITE setVolumeBase NOTIFY volumeSettingsChanged)   // level | boundaryMean | boundaryMin | bestFit | surface
     Q_PROPERTY(double volumeLevel READ volumeLevel WRITE setVolumeLevel NOTIFY volumeSettingsChanged)
     Q_PROPERTY(QString volumeSurface READ volumeSurface WRITE setVolumeSurface NOTIFY volumeSettingsChanged)   // layer id
+    // Saved measurements of the project (measurements.json): name, kind, values, method, CRS, geometry.
+    Q_PROPERTY(QVariantList measurements READ measurementsForQml NOTIFY measurementsChanged)
+    Q_PROPERTY(bool canSaveMeasurement READ canSaveMeasurement NOTIFY measurementChanged)
+    Q_PROPERTY(QString shownMeasurement READ shownMeasurement NOTIFY measurementsChanged)
 
 public:
     explicit MapService(QObject *parent = nullptr);
@@ -223,6 +228,26 @@ public:
     void setVolumeSurface(const QString &layerId);
     const terrain::Volume &volumeResult() const { return m_volume; }
 
+    // Keeps the finished measurement of the active tool (length, area, profile, volume) in the
+    // project. Returns the new id, or "" when there is nothing finished to save.
+    Q_INVOKABLE QString saveMeasurement(const QString &name = {});
+    Q_INVOKABLE void removeMeasurement(const QString &id);
+    Q_INVOKABLE void renameMeasurement(const QString &id, const QString &name);
+    Q_INVOKABLE void showMeasurement(const QString &id);   // highlight and zoom to it; "" hides
+    Q_INVOKABLE QString exportMeasurements(const QUrl &url);   // CSV with WKT geometry (WGS 84)
+    QVariantList measurementsForQml() const;
+    bool canSaveMeasurement() const;
+    QString shownMeasurement() const { return m_shownMeasurement; }
+    struct SavedMeasurement
+    {
+        QString id, name, kind, text, details, layer, method;
+        QVector<QPointF> geometry;   // longitude, latitude (WGS 84)
+        QVariantMap values;          // numbers in metres, square and cubic metres, degrees
+        QString crs;                 // map CRS when it was measured
+        QDateTime created;
+    };
+    const QVector<SavedMeasurement> &savedMeasurements() const { return m_measurements; }
+
     // For tests and exports: measurement of a line/ring given in map coordinates.
     struct Measure { double length = 0; double area = 0; double perimeter = 0; double planarLength = 0; double planarArea = 0; };
     Measure measure(const QVector<QPointF> &mapPoints, bool closed) const;
@@ -249,6 +274,7 @@ signals:
     void profileMarkerChanged();
     void volumeSettingsChanged();
     void terrainResultReady();   // a profile or volume finished (for tests and the UI)
+    void measurementsChanged();
     void repaint();
     void errorOccurred(const QString &message);
 
@@ -283,6 +309,8 @@ private:
     void computeProfile(const QVector<QPointF> &line);
     void computeVolume(const QVector<QPointF> &ring);
     bool isElevation(const MapLayer &l) const;
+    void loadMeasurements();
+    void saveMeasurements() const;
 
     QString m_project;
     const PhotoModel *m_photos = nullptr;
@@ -335,4 +363,8 @@ private:
     QString m_volumeSurface;
     QString m_terrainText, m_terrainDetails;   // result of the profile/volume tool
     int m_terrainGeneration = 0;
+    QString m_terrainLayerName;                // DEM of the last profile/volume
+    QVector<SavedMeasurement> m_measurements;
+    QString m_shownMeasurement;
+    int m_nextMeasurementId = 1;
 };

@@ -2153,6 +2153,11 @@ ApplicationWindow {
                         SplitView.fillHeight: true
                         SplitView.minimumHeight: 140
                     }
+                    MeasurementsPanel {
+                        host: window
+                        SplitView.preferredHeight: 190
+                        SplitView.minimumHeight: 80
+                    }
                 }
                 View3DPanel {
                     anchors.fill: parent

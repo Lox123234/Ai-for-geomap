@@ -81,7 +81,17 @@ Item {
                     id: measureColumn
                     anchors.fill: parent; anchors.margins: 8
                     spacing: 3
-                    Label { text: gis.measurementText; color: "#FFD666"; font.pixelSize: 14; font.bold: true }
+                    RowLayout {
+                        spacing: 10
+                        Label { text: gis.measurementText; color: "#FFD666"; font.pixelSize: 14; font.bold: true }
+                        FlatButton {
+                            objectName: "saveMeasurement"
+                            visible: gis.canSaveMeasurement
+                            text: "Сохранить"; compact: true; implicitHeight: 24
+                            onClicked: { if (gis.saveMeasurement("").length > 0) canvas.host.flash("Измерение сохранено в панели «Измерения»") }
+                            ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Сохранить результат в проекте (панель «Измерения» справа)"
+                        }
+                    }
                     Label {
                         Layout.maximumWidth: 560; wrapMode: Text.Wrap
                         visible: gis.measurementDetails.length > 0
@@ -90,6 +100,7 @@ Item {
                 }
             }
             Label {
+                id: toolHint
                 visible: ["length", "area", "line", "polygon", "profile", "volume"].indexOf(gis.tool) >= 0
                 // Centred, below the measurement box when both would overlap.
                 anchors.horizontalCenter: parent.horizontalCenter; anchors.top: parent.top
@@ -102,7 +113,9 @@ Item {
             // Volume tool: what the volumes are measured from.
             Rectangle {
                 visible: gis.tool === "volume"
-                anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12; anchors.topMargin: 48
+                anchors.right: parent.right; anchors.margins: 12
+                anchors.top: toolHint.visible ? toolHint.bottom : parent.top
+                anchors.topMargin: toolHint.visible ? 8 : 12
                 width: volumeColumn.implicitWidth + 20
                 height: volumeColumn.implicitHeight + 16
                 radius: 6

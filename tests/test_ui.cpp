@@ -442,6 +442,42 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(ready.count() >= 1 && std::abs(s->map.volumeResult().below - 2400) < 1e-3, 30000);
         QVERIFY(std::abs(s->map.volumeResult().above - 1200) < 1e-3);
         s->shot(QStringLiteral("ui-10-terrain-volume.png"));
+
+        // Saved measurements: the volume is kept in the project with its values and method.
+        QVERIFY(s->map.canSaveMeasurement());
+        const QString saved = s->map.saveMeasurement(QStringLiteral("Отвал"));
+        QVERIFY(!saved.isEmpty());
+        QCOMPARE(s->map.savedMeasurements().size(), 1);
+        const MapService::SavedMeasurement m = s->map.savedMeasurements().first();
+        QCOMPARE(m.kind, QStringLiteral("volume"));
+        QCOMPARE(m.values.value("below_m3").toDouble(), 2400.0);
+        QCOMPARE(m.layer, QStringLiteral("dem"));
+        QCOMPARE(m.geometry.size(), 4);
+        // WGS 84 longitude, latitude: 76 km east of the zone's central meridian (−93°) at 46.8° N.
+        QVERIFY2(std::abs(m.geometry.first().x() + 92.0) < 0.05 && std::abs(m.geometry.first().y() - 46.84) < 0.05,
+                 qPrintable(QStringLiteral("%1 %2").arg(m.geometry.first().x()).arg(m.geometry.first().y())));
+        const QString measurementsFile = QDir(s->projects.projectPath()).filePath(QStringLiteral("measurements.json"));
+        QVERIFY(QFileInfo::exists(measurementsFile));
+        s->map.renameMeasurement(saved, QStringLiteral("Отвал № 1"));
+        s->map.showMeasurement(saved);
+        QCOMPARE(s->map.shownMeasurement(), saved);
+        s->shot(QStringLiteral("ui-11-measurements.png"));
+        // Reopening the project restores them.
+        const QString projectPath = s->projects.projectPath();
+        s->map.setProject(QString(), nullptr);
+        QCOMPARE(s->map.savedMeasurements().size(), 0);
+        s->map.setProject(projectPath, s->projects.photoModel());
+        QCOMPARE(s->map.savedMeasurements().size(), 1);
+        QCOMPARE(s->map.savedMeasurements().first().name, QStringLiteral("Отвал № 1"));
+        const QString csvAll = QDir(tmp.path()).filePath(QStringLiteral("measurements.csv"));
+        QCOMPARE(s->map.exportMeasurements(QUrl::fromLocalFile(csvAll)), QString());
+        QFile all(csvAll);
+        QVERIFY(all.open(QIODevice::ReadOnly));
+        const QString text = QString::fromUtf8(all.readAll());
+        QVERIFY(text.contains(QStringLiteral("POLYGON((")));
+        QVERIFY(text.contains(QStringLiteral("2400.000")));
+        s->map.removeMeasurement(saved);
+        QCOMPARE(s->map.savedMeasurements().size(), 0);
     }
     // The 3D view: commands, tools without a map CRS, and an ODM point cloud opened from the
     // project tree (the job's LAZ is shown through odm_filterpoints/point_cloud.ply). The

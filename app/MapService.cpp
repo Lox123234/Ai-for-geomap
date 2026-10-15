@@ -465,9 +465,22 @@ void MapService::setProject(const QString &directory, const PhotoModel *photos)
     m_crsNote.clear();
     m_measurementText.clear();
     m_measurementDetails.clear();
+    m_terrainText.clear();
+    m_terrainDetails.clear();
+    ++m_terrainGeneration;
+    m_profile = {};
+    m_volume = {};
+    m_profileMarker = -1;
+    m_measurements.clear();
+    m_shownMeasurement.clear();
     m_project = directory.isEmpty() ? QString() : QDir(directory).absolutePath();
     m_photos = photos;
-    if (!m_project.isEmpty()) loadState();
+    if (!m_project.isEmpty()) {
+        loadState();
+        loadMeasurements();
+    }
+    emit profileChanged();
+    emit measurementsChanged();
     m_model->reset();
     updateScale();
     emit projectChanged();
@@ -1275,6 +1288,23 @@ void MapService::paint(QPainter *painter, const QSizeF &size, bool interactive)
         painter->setBrush(SketchColor);
         painter->setPen(QPen(QColor(20, 24, 30), 1));
         for (const QPointF &p : m_sketch) painter->drawEllipse(toScreen(p), 4, 4);
+    }
+    // The saved measurement chosen in the panel.
+    for (const SavedMeasurement &s : m_measurements) {
+        if (s.id != m_shownMeasurement || s.geometry.size() < 2 || !m_crs.isValid()) continue;
+        QVector<QPointF> pts = s.geometry;
+        if (!CoordinateTransform(Crs::wgs84(), m_crs).transform(pts)) break;
+        QPolygonF screen;
+        for (const QPointF &p : pts) screen << toScreen(p);
+        QPen pen(QColor(80, 230, 255), 3);
+        pen.setCosmetic(true);
+        painter->setPen(pen);
+        const bool ring = s.kind == QLatin1String("area") || s.kind == QLatin1String("volume");
+        QColor fill(80, 230, 255, 50);
+        painter->setBrush(ring ? QBrush(fill) : Qt::NoBrush);
+        if (ring && screen.size() > 2) painter->drawPolygon(screen);
+        else painter->drawPolyline(screen);
+        break;
     }
     // Point of the elevation profile under the chart cursor.
     if (interactive && m_profileMarker >= 0 && m_profileMarker < m_profile.points.size()) {
@@ -2088,6 +2118,7 @@ void MapService::computeProfile(const QVector<QPointF> &line)
             if (generation != m_terrainGeneration) return;   // another line or tool meanwhile
             m_profile = p;
             m_profileLayer = name;
+            m_terrainLayerName = name;
             m_profileMarker = -1;
             if (p.ok()) {
                 const QLocale ru(QLocale::Russian);
@@ -2145,6 +2176,7 @@ void MapService::computeVolume(const QVector<QPointF> &ring)
         QMetaObject::invokeMethod(this, [this, v, name, base, surfaceName, generation] {
             if (generation != m_terrainGeneration) return;
             m_volume = v;
+            m_terrainLayerName = name;
             if (v.ok()) {
                 const QLocale ru(QLocale::Russian);
                 m_terrainText = QStringLiteral("Над базой %1 · под базой %2 · баланс %3")
@@ -2239,4 +2271,202 @@ void MapService::setVolumeSurface(const QString &layerId)
     emit volumeSettingsChanged();
     if (m_tool == QLatin1String("volume") && m_sketchDone && m_volumeBase == QLatin1String("surface")) computeVolume(m_sketch);
     updateMeasurement();
+}
+
+// ----------------------------------------------------------------- saved measurements
+
+namespace {
+constexpr auto MeasurementsFile = "measurements.json";
+QString kindTitle(const QString &kind)
+{
+    if (kind == QLatin1String("length")) return QStringLiteral("Длина");
+    if (kind == QLatin1String("area")) return QStringLiteral("Площадь");
+    if (kind == QLatin1String("profile")) return QStringLiteral("Профиль высот");
+    if (kind == QLatin1String("volume")) return QStringLiteral("Объём");
+    return kind;
+}
+QString csvField(const QString &s)
+{
+    QString t = s;
+    t.replace(QLatin1Char('"'), QStringLiteral("\"\""));
+    return QLatin1Char('"') + t + QLatin1Char('"');
+}
+} // namespace
+
+bool MapService::canSaveMeasurement() const
+{
+    if (!m_crs.isValid() || !m_sketchDone) return false;
+    if (m_tool == QLatin1String("length")) return m_sketch.size() >= 2;
+    if (m_tool == QLatin1String("area")) return m_sketch.size() >= 3;
+    if (m_tool == QLatin1String("profile"))
+        return m_profile.ok() && !m_profile.points.isEmpty() && m_terrainText.startsWith(QStringLiteral("Профиль:"));
+    if (m_tool == QLatin1String("volume")) return m_volume.ok() && m_volume.cells > 0 && m_terrainText.startsWith(QStringLiteral("Над базой"));
+    return false;
+}
+
+QString MapService::saveMeasurement(const QString &name)
+{
+    if (!canSaveMeasurement()) return {};
+    SavedMeasurement s;
+    s.kind = m_tool;
+    s.text = m_measurementText;
+    s.details = m_measurementDetails;
+    s.crs = m_crs.label();
+    s.created = QDateTime::currentDateTime();
+    s.geometry = m_sketch;
+    if (!CoordinateTransform(m_crs, Crs::wgs84()).transform(s.geometry)) return {};
+    const auto mm = [](double v) { return std::round(v * 1000.0) / 1000.0; };
+    if (s.kind == QLatin1String("length") || s.kind == QLatin1String("area")) {
+        const Measure m = measure(m_sketch, s.kind == QLatin1String("area"));
+        s.method = QStringLiteral("Геодезически на эллипсоиде %1 (Karney, PROJ)").arg(m_crs.geographic().name());
+        if (s.kind == QLatin1String("length")) s.values = {{"length_m", mm(m.length)}};
+        else s.values = {{"area_m2", mm(m.area)}, {"perimeter_m", mm(m.perimeter)}};
+    } else if (s.kind == QLatin1String("profile")) {
+        s.layer = m_terrainLayerName;
+        s.method = QStringLiteral("Высоты модели «%1», билинейно между центрами ячеек, %2 точек; длина по эллипсоиду")
+                       .arg(m_terrainLayerName).arg(m_profile.points.size());
+        s.values = {{"length_m", mm(m_profile.length)}, {"min_z", mm(m_profile.minZ)}, {"max_z", mm(m_profile.maxZ)},
+                    {"ascent_m", mm(m_profile.ascent)}, {"descent_m", mm(m_profile.descent)}, {"max_slope_deg", mm(m_profile.maxSlope)}};
+    } else {
+        s.layer = m_terrainLayerName;
+        static const QHash<QString, QString> bases = {
+            {QStringLiteral("level"), QStringLiteral("заданная высота")}, {QStringLiteral("boundaryMean"), QStringLiteral("средняя высота по контуру")},
+            {QStringLiteral("boundaryMin"), QStringLiteral("наименьшая высота по контуру")},
+            {QStringLiteral("bestFit"), QStringLiteral("плоскость по контуру (МНК)")}, {QStringLiteral("surface"), QStringLiteral("другая поверхность")}};
+        s.method = QStringLiteral("Сумма по ячейкам модели «%1» с центром внутри контура; база: %2")
+                       .arg(m_terrainLayerName, bases.value(m_volumeBase, m_volumeBase));
+        s.values = {{"above_m3", mm(m_volume.above)}, {"below_m3", mm(m_volume.below)}, {"net_m3", mm(m_volume.net())},
+                    {"area_m2", mm(m_volume.area)}};
+        if (std::isfinite(m_volume.baseLevel)) s.values.insert(QStringLiteral("base_z"), mm(m_volume.baseLevel));
+    }
+    for (const SavedMeasurement &e : m_measurements) m_nextMeasurementId = qMax(m_nextMeasurementId, e.id.mid(1).toInt() + 1);
+    s.id = QStringLiteral("m%1").arg(m_nextMeasurementId++);
+    s.name = name.trimmed().isEmpty() ? QStringLiteral("%1 %2").arg(kindTitle(s.kind)).arg(m_measurements.size() + 1) : name.trimmed();
+    m_measurements << s;
+    saveMeasurements();
+    emit measurementsChanged();
+    return s.id;
+}
+
+void MapService::removeMeasurement(const QString &id)
+{
+    for (int i = 0; i < m_measurements.size(); ++i)
+        if (m_measurements[i].id == id) {
+            m_measurements.removeAt(i);
+            if (m_shownMeasurement == id) m_shownMeasurement.clear();
+            saveMeasurements();
+            emit measurementsChanged();
+            emit repaint();
+            return;
+        }
+}
+
+void MapService::renameMeasurement(const QString &id, const QString &name)
+{
+    for (SavedMeasurement &s : m_measurements)
+        if (s.id == id && !name.trimmed().isEmpty() && s.name != name.trimmed()) {
+            s.name = name.trimmed();
+            saveMeasurements();
+            emit measurementsChanged();
+        }
+}
+
+void MapService::showMeasurement(const QString &id)
+{
+    m_shownMeasurement = id;
+    for (const SavedMeasurement &s : m_measurements) {
+        if (s.id != id || !m_crs.isValid()) continue;
+        QVector<QPointF> pts = s.geometry;
+        if (!CoordinateTransform(Crs::wgs84(), m_crs).transform(pts) || pts.isEmpty()) break;
+        QRectF box(pts.first(), QSizeF());
+        for (const QPointF &p : pts) box = box.united(QRectF(p, QSizeF()));
+        const double res = qMax(box.width() / qMax(1.0, m_viewSize.width() * 0.7), box.height() / qMax(1.0, m_viewSize.height() * 0.7));
+        setView(box.center(), qMax(res, 1e-6));
+        break;
+    }
+    emit measurementsChanged();
+    emit repaint();
+}
+
+QVariantList MapService::measurementsForQml() const
+{
+    QVariantList list;
+    const QLocale ru(QLocale::Russian);
+    for (const SavedMeasurement &s : m_measurements)
+        list << QVariantMap{{"id", s.id}, {"name", s.name}, {"kind", s.kind}, {"kindTitle", kindTitle(s.kind)}, {"text", s.text},
+                            {"details", s.details}, {"layer", s.layer}, {"method", s.method}, {"crs", s.crs},
+                            {"created", ru.toString(s.created, QStringLiteral("dd.MM.yyyy HH:mm"))}, {"shown", s.id == m_shownMeasurement}};
+    return list;
+}
+
+QString MapService::exportMeasurements(const QUrl &url)
+{
+    if (m_measurements.isEmpty()) return QStringLiteral("Нет сохранённых измерений.");
+    QSaveFile f(url.toLocalFile());
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return QStringLiteral("Не удалось записать %1").arg(displayPath(url));
+    QTextStream out(&f);
+    out.setEncoding(QStringConverter::Utf8);
+    out.setGenerateByteOrderMark(true);   // Excel recognises UTF-8
+    static const QStringList numbers = {"length_m", "area_m2", "perimeter_m", "min_z", "max_z", "ascent_m", "descent_m", "max_slope_deg",
+                                        "above_m3", "below_m3", "net_m3", "base_z"};
+    out << "name,kind,result,dem,method,crs,created," << numbers.join(QLatin1Char(',')) << ",wkt_wgs84\n";
+    for (const SavedMeasurement &s : m_measurements) {
+        QStringList coords;
+        for (const QPointF &p : s.geometry) coords << QStringLiteral("%1 %2").arg(p.x(), 0, 'f', 8).arg(p.y(), 0, 'f', 8);
+        const bool ring = s.kind == QLatin1String("area") || s.kind == QLatin1String("volume");
+        if (ring && !coords.isEmpty()) coords << coords.first();
+        const QString wkt = ring ? QStringLiteral("POLYGON((%1))").arg(coords.join(QStringLiteral(", ")))
+                                 : QStringLiteral("LINESTRING(%1)").arg(coords.join(QStringLiteral(", ")));
+        out << csvField(s.name) << ',' << s.kind << ',' << csvField(s.text) << ',' << csvField(s.layer) << ',' << csvField(s.method) << ','
+            << csvField(s.crs) << ',' << s.created.toString(Qt::ISODate);
+        for (const QString &k : numbers) out << ',' << (s.values.contains(k) ? QString::number(s.values.value(k).toDouble(), 'f', 3) : QString());
+        out << ',' << csvField(wkt) << '\n';
+    }
+    out.flush();
+    if (!f.commit()) return QStringLiteral("Не удалось записать %1").arg(displayPath(url));
+    return {};
+}
+
+void MapService::loadMeasurements()
+{
+    QFile f(QDir(m_project).filePath(QString::fromLatin1(MeasurementsFile)));
+    if (!f.open(QIODevice::ReadOnly)) return;
+    const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+    if (root.value("schemaVersion").toInt() != 1) return;
+    for (const QJsonValue &v : root.value("measurements").toArray()) {
+        const QJsonObject o = v.toObject();
+        SavedMeasurement s;
+        s.id = o.value("id").toString();
+        s.name = o.value("name").toString();
+        s.kind = o.value("kind").toString();
+        s.text = o.value("text").toString();
+        s.details = o.value("details").toString();
+        s.layer = o.value("layer").toString();
+        s.method = o.value("method").toString();
+        s.crs = o.value("crs").toString();
+        s.created = QDateTime::fromString(o.value("created").toString(), Qt::ISODate);
+        s.values = o.value("values").toObject().toVariantMap();
+        for (const QJsonValue &p : o.value("geometry").toArray()) {
+            const QJsonArray xy = p.toArray();
+            if (xy.size() >= 2) s.geometry << QPointF(xy[0].toDouble(), xy[1].toDouble());
+        }
+        if (!s.id.isEmpty() && s.geometry.size() >= 2) m_measurements << s;
+    }
+}
+
+void MapService::saveMeasurements() const
+{
+    if (m_project.isEmpty()) return;
+    QJsonArray list;
+    for (const SavedMeasurement &s : m_measurements) {
+        QJsonArray geometry;
+        for (const QPointF &p : s.geometry) geometry.append(QJsonArray{p.x(), p.y()});
+        list.append(QJsonObject{{"id", s.id}, {"name", s.name}, {"kind", s.kind}, {"text", s.text}, {"details", s.details},
+                                {"layer", s.layer}, {"method", s.method}, {"crs", s.crs}, {"created", s.created.toString(Qt::ISODate)},
+                                {"values", QJsonObject::fromVariantMap(s.values)}, {"geometry", geometry}});
+    }
+    QSaveFile f(QDir(m_project).filePath(QString::fromLatin1(MeasurementsFile)));
+    if (!f.open(QIODevice::WriteOnly)) return;
+    f.write(QJsonDocument(QJsonObject{{"schemaVersion", 1}, {"measurements", list}}).toJson(QJsonDocument::Indented));
+    f.commit();
 }
