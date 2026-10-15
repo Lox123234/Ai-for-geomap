@@ -12,6 +12,7 @@
 #include <cmath>
 #include <memory>
 #include <cpl_string.h>
+#include <cpl_vsi.h>
 #include <gdal.h>
 #include <gdal_alg.h>
 #include <gdal_utils.h>
@@ -161,6 +162,101 @@ RasterResult slope(const QString &dem, const QString &out, bool percent)
 RasterResult aspect(const QString &dem, const QString &out)
 {
     return runDem("aspect", dem, out, {});
+}
+
+RasterResult difference(const QString &demA, const QString &demB, const QString &out)
+{
+    RasterResult r;
+    r.path = out;
+    Dem a(demA);
+    if (!a.error.isEmpty()) {
+        r.error = QStringLiteral("Модель A: %1").arg(a.error);
+        return r;
+    }
+    Dem b(demB);
+    if (!b.error.isEmpty()) {
+        r.error = QStringLiteral("Модель B: %1").arg(b.error);
+        return r;
+    }
+    if (!a.crs.isValid() || !b.crs.isValid()) {
+        r.error = QStringLiteral("У одной из моделей нет системы координат");
+        return r;
+    }
+    // B on the grid of A, lazily (a warped VRT in memory): only the rows read are resampled.
+    const double xmin = a.gt[0], xmax = a.gt[0] + a.gt[1] * a.width;
+    const double y0 = a.gt[3], y1 = a.gt[3] + a.gt[5] * a.height;
+    QList<QByteArray> args = {"-of", "VRT", "-r", "bilinear", "-t_srs", a.crs.wkt().toUtf8(),
+                              "-te", QByteArray::number(xmin, 'f', 9), QByteArray::number(qMin(y0, y1), 'f', 9),
+                              QByteArray::number(xmax, 'f', 9), QByteArray::number(qMax(y0, y1), 'f', 9),
+                              "-ts", QByteArray::number(a.width), QByteArray::number(a.height), "-dstnodata", "-3.4e38"};
+    QVector<char *> argv;
+    for (QByteArray &s : args) argv << s.data();
+    argv << nullptr;
+    GDALWarpAppOptions *options = GDALWarpAppOptionsNew(argv.data(), nullptr);
+    GDALDatasetH sources[1] = {b.ds};
+    int usageError = 0;
+    const QByteArray memPath = QByteArray("/vsimem/geomap-diff-") + QByteArray::number(quintptr(&r)) + ".vrt";
+    GisEnvironment::clearError();
+    GDALDatasetH warped = GDALWarp(memPath.constData(), nullptr, 1, sources, options, &usageError);
+    GDALWarpAppOptionsFree(options);
+    if (!warped) {
+        r.error = QStringLiteral("Не удалось совместить модели: %1").arg(GisEnvironment::lastError());
+        return r;
+    }
+    GDALRasterBandH wb = GDALGetRasterBand(warped, 1);
+    QDir().mkpath(QFileInfo(out).absolutePath());
+    QFile::remove(out);
+    const char *create[] = {"COMPRESS=DEFLATE", "TILED=YES", "BIGTIFF=IF_SAFER", nullptr};
+    GDALDatasetH dst = GDALCreate(GDALGetDriverByName("GTiff"), nativePath(out).constData(), a.width, a.height, 1, GDT_Float32,
+                                  const_cast<char **>(create));
+    if (!dst) {
+        GDALClose(warped);
+        VSIUnlink(memPath.constData());
+        r.error = QStringLiteral("Не удалось создать %1: %2").arg(QDir::toNativeSeparators(out), GisEnvironment::lastError());
+        return r;
+    }
+    GDALSetGeoTransform(dst, a.gt);
+    GDALSetProjection(dst, GDALGetProjectionRef(a.ds));
+    GDALRasterBandH db = GDALGetRasterBand(dst, 1);
+    constexpr double NoData = -9999.0;
+    GDALSetRasterNoDataValue(db, NoData);
+    QVector<double> ra(a.width), rb(a.width);
+    QVector<float> rd(a.width);
+    double sum = 0;
+    qint64 n = 0;
+    bool ok = true;
+    for (int y = 0; y < a.height && ok; ++y) {
+        ok = GDALRasterIO(a.band, GF_Read, 0, y, a.width, 1, ra.data(), a.width, 1, GDT_Float64, 0, 0) == CE_None
+          && GDALRasterIO(wb, GF_Read, 0, y, a.width, 1, rb.data(), a.width, 1, GDT_Float64, 0, 0) == CE_None;
+        for (int x = 0; ok && x < a.width; ++x) {
+            const bool valid = a.valid(ra[x]) && std::isfinite(rb[x]) && rb[x] > -1e30 && b.valid(rb[x]);
+            const double d = valid ? ra[x] - rb[x] : NoData;
+            rd[x] = float(d);
+            if (valid) {
+                r.stats.min = n == 0 ? d : qMin(r.stats.min, d);
+                r.stats.max = n == 0 ? d : qMax(r.stats.max, d);
+                sum += d;
+                ++n;
+            }
+        }
+        ok = ok && GDALRasterIO(db, GF_Write, 0, y, a.width, 1, rd.data(), a.width, 1, GDT_Float32, 0, 0) == CE_None;
+    }
+    GDALClose(dst);
+    GDALClose(warped);
+    VSIUnlink(memPath.constData());
+    if (!ok) {
+        QFile::remove(out);
+        r.error = QStringLiteral("Ошибка чтения или записи высот");
+        return r;
+    }
+    if (n == 0) {
+        QFile::remove(out);
+        r.error = QStringLiteral("Модели не перекрываются (нет общих ячеек с данными)");
+        return r;
+    }
+    r.stats.mean = sum / n;
+    r.stats.valid = true;
+    return r;
 }
 
 double suggestedInterval(double minZ, double maxZ)

@@ -17,12 +17,12 @@ namespace {
 constexpr double X0 = 576000, Y0 = 5188100;   // top-left corner
 
 bool makeDem(const QString &path, int w, int h, const std::function<double(int, int)> &z, int epsg = 32615, double cell = 1.0,
-             double noData = std::nan(""))
+             double noData = std::nan(""), double x0 = X0, double y0 = Y0)
 {
     GDALDatasetH ds = GDALCreate(GDALGetDriverByName("GTiff"), QDir::toNativeSeparators(path).toUtf8().constData(), w, h, 1,
                                  GDT_Float32, nullptr);
     if (!ds) return false;
-    double gt[6] = {X0, cell, 0, Y0, 0, -cell};
+    double gt[6] = {x0, cell, 0, y0, 0, -cell};
     GDALSetGeoTransform(ds, gt);
     OGRSpatialReferenceH srs = OSRNewSpatialReference(nullptr);
     OSRImportFromEPSG(srs, epsg);
@@ -215,6 +215,31 @@ private slots:
         QVERIFY(makeDem(m_dir.filePath("geo.tif"), 10, 10, [](int, int) { return 1.0; }, 4326, 0.001));
         QVERIFY(!terrain::volume(m_dir.filePath("geo.tif"), geo, Crs::wgs84(), terrain::Base::Level, 0).ok());
         QVERIFY(!terrain::volume(m_dir.filePath("box.tif"), {{0, 0}, {1, 0}, {1, 1}}, utm(), terrain::Base::Level, 0).ok());
+    }
+
+    void differenceOfModels()
+    {
+        // Box minus flat ground: 0 everywhere, 5 m on the box (400 of 3600 cells).
+        const terrain::RasterResult d = terrain::difference(m_dir.filePath("box.tif"), m_dir.filePath("flat.tif"), m_dir.filePath("out/diff.tif"));
+        QVERIFY2(d.ok(), qPrintable(d.error));
+        QCOMPARE(d.stats.min, 0.0);
+        QCOMPARE(d.stats.max, 5.0);
+        QVERIFY(std::fabs(d.stats.mean - 5.0 * 400 / 3600) < 1e-6);
+        QCOMPARE(pixel(d.path, 30, 30), 5.0);
+        // B on another grid (2 m cells, shifted, larger): resampled onto A's grid.
+        QVERIFY(makeDem(m_dir.filePath("coarse.tif"), 40, 40, [](int, int) { return 99.0; }, 32615, 2.0, std::nan(""), X0 - 7.3, Y0 + 5.1));
+        const terrain::RasterResult c = terrain::difference(m_dir.filePath("flat.tif"), m_dir.filePath("coarse.tif"), m_dir.filePath("out/diff2.tif"));
+        QVERIFY2(c.ok(), qPrintable(c.error));
+        QVERIFY(std::fabs(c.stats.min - 1.0) < 1e-6 && std::fabs(c.stats.max - 1.0) < 1e-6);
+        // Where B has no data: nodata in the result.
+        QVERIFY(makeDem(m_dir.filePath("part.tif"), 30, 60, [](int, int) { return 98.0; }));
+        const terrain::RasterResult p = terrain::difference(m_dir.filePath("flat.tif"), m_dir.filePath("part.tif"), m_dir.filePath("out/diff3.tif"));
+        QVERIFY2(p.ok(), qPrintable(p.error));
+        QCOMPARE(pixel(p.path, 10, 10), 2.0);
+        QCOMPARE(pixel(p.path, 50, 10), -9999.0);
+        // No overlap at all.
+        QVERIFY(makeDem(m_dir.filePath("far.tif"), 10, 10, [](int, int) { return 1.0; }, 32615, 1.0, std::nan(""), X0 + 5000, Y0));
+        QVERIFY(!terrain::difference(m_dir.filePath("flat.tif"), m_dir.filePath("far.tif"), m_dir.filePath("out/diff4.tif")).ok());
     }
 
 private:

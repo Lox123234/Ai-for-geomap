@@ -202,9 +202,11 @@ public:
     // The DEM the profile and volume tools read: the selected one, else the top visible one.
     Q_INVOKABLE QString terrainLayerId() const;
     Q_INVOKABLE QVariantMap contourSuggestion(const QString &layerId) const;   // {interval, base}
-    // Builds slope | slopePercent | aspect | contours of a DEM layer in the background into
-    // <project>/analysis and adds the result to the map. "" when started, else the reason.
-    Q_INVOKABLE QString analyzeTerrain(const QString &layerId, const QString &kind, double interval = 0, double base = 0);
+    // Builds slope | slopePercent | aspect | contours | difference (layer − otherLayer) of a DEM
+    // layer in the background into <project>/analysis and adds the result to the map.
+    // "" when started, else the reason.
+    Q_INVOKABLE QString analyzeTerrain(const QString &layerId, const QString &kind, double interval = 0, double base = 0,
+                                       const QString &otherLayerId = {});
     Q_INVOKABLE void clearProfile();
     Q_INVOKABLE QString exportProfile(const QUrl &url);   // CSV: distance, elevation, x, y (map CRS)
     bool analysisBusy() const { return m_analysisBusy; }

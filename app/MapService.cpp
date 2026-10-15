@@ -1961,7 +1961,7 @@ QVariantMap MapService::contourSuggestion(const QString &layerId) const
     return {{"interval", terrain::suggestedInterval(l.style.min, l.style.max)}, {"base", 0.0}, {"min", l.style.min}, {"max", l.style.max}};
 }
 
-QString MapService::analyzeTerrain(const QString &layerId, const QString &kind, double interval, double base)
+QString MapService::analyzeTerrain(const QString &layerId, const QString &kind, double interval, double base, const QString &otherLayerId)
 {
     if (m_project.isEmpty()) return QStringLiteral("Откройте проект.");
     if (m_analysisBusy) return QStringLiteral("Уже идёт расчёт: %1").arg(m_analysisStatus);
@@ -1988,6 +1988,13 @@ QString MapService::analyzeTerrain(const QString &layerId, const QString &kind, 
         style.ramp = RasterStyle::Aspect;
         style.min = 0;
         style.max = 360;
+    } else if (kind == QLatin1String("difference")) {
+        const int j = indexOf(otherLayerId);
+        if (j < 0 || !isElevation(m_layers[j])) return QStringLiteral("Выберите вторую модель высот (B).");
+        if (j == i) return QStringLiteral("Выберите две разные модели высот.");
+        out = uniquePath(dir, stem + QStringLiteral("-minus-") + safeName(m_layers[j].name), QStringLiteral(".tif"));
+        title = QStringLiteral("Разность «%1» − «%2»").arg(l.name, m_layers[j].name);
+        style.ramp = RasterStyle::Spectral;   // symmetric range set from the result: zero yellow, higher red, lower blue
     } else if (kind == QLatin1String("contours")) {
         if (!(interval > 0)) return QStringLiteral("Укажите шаг горизонталей больше нуля.");
         const QString step = QString::number(interval, 'g', 6).replace(QLatin1Char('.'), QLatin1Char('_'));
@@ -2000,8 +2007,10 @@ QString MapService::analyzeTerrain(const QString &layerId, const QString &kind, 
     m_analysisStatus = QStringLiteral("%1 по «%2»…").arg(title, l.name);
     emit analysisChanged();
     const QString source = l.source, name = l.name;
-    QThreadPool::globalInstance()->start([this, kind, source, out, interval, base, title, name, style] {
+    const QString other = kind == QLatin1String("difference") ? m_layers[indexOf(otherLayerId)].source : QString();
+    QThreadPool::globalInstance()->start([this, kind, source, other, out, interval, base, title, name, style] {
         QString error, message;
+        RasterStyle finalStyle = style;
         if (kind == QLatin1String("contours")) {
             const terrain::ContourResult r = terrain::contours(source, out, interval, base);
             error = r.error;
@@ -2010,6 +2019,17 @@ QString MapService::analyzeTerrain(const QString &layerId, const QString &kind, 
                               .arg(title, name).arg(r.lines).arg(QLocale(QLocale::Russian).toString(interval))
                               .arg(heightText(r.minLevel), heightText(r.maxLevel));
             if (r.ok() && r.lines == 0) error = QStringLiteral("В пределах высот модели нет ни одного уровня с шагом %1 м").arg(interval);
+        } else if (kind == QLatin1String("difference")) {
+            const terrain::RasterResult r = terrain::difference(source, other, out);
+            error = r.error;
+            if (r.ok() && r.stats.valid) {
+                const double span = qMax(0.1, qMax(std::fabs(r.stats.min), std::fabs(r.stats.max)));
+                finalStyle.min = -span;
+                finalStyle.max = span;
+                const QLocale ru(QLocale::Russian);
+                message = QStringLiteral("%1: от %2 до %3, в среднем %4 (положительные — A выше B).")
+                              .arg(title, heightText(r.stats.min), heightText(r.stats.max), heightText(r.stats.mean));
+            }
         } else {
             const terrain::RasterResult r = kind == QLatin1String("aspect") ? terrain::aspect(source, out)
                                                                             : terrain::slope(source, out, kind == QLatin1String("slopePercent"));
@@ -2023,7 +2043,7 @@ QString MapService::analyzeTerrain(const QString &layerId, const QString &kind, 
                           .arg(title, name, ru.toString(r.stats.min, 'f', 1), ru.toString(r.stats.max, 'f', 1), ru.toString(r.stats.mean, 'f', 1), unit);
             }
         }
-        QMetaObject::invokeMethod(this, [this, kind, out, error, message, style] {
+        QMetaObject::invokeMethod(this, [this, kind, out, error, message, finalStyle] {
             m_analysisBusy = false;
             m_analysisStatus.clear();
             emit analysisChanged();
@@ -2031,7 +2051,7 @@ QString MapService::analyzeTerrain(const QString &layerId, const QString &kind, 
                 emit analysisFinished(false, error);
                 return;
             }
-            m_nextStyle = style;
+            m_nextStyle = finalStyle;
             m_useNextStyle = kind != QLatin1String("contours");
             const QString addError = addLayerFromPath(out, false);
             m_useNextStyle = false;

@@ -155,7 +155,7 @@ ApplicationWindow {
         // Terrain analysis needs the map (and a DEM on it, which the tools and dialog check).
         case "tool.profile": case "tool.volume": case "analysis.longProfile": case "analysis.cutFill":
         case "view.slope": case "view.aspect": case "view.contours": case "analysis.terrain":
-        case "analysis.slope": case "analysis.aspect": case "analysis.contours": return map
+        case "analysis.slope": case "analysis.aspect": case "analysis.contours": case "analysis.elevationDiff": case "analysis.compare": return map
         // Navigation and the ruler work in the 3D view too (without a map CRS).
         case "tool.pan": case "tool.ruler": return window.activeView === 4 ? has : map
         case "view.3d": case "view.pointCloud": case "import.pointCloud": case "import.model": case "tool.rotate": case "tool.scale":
@@ -400,6 +400,8 @@ ApplicationWindow {
         "analysis.aspect": function() { window.activeView = 3; terrainDialog.openFor("aspect") },
         "view.contours": function() { window.activeView = 3; terrainDialog.openFor("contours") },
         "analysis.contours": function() { window.activeView = 3; terrainDialog.openFor("contours") },
+        "analysis.elevationDiff": function() { window.activeView = 3; terrainDialog.openFor("difference") },
+        "analysis.compare": function() { window.activeView = 3; terrainDialog.openFor("difference") },
         "help.docs": function() { window.openDoc("") },
         "help.shortcuts": function() { shortcutsDialog.open() },
         "help.environment": function() { processing.checkEnvironment(); environmentDialog.open() },

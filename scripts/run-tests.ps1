@@ -62,6 +62,8 @@ if ($Dataset) {
     if ($OdmHome) { $env:GEOMAP_ODM_HOME = $OdmHome }
     $env:GEOMAP_ODM_DATASET = $Dataset
     $env:GEOMAP_ODM_KEEP = '1'
+    # Work links and logs of the test, not the user's data folder.
+    $env:GEOMAP_DATA_DIR = Join-Path $env:TEMP 'GeoMapAI-test-data'
     $env:QTEST_FUNCTION_TIMEOUT = '21600000'
     $started = Get-Date
     Step 'Реальная обработка встроенным OpenDroneMap (отмена, быстрый и полный профиль)' {

@@ -371,6 +371,28 @@ private slots:
         QVERIFY(finished.first().at(1).toString().contains(QStringLiteral("линий")));
         QCOMPARE(s->map.layerCount(), layersBefore + 2);
 
+        // Difference of two models: the box over flat ground at 100 m (a copy of the DEM flattened).
+        const QString flat = QDir(tmp.path()).filePath(QStringLiteral("flat.tif"));
+        {
+            GDALDatasetH src = GDALOpen(dem.toUtf8().constData(), GA_ReadOnly);
+            GDALDatasetH ds = GDALCreateCopy(GDALGetDriverByName("GTiff"), flat.toUtf8().constData(), src, FALSE, nullptr, nullptr, nullptr);
+            GDALClose(src);
+            QVERIFY(ds);
+            std::vector<float> row(60, 100.f);
+            for (int r = 0; r < 60; ++r) GDALRasterIO(GDALGetRasterBand(ds, 1), GF_Write, 0, r, 60, 1, row.data(), 60, 1, GDT_Float32, 0, 0);
+            GDALClose(ds);
+        }
+        QCOMPARE(s->map.addLayerFile(flat), QString());
+        const QString flatId = s->map.layerIdForSource(flat);
+        QTRY_VERIFY_WITH_TIMEOUT(s->map.elevationLayers().size() == 3, 30000);   // dem, slope, flat
+        finished.clear();
+        QCOMPARE(s->map.analyzeTerrain(demId, QStringLiteral("difference"), 0, 0, demId), QStringLiteral("Выберите две разные модели высот."));
+        QCOMPARE(s->map.analyzeTerrain(demId, QStringLiteral("difference"), 0, 0, flatId), QString());
+        QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 30000);
+        QVERIFY2(finished.first().at(0).toBool(), qPrintable(finished.first().at(1).toString()));
+        QVERIFY2(finished.first().at(1).toString().contains(QStringLiteral("до 5,00 м")), qPrintable(finished.first().at(1).toString()));
+        s->map.removeLayer(flatId);
+
         // Profile across the box: west to east through its middle.
         s->map.selectLayer(demId);
         QVERIFY(s->run(QStringLiteral("tool.profile")));

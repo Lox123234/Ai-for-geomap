@@ -33,6 +33,9 @@ struct RasterResult
 RasterResult slope(const QString &dem, const QString &out, bool percent = false);
 // Direction the slope faces, degrees clockwise from north (0 = north, 90 = east); flat cells are nodata.
 RasterResult aspect(const QString &dem, const QString &out);
+// A − B on the grid of A (B resampled bilinearly into A's CRS and cells): heights of vegetation and
+// buildings (DSM − DTM) or changes between surveys. Nodata where either model has none.
+RasterResult difference(const QString &demA, const QString &demB, const QString &out);
 
 struct ContourResult
 {

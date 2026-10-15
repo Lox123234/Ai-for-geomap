@@ -14,9 +14,10 @@ Dialog {
     padding: 16
     standardButtons: Dialog.Close
 
-    property string kind: "slope"        // slope | slopePercent | aspect | contours
+    property string kind: "slope"        // slope | slopePercent | aspect | contours | difference
     property var layers: []
     property string layerId: ""
+    property string otherLayerId: ""
     property string resultText: ""
     property bool resultOk: true
 
@@ -24,7 +25,8 @@ Dialog {
         { id: "slope", title: "Карта уклонов, градусы", text: "Крутизна склона в каждой ячейке: 0° — горизонтально. Шкала от зелёного (пологие) к красному (крутые)." },
         { id: "slopePercent", title: "Карта уклонов, проценты", text: "Уклон в процентах: подъём на 100 м пути (10 % ≈ 5,7°). Удобно для дорог и дренажа." },
         { id: "aspect", title: "Экспозиция склонов", text: "Куда обращён склон: 0° — север, 90° — восток, 180° — юг, 270° — запад. Ровные участки без значения." },
-        { id: "contours", title: "Горизонтали", text: "Линии равных высот с заданным шагом; высота — в поле «elev» слоя GeoPackage." }
+        { id: "contours", title: "Горизонтали", text: "Линии равных высот с заданным шагом; высота — в поле «elev» слоя GeoPackage." },
+        { id: "difference", title: "Разность моделей A − B", text: "Высота модели A над моделью B в каждой ячейке A: DSM − DTM даёт высоту растительности и построек, две съёмки одного места — изменения (выемки синие, насыпи красные)." }
     ]
 
     function openFor(k) {
@@ -32,6 +34,8 @@ Dialog {
         layers = gis.elevationLayers()
         var preferred = gis.terrainLayerId()
         layerId = preferred.length > 0 ? preferred : (layers.length > 0 ? layers[0].id : "")
+        otherLayerId = ""
+        for (var i = 0; i < layers.length; ++i) if (layers[i].id !== layerId) { otherLayerId = layers[i].id; break }
         resultText = ""
         suggest()
         open()
@@ -51,7 +55,7 @@ Dialog {
 
     contentItem: ColumnLayout {
         spacing: 10
-        Label { text: "Модель высот"; color: Theme.muted; font.pixelSize: 11 }
+        Label { text: dialog.kind === "difference" ? "Модель A" : "Модель высот"; color: Theme.muted; font.pixelSize: 11 }
         ComboBox {
             id: layerBox
             Layout.fillWidth: true
@@ -85,6 +89,19 @@ Dialog {
             text: dialog.kinds.filter(function(k) { return k.id === dialog.kind })[0].text
             color: Theme.faint; font.pixelSize: 11
         }
+        RowLayout {
+            visible: dialog.kind === "difference"
+            Layout.fillWidth: true
+            Label { text: "Модель B (вычитается)"; color: Theme.muted; font.pixelSize: 11 }
+            ComboBox {
+                Layout.fillWidth: true
+                model: dialog.layers
+                textRole: "name"; valueRole: "id"
+                currentIndex: indexOfValue(dialog.otherLayerId)
+                displayText: currentIndex >= 0 ? currentText : "Нужна вторая модель высот"
+                onActivated: dialog.otherLayerId = currentValue
+            }
+        }
         GridLayout {
             visible: dialog.kind === "contours"
             columns: 4
@@ -104,7 +121,8 @@ Dialog {
                 enabled: !gis.analysisBusy && dialog.layerId.length > 0
                 onClicked: {
                     dialog.resultText = ""
-                    var error = gis.analyzeTerrain(dialog.layerId, dialog.kind, dialog.number(intervalField.text), dialog.number(baseField.text))
+                    var error = gis.analyzeTerrain(dialog.layerId, dialog.kind, dialog.number(intervalField.text), dialog.number(baseField.text),
+                                                   dialog.otherLayerId)
                     if (error.length > 0) { dialog.resultOk = false; dialog.resultText = error }
                 }
             }
