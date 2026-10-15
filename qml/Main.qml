@@ -152,6 +152,10 @@ ApplicationWindow {
         case "edit.deselect": return gis.hasSelection
         case "edit.geometry": case "tool.select": case "tool.area":
         case "tool.point": case "tool.line": case "tool.polygon": case "tool.vertices": return map
+        // Terrain analysis needs the map (and a DEM on it, which the tools and dialog check).
+        case "tool.profile": case "tool.volume": case "analysis.longProfile": case "analysis.cutFill":
+        case "view.slope": case "view.aspect": case "view.contours": case "analysis.terrain":
+        case "analysis.slope": case "analysis.aspect": case "analysis.contours": return map
         // Navigation and the ruler work in the 3D view too (without a map CRS).
         case "tool.pan": case "tool.ruler": return window.activeView === 4 ? has : map
         case "view.3d": case "view.pointCloud": case "import.pointCloud": case "import.model": case "tool.rotate": case "tool.scale":
@@ -192,6 +196,8 @@ ApplicationWindow {
         case "tool.point": return window.activeView === 3 && gis.tool === "point"
         case "tool.line": return window.activeView === 3 && gis.tool === "line"
         case "tool.polygon": return window.activeView === 3 && gis.tool === "polygon"
+        case "tool.profile": case "analysis.longProfile": return window.activeView === 3 && gis.tool === "profile"
+        case "tool.volume": case "analysis.cutFill": return window.activeView === 3 && gis.tool === "volume"
         case "view.panelProject": return window.showLeft
         case "view.panelProperties": return window.showRight
         case "view.panelLog": return window.showBottom
@@ -383,6 +389,17 @@ ApplicationWindow {
         "tool.point": function() { window.setTool("point") },
         "tool.line": function() { window.setTool("line") },
         "tool.polygon": function() { window.setTool("polygon") },
+        "tool.profile": function() { window.setTool("profile") },
+        "tool.volume": function() { window.setTool("volume") },
+        "analysis.longProfile": function() { window.setTool("profile") },
+        "analysis.cutFill": function() { window.setTool("volume") },
+        "analysis.terrain": function() { window.activeView = 3; terrainDialog.openFor("slope") },
+        "view.slope": function() { window.activeView = 3; terrainDialog.openFor("slope") },
+        "analysis.slope": function() { window.activeView = 3; terrainDialog.openFor("slope") },
+        "view.aspect": function() { window.activeView = 3; terrainDialog.openFor("aspect") },
+        "analysis.aspect": function() { window.activeView = 3; terrainDialog.openFor("aspect") },
+        "view.contours": function() { window.activeView = 3; terrainDialog.openFor("contours") },
+        "analysis.contours": function() { window.activeView = 3; terrainDialog.openFor("contours") },
         "help.docs": function() { window.openDoc("") },
         "help.shortcuts": function() { shortcutsDialog.open() },
         "help.environment": function() { processing.checkEnvironment(); environmentDialog.open() },
@@ -574,6 +591,16 @@ ApplicationWindow {
 
     header: MainToolBar { host: window }
 
+    TerrainDialog { id: terrainDialog }
+    // Results of terrain analysis started while the dialog was closed (or after it was closed).
+    Connections {
+        target: gis
+        function onAnalysisFinished(ok, message) {
+            if (terrainDialog.visible) return
+            if (ok) window.flash(message)
+            else window.showError(message)
+        }
+    }
     MapController {
         id: mapController
         onErrorMessage: function(text) { window.showError(text) }

@@ -1,0 +1,2 @@
+// Icon of GeoMapAI.exe (Explorer, taskbar, shortcuts); drawn by scripts/make-icon.ps1.
+IDI_ICON1 ICON "resources/geomap.ico"

@@ -152,7 +152,7 @@ RasterStyle RasterStyle::automatic(const RasterInfo &info, const QVector<QPair<d
 QVariantMap RasterStyle::toVariant() const
 {
     return {{"mode", mode == Rgb ? "rgb" : "single"}, {"red", red}, {"green", green}, {"blue", blue}, {"alpha", alpha},
-            {"band", band}, {"ramp", ramp == Gray ? "gray" : ramp == Terrain ? "terrain" : "spectral"},
+            {"band", band}, {"ramp", ramp == Gray ? "gray" : ramp == Terrain ? "terrain" : ramp == Slope ? "slope" : ramp == Aspect ? "aspect" : "spectral"},
             {"min", min}, {"max", max}, {"rgbMin", QVariantList{rgbMin[0], rgbMin[1], rgbMin[2]}},
             {"rgbMax", QVariantList{rgbMax[0], rgbMax[1], rgbMax[2]}}, {"hillshade", hillshade}};
 }
@@ -170,6 +170,8 @@ RasterStyle RasterStyle::fromVariant(const QVariantMap &m, const RasterStyle &fa
     if (ramp == QLatin1String("gray")) s.ramp = Gray;
     else if (ramp == QLatin1String("terrain")) s.ramp = Terrain;
     else if (ramp == QLatin1String("spectral")) s.ramp = Spectral;
+    else if (ramp == QLatin1String("slope")) s.ramp = Slope;
+    else if (ramp == QLatin1String("aspect")) s.ramp = Aspect;
     s.min = m.value("min", s.min).toDouble();
     s.max = m.value("max", s.max).toDouble();
     const QVariantList lo = m.value("rgbMin").toList(), hi = m.value("rgbMax").toList();
@@ -191,6 +193,12 @@ QVector<QPair<double, QColor>> RasterStyle::rampStops(Ramp ramp)
     case Spectral:
         return {{0.0, QColor(43, 131, 186)}, {0.25, QColor(171, 221, 164)}, {0.5, QColor(255, 255, 191)},
                 {0.75, QColor(253, 174, 97)}, {1.0, QColor(215, 25, 28)}};
+    case Slope:
+        return {{0.0, QColor(26, 152, 80)}, {0.2, QColor(145, 207, 96)}, {0.4, QColor(254, 224, 139)},
+                {0.6, QColor(252, 141, 89)}, {0.8, QColor(215, 48, 39)}, {1.0, QColor(110, 20, 90)}};
+    case Aspect:   // north red, east yellow, south cyan, west blue, back to north
+        return {{0.0, QColor(230, 60, 60)}, {0.25, QColor(240, 210, 60)}, {0.5, QColor(60, 200, 210)},
+                {0.75, QColor(70, 100, 230)}, {1.0, QColor(230, 60, 60)}};
     }
     return {};
 }

@@ -63,7 +63,7 @@ private slots:
         QVERIFY(r.unavailableReason(QStringLiteral("proc.optimize")).startsWith(QStringLiteral("Не поддерживается выбранным движком")));
         QVERIFY(r.unavailableReason(QStringLiteral("file.save")).isEmpty());
         QVERIFY(r.tooltip(QStringLiteral("file.save")).contains(QStringLiteral("Ctrl+S")));
-        QVERIFY(r.tooltip(QStringLiteral("tool.profile")).contains(QStringLiteral("этап C")));
+        QVERIFY(r.tooltip(QStringLiteral("tool.slope")).contains(QStringLiteral("этап C")));   // planned: the stage in the tooltip
         QVERIFY(!r.isReady(QStringLiteral("unknown.command")));
     }
 
@@ -81,7 +81,7 @@ private slots:
             QVERIFY2(conflict.contains(QStringLiteral("Сохранить")), qPrintable(conflict));
             QCOMPARE(r.shortcut(QStringLiteral("file.open")), QStringLiteral("Ctrl+O"));
             QVERIFY(!r.setShortcut(QStringLiteral("file.open"), QStringLiteral("Ctrl+Нечто")).isEmpty());
-            QVERIFY(!r.setShortcut(QStringLiteral("view.slope"), QStringLiteral("F9")).isEmpty());   // planned
+            QVERIFY(!r.setShortcut(QStringLiteral("view.basemap"), QStringLiteral("F9")).isEmpty());   // planned
             // Removing a shortcut.
             QCOMPARE(r.setShortcut(QStringLiteral("tool.pan"), QString()), QString());
             QCOMPARE(r.shortcut(QStringLiteral("tool.pan")), QString());

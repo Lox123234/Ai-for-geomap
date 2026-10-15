@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Builds GeoMap AI (Release x64, MSVC) and deploys a portable folder to dist\GeoMapAI.
 .PARAMETER QtDir
@@ -23,6 +23,11 @@
     Local ODM_Setup_3.6.2.exe for -FetchOdm instead of the download (its SHA-256 is still checked).
 .PARAMETER NoOdm
     Developer/CI build without OpenDroneMap: everything works except processing.
+.PARAMETER Installer
+    Also build the Windows installer GeoMapAI-<version>-win64-setup.exe next to the deployment
+    folder (installer\GeoMapAI.nsi): per-user, no administrator rights, Start menu and desktop
+    shortcuts, uninstall from "Apps". Needs NSIS 3 (makensis): <repo>\.tools\nsis-*, PATH or
+    Program Files.
 #>
 param(
     [string]$QtDir,
@@ -33,7 +38,8 @@ param(
     [string]$OdmDir,
     [switch]$FetchOdm,
     [string]$OdmInstaller,
-    [switch]$NoOdm
+    [switch]$NoOdm,
+    [switch]$Installer
 )
 
 $ErrorActionPreference = 'Stop'
@@ -232,6 +238,28 @@ try {
             Compress-Archive -Path $out -DestinationPath $archive -Force
         }
         Write-Host "Archive: $archive"
+    }
+
+    if ($Installer) {
+        $makensis = Get-ChildItem (Join-Path $root '.tools') -Directory -Filter 'nsis-*' -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending | ForEach-Object { Join-Path $_.FullName 'makensis.exe' } | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (!$makensis) { $makensis = (Get-Command makensis.exe -ErrorAction SilentlyContinue).Source }
+        if (!$makensis) {
+            $makensis = @("${env:ProgramFiles(x86)}\NSIS\makensis.exe", "$env:ProgramFiles\NSIS\makensis.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+        }
+        if (!$makensis) { throw 'NSIS 3 (makensis.exe) not found: unpack nsis-3.x.zip into .tools\ or install NSIS.' }
+        $cmake = Get-Content (Join-Path $root 'CMakeLists.txt') -Raw
+        if ($cmake -notmatch 'project\(GeoMapAI VERSION ([0-9.]+)') { throw 'Project version not found in CMakeLists.txt' }
+        $version = $Matches[1]
+        $suffix = if ($NoOdm) { '-no-odm' } else { '' }
+        $setup = Join-Path (Split-Path -Parent $out) "GeoMapAI-$version-win64$suffix-setup.exe"
+        # The license page reads UTF-16LE text (Cyrillic).
+        $license = Join-Path $root 'build\installer-license.txt'
+        [IO.File]::WriteAllText($license, [IO.File]::ReadAllText((Join-Path $root 'installer\license.txt'), [Text.Encoding]::UTF8), [Text.Encoding]::Unicode)
+        Write-Host "Building the installer with $makensis (LZMA, a few minutes)..."
+        & $makensis /V2 /INPUTCHARSET UTF8 "/DVERSION=$version" "/DSOURCE_DIR=$out" "/DOUTFILE=$setup" "/DROOT=$root" "/DLICENSE_FILE=$license" (Join-Path $root 'installer\GeoMapAI.nsi')
+        if ($LASTEXITCODE -ne 0) { throw 'Building the installer failed' }
+        Write-Host "Installer: $setup ($([Math]::Round((Get-Item $setup).Length / 1MB)) MB)" -ForegroundColor Green
     }
 
     Write-Host "Ready: $(Join-Path $out 'GeoMapAI.exe')" -ForegroundColor Green

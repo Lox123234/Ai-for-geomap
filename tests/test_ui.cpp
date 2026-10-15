@@ -1,4 +1,5 @@
 #include <QtTest>
+#include <QSignalSpy>
 #include <QDir>
 #include <QJsonDocument>
 #include <QQmlApplicationEngine>
@@ -185,7 +186,7 @@ private slots:
         QVERIFY(s->findByCommand(QStringLiteral("file.new"), "ToolIconButton")->property("enabled").toBool());
         QVERIFY(!s->findByCommand(QStringLiteral("file.save"), "ToolIconButton")->property("enabled").toBool());   // no project
         // Planned commands do not run and say why.
-        QVERIFY(!s->run(QStringLiteral("view.slope")));
+        QVERIFY(!s->run(QStringLiteral("view.basemap")));
         QVERIFY(s->prop("transientMessage").toString().contains(QStringLiteral("C (0.3.x)")));
         QVERIFY(!s->run(QStringLiteral("proc.optimize")));
         QVERIFY(s->prop("transientMessage").toString().contains(QStringLiteral("движком")));
@@ -307,6 +308,119 @@ private slots:
         s->shot(QStringLiteral("ui-05-photos.png"));
     }
 
+    // Terrain analysis in the window: slope and contours become layers, the profile tool draws
+    // a section with its panel, the volume tool measures a box of known volume.
+    void terrainAnalysisOnTheMap()
+    {
+        QTemporaryDir tmp;
+        auto s = open();
+        QVERIFY(s->projects.createProject(QUrl::fromLocalFile(tmp.path()), QStringLiteral("Рельеф")));
+        QCOMPARE(s->map.setMapCrs(QStringLiteral("32615")), QString());
+        // 60 × 60 m DEM, 1 m cells: flat at 100 m with a 20 × 20 m box 5 m high in the middle.
+        const QString dem = QDir(tmp.path()).filePath(QStringLiteral("dem.tif"));
+        {
+            GDALDatasetH ds = GDALCreate(GDALGetDriverByName("GTiff"), dem.toUtf8().constData(), 60, 60, 1, GDT_Float32, nullptr);
+            QVERIFY(ds);
+            double gt[6] = {576000, 1, 0, 5188100, 0, -1};
+            GDALSetGeoTransform(ds, gt);
+            OGRSpatialReferenceH srs = OSRNewSpatialReference(nullptr);
+            OSRImportFromEPSG(srs, 32615);
+            GDALSetSpatialRef(ds, srs);
+            OSRDestroySpatialReference(srs);
+            std::vector<float> row(60);
+            for (int r = 0; r < 60; ++r) {
+                for (int c = 0; c < 60; ++c) row[c] = (c >= 20 && c < 40 && r >= 20 && r < 40) ? 105.f : 100.f;
+                QCOMPARE(GDALRasterIO(GDALGetRasterBand(ds, 1), GF_Write, 0, r, 60, 1, row.data(), 60, 1, GDT_Float32, 0, 0), CE_None);
+            }
+            GDALClose(ds);
+        }
+        QCOMPARE(s->map.addLayerFile(dem), QString());
+        const QString demId = s->map.layerIdForSource(dem);
+        const auto demReady = [&] {
+            for (const MapLayer &l : s->map.layers())
+                if (l.id == demId) return !l.loading && l.raster != nullptr;
+            return false;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(demReady(), 30000);
+        QCOMPARE(s->map.elevationLayers().size(), 1);
+        QCOMPARE(s->map.terrainLayerId(), demId);
+
+        // Slope: the command opens the dialog; the analysis adds a layer with the slope ramp.
+        QVERIFY(s->run(QStringLiteral("view.slope")));
+        QObject *dialog = s->window->findChild<QObject *>(QStringLiteral("terrainDialog"));
+        QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        QCOMPARE(dialog->property("layerId").toString(), demId);
+        QSignalSpy finished(&s->map, &MapService::analysisFinished);
+        const int layersBefore = s->map.layerCount();
+        QCOMPARE(s->map.analyzeTerrain(demId, QStringLiteral("slope")), QString());
+        QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 30000);
+        QVERIFY2(finished.first().at(0).toBool(), qPrintable(finished.first().at(1).toString()));
+        QTRY_COMPARE(s->map.layerCount(), layersBefore + 1);
+        const QString slopePath = QDir(s->projects.projectPath()).filePath(QStringLiteral("analysis/dem-slope.tif"));
+        QVERIFY(QFileInfo::exists(slopePath));
+        QCOMPARE(s->map.layerDetails(s->map.layerIdForSource(slopePath)).value("style").toMap().value("ramp").toString(), QStringLiteral("slope"));
+        QVERIFY(dialog->property("resultText").toString().contains(QStringLiteral("Карта уклонов")));
+        s->shot(QStringLiteral("ui-08-terrain-slope.png"));
+        QMetaObject::invokeMethod(dialog, "close");
+        // Contours every metre: a vector layer.
+        finished.clear();
+        QCOMPARE(s->map.analyzeTerrain(demId, QStringLiteral("contours"), 1.0, 0.0), QString());
+        QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 30000);
+        QVERIFY2(finished.first().at(0).toBool(), qPrintable(finished.first().at(1).toString()));
+        QVERIFY(finished.first().at(1).toString().contains(QStringLiteral("линий")));
+        QCOMPARE(s->map.layerCount(), layersBefore + 2);
+
+        // Profile across the box: west to east through its middle.
+        s->map.selectLayer(demId);
+        QVERIFY(s->run(QStringLiteral("tool.profile")));
+        QCOMPARE(s->map.tool(), QStringLiteral("profile"));
+        QSignalSpy ready(&s->map, &MapService::terrainResultReady);
+        for (const QPointF &p : {QPointF(576005.5, 5188070.5), QPointF(576055.5, 5188070.5)}) {
+            const QPointF screen = s->map.toScreen(p);
+            s->map.pointerPressed(screen, Qt::LeftButton, Qt::NoModifier);
+            s->map.pointerReleased(screen);
+        }
+        s->map.finishSketch();
+        QTRY_COMPARE_WITH_TIMEOUT(ready.count(), 1, 30000);
+        const QVariantMap profile = s->map.profileForQml();
+        QVERIFY(profile.value("valid").toBool());
+        QCOMPARE(profile.value("maxZ").toDouble(), 105.0);
+        QCOMPARE(profile.value("minZ").toDouble(), 100.0);
+        QVERIFY(std::abs(profile.value("ascent").toDouble() - 5.0) < 1e-3);
+        QVERIFY(s->map.measurementText().startsWith(QStringLiteral("Профиль:")));
+        QObject *panel = s->window->findChild<QObject *>(QStringLiteral("profilePanel"));
+        QVERIFY(panel);
+        QTRY_VERIFY(panel->property("visible").toBool());
+        const QString csv = QDir(tmp.path()).filePath(QStringLiteral("profile.csv"));
+        QCOMPARE(s->map.exportProfile(QUrl::fromLocalFile(csv)), QString());
+        QFile file(csv);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readLine().trimmed(), QByteArray("distance_m,elevation_m,x,y"));
+        s->shot(QStringLiteral("ui-09-terrain-profile.png"));
+
+        // Volume of the box above the boundary level: 20 × 20 × 5 = 2000 m³.
+        QVERIFY(s->run(QStringLiteral("tool.volume")));
+        QCOMPARE(s->map.tool(), QStringLiteral("volume"));
+        ready.clear();
+        for (const QPointF &p : {QPointF(576010, 5188090), QPointF(576050, 5188090), QPointF(576050, 5188050), QPointF(576010, 5188050)}) {
+            const QPointF screen = s->map.toScreen(p);
+            s->map.pointerPressed(screen, Qt::LeftButton, Qt::NoModifier);
+            s->map.pointerReleased(screen);
+        }
+        s->map.finishSketch();
+        QTRY_COMPARE_WITH_TIMEOUT(ready.count(), 1, 30000);
+        QVERIFY2(std::abs(s->map.volumeResult().above - 2000) < 1e-3, qPrintable(s->map.measurementText()));
+        QVERIFY2(s->map.measurementText().contains(QStringLiteral("2 000 м³")) || s->map.measurementText().contains(QStringLiteral("2\u00a0000 м³")),
+                 qPrintable(s->map.measurementText()));
+        // Another base recomputes the same outline: level 102 m → 1200 m³ above, 2400 m³ below.
+        ready.clear();
+        s->map.setVolumeLevel(102);
+        s->map.setVolumeBase(QStringLiteral("level"));
+        QTRY_VERIFY_WITH_TIMEOUT(ready.count() >= 1 && std::abs(s->map.volumeResult().below - 2400) < 1e-3, 30000);
+        QVERIFY(std::abs(s->map.volumeResult().above - 1200) < 1e-3);
+        s->shot(QStringLiteral("ui-10-terrain-volume.png"));
+    }
     // The 3D view: commands, tools without a map CRS, and an ODM point cloud opened from the
     // project tree (the job's LAZ is shown through odm_filterpoints/point_cloud.ply). The
     // software renderer cannot draw it: the view says so instead of showing an empty black area.

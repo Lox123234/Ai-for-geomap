@@ -4,7 +4,7 @@ if(CMAKE_HOST_WIN32 AND NOT DEFINED VCPKG_TARGET_TRIPLET)
     set(VCPKG_TARGET_TRIPLET x64-windows-geomap CACHE STRING "vcpkg triplet")
     set(VCPKG_HOST_TRIPLET x64-windows-geomap CACHE STRING "vcpkg host triplet")
 endif()
-project(GeoMapAI VERSION 0.4.0 LANGUAGES CXX)
+project(GeoMapAI VERSION 0.4.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -64,6 +64,8 @@ qt_add_library(GeoMapCore STATIC
     src/gis/RasterSource.cpp
     src/gis/VectorSource.h
     src/gis/VectorSource.cpp
+    src/gis/TerrainAnalysis.h
+    src/gis/TerrainAnalysis.cpp
     app/MapTiles.h
     app/MapTiles.cpp
     app/MapService.h
@@ -101,7 +103,7 @@ set(GEOMAP_QML_FILES
     qml/Main.qml qml/Theme.qml qml/FlatButton.qml qml/SectionTitle.qml qml/ToolIconButton.qml
     qml/CommandMenuItem.qml qml/MainToolBar.qml qml/ProjectTreePanel.qml qml/PhotoListPanel.qml
     qml/PhotoInspector.qml qml/BottomPanel.qml qml/MapController.qml qml/MapLayersPanel.qml
-    qml/MapLayerProperties.qml qml/MapCanvas.qml qml/ShortcutsDialog.qml qml/View3DWorkspace.qml qml/View3DPanel.qml)
+    qml/MapLayerProperties.qml qml/MapCanvas.qml qml/ShortcutsDialog.qml qml/View3DWorkspace.qml qml/View3DPanel.qml qml/TerrainDialog.qml)
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 foreach(file IN LISTS GEOMAP_QML_FILES)
     get_filename_component(name ${file} NAME)
@@ -138,6 +140,10 @@ qt_add_shaders(GeoMapUi "geomap_shaders"
 target_link_libraries(GeoMapUi PUBLIC GeoMapCore Qt6::Core Qt6::Gui Qt6::GuiPrivate Qt6::Quick Qt6::QuickControls2)
 
 qt_add_executable(GeoMapAI app/main.cpp)
+if(WIN32)
+    target_sources(GeoMapAI PRIVATE app/geomap.rc)   # icon of the executable
+endif()
+qt_add_resources(GeoMapAI "app_icon" PREFIX "/geomap" BASE app/resources FILES app/resources/geomap-256.png)
 target_compile_definitions(GeoMapAI PRIVATE GEOMAP_VERSION="${PROJECT_VERSION}")
 target_link_libraries(GeoMapAI PRIVATE GeoMapUi GeoMapUiplugin)
 
@@ -183,6 +189,10 @@ if(BUILD_TESTING)
         qt_add_executable(GeoMapAIGisTests tests/test_gis.cpp)
         target_link_libraries(GeoMapAIGisTests PRIVATE GeoMapCore Qt6::Test)
         add_test(NAME GeoMapAIGisTests COMMAND GeoMapAIGisTests)
+        # Terrain analysis on surfaces with known answers (slope, aspect, contours, profiles, volumes).
+        qt_add_executable(GeoMapAITerrainTests tests/test_terrain.cpp)
+        target_link_libraries(GeoMapAITerrainTests PRIVATE GeoMapCore Qt6::Test)
+        add_test(NAME GeoMapAITerrainTests COMMAND GeoMapAITerrainTests)
 
         qt_add_executable(GeoMapAIWorkspaceTests tests/test_workspace.cpp tests/MockEngine.h)
         target_link_libraries(GeoMapAIWorkspaceTests PRIVATE GeoMapCore Qt6::Test)
@@ -205,7 +215,7 @@ if(BUILD_TESTING)
         qt_add_executable(GeoMapAIView3DRenderTest tests/test_view3d_render.cpp)
         target_link_libraries(GeoMapAIView3DRenderTest PRIVATE GeoMapUi GeoMapUiplugin Qt6::Test Qt6::Quick Qt6::GuiPrivate)
         add_test(NAME GeoMapAIView3DRenderTest COMMAND GeoMapAIView3DRenderTest)
-        set(geomap_tests GeoMapAITests GeoMapAIProjectTests GeoMapAIImportTests GeoMapAIProcessingTests GeoMapAIGisTests
+        set(geomap_tests GeoMapAITests GeoMapAIProjectTests GeoMapAIImportTests GeoMapAIProcessingTests GeoMapAIGisTests GeoMapAITerrainTests
             GeoMapAIWorkspaceTests GeoMapAIUiTests GeoMapAIView3DTests GeoMapAIView3DRenderTest)
 
         # Real reconstruction with the built-in OpenDroneMap and a check of all its results;

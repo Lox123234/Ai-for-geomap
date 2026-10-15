@@ -27,3 +27,5 @@ CMakeUserPresets.json
 # OS
 .DS_Store
 Thumbs.db
+
+.tools/

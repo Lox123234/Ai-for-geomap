@@ -81,7 +81,8 @@ Linux-сборка использует системные пакеты `libgdal
 | --- | --- | --- |
 | CMake | BSD-3-Clause | ≥ 3.21 |
 | MSVC (Visual Studio 2022 Build Tools / Community) | Microsoft | Условия использования определяет лицензия Visual Studio |
-| Инструменты Qt: moc, rcc, qmlcachegen, qmltyperegistrar, windeployqt | LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0 | Исключение Qt позволяет использовать результат их работы без ограничений GPL |
+| Инструменты Qt: moc, rcc, qmlcachegen, qmltyperegistrar, windeployqt, qsb (Qt Shader Tools) | LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0 | Исключение Qt позволяет использовать результат их работы без ограничений GPL; `qsb` компилирует шейдеры 3D-вида при сборке |
+| NSIS 3.13 (`makensis`, для `-Installer`) | zlib/libpng; модуль сжатия LZMA — CPL-1.0 (файл `COPYING` дистрибутива) | Официальный архив `nsis-3.13.zip` с SourceForge (MD5 `530e3623c077cba879ed2ae6e13be362` совпал с опубликованным), распакован в `.tools\nsis-3.13` (не в git). В `setup.exe` попадает заглушка NSIS (zlib) и распаковщик LZMA; лицензии позволяют распространять установщики, в том числе коммерчески. Inno Setup не используется: текущие версии бесплатны только для некоммерческого использования |
 | Git | GPL-2.0 | — |
 | vcpkg (инструмент и порты) | MIT | Собирает GDAL/PROJ из исходников; на Windows подходит копия из Visual Studio (`VC\vcpkg`) или `VCPKG_ROOT` |
 

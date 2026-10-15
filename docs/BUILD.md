@@ -67,9 +67,16 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 | `-OdmInstaller <файл>` | Локальный `ODM_Setup_3.6.2.exe` для `-FetchOdm` вместо загрузки |
 | `-OdmDir <папка>` | Другая папка ODM 3.6.x вместо `.odm\odm-3.6.2` |
 | `-NoOdm` | Сборка разработчика без ODM (всё, кроме обработки); так собирает CI |
+| `-Installer` | Дополнительно собрать установщик `dist\GeoMapAI-<версия>-win64-setup.exe` (NSIS 3: `.tools\nsis-*`, `PATH` или Program Files) |
 | `-Generator "Visual Studio 18 2026"` | Другой экземпляр Visual Studio |
 
 Результат: `dist\GeoMapAI\GeoMapAI.exe` — переносимая папка: около 110 МБ без ODM (из них ~37 МБ — GDAL/PROJ и `proj.db`) и около 1,1 ГБ с встроенным ODM (архив ~400 МБ). Без ODM скрипт не собирает поставку, если не указан `-NoOdm`. Её можно скопировать на другой ПК с Windows 10/11 x64 в папку с правом записи (не `Program Files`); Qt, Qt Creator, Python, GDAL, PROJ, Docker, WSL и VC++ Redistributable там не нужны.
+
+### Установщик
+
+`-Installer` собирает один файл `GeoMapAI-<версия>-win64-setup.exe` (≈ 400 МБ со встроенным ODM) по сценарию `installer\GeoMapAI.nsi`: мастер на русском (лицензии, состав, папка), установка **для текущего пользователя без прав администратора** в `%LOCALAPPDATA%\Programs\GeoMapAI`, ярлыки в меню «Пуск» и (по выбору) на рабочем столе, запись в «Параметры → Приложения» для удаления, предложение запустить программу. Обновление заменяет предыдущую версию целиком; установщик и программа удаления ждут закрытия GeoMap AI. Удаляется только папка программы — проекты, снимки, результаты и папка данных `%LOCALAPPDATA%\GeoMapAI` остаются. В непустую чужую папку установщик не ставит (программа удаляется вместе с папкой).
+
+NSIS один раз: скачать официальный `nsis-3.x.zip` (https://nsis.sourceforge.io/Download), сверить контрольную сумму с SourceForge и распаковать в `.tools\`. Иконка программы и картинки мастера рисуются скриптами `scripts\make-icon.ps1` и `scripts\make-installer-art.ps1` (результаты лежат в репозитории).
 
 ## CMake-пресеты
 

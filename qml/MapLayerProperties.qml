@@ -96,9 +96,9 @@ Item {
                     Label { text: "Шкала"; color: Theme.muted; font.pixelSize: 11 }
                     ComboBox {
                         Layout.fillWidth: true
-                        model: ["Серая", "Рельеф", "Спектр"]
-                        currentIndex: !panel.d.style ? 1 : panel.d.style.ramp === "gray" ? 0 : panel.d.style.ramp === "spectral" ? 2 : 1
-                        onActivated: gis.setLayerStyle(panel.d.id, { ramp: ["gray", "terrain", "spectral"][currentIndex] })
+                        model: ["Серая", "Рельеф", "Спектр", "Уклоны", "Экспозиция"]
+                        currentIndex: !panel.d.style ? 1 : Math.max(0, ["gray", "terrain", "spectral", "slope", "aspect"].indexOf(panel.d.style.ramp))
+                        onActivated: gis.setLayerStyle(panel.d.id, { ramp: ["gray", "terrain", "spectral", "slope", "aspect"][currentIndex] })
                     }
                     Label { text: "Минимум"; color: Theme.muted; font.pixelSize: 11 }
                     TextField {

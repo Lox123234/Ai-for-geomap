@@ -41,7 +41,7 @@ struct RasterInfo
 struct RasterStyle
 {
     enum Mode { Rgb, SingleBand };
-    enum Ramp { Gray, Terrain, Spectral };
+    enum Ramp { Gray, Terrain, Spectral, Slope, Aspect };   // Slope: flat green → steep red; Aspect: compass hues
     Mode mode = Rgb;
     int red = 1, green = 2, blue = 3;   // 1-based bands
     int alpha = 0;                      // alpha band, 0 = none

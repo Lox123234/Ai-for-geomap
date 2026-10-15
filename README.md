@@ -29,6 +29,10 @@
 
 No Python interpreter or local web server is needed to build or run the desktop app.
 
+## Install on Windows
+
+Run `GeoMapAI-<version>-win64-setup.exe`: a Russian wizard installs GeoMap AI with the built-in OpenDroneMap for the current user (no administrator rights) into `%LOCALAPPDATA%\Programs\GeoMapAI`, with Start menu and optional desktop shortcuts; uninstall it from Settings → Apps (projects are kept). The installer is built with `scripts\build-windows.ps1 -Installer` (NSIS).
+
 ## Build and run on Windows
 
 ```powershell
@@ -39,6 +43,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 The script finds Qt, Visual Studio and vcpkg (the copy inside Visual Studio or `VCPKG_ROOT`), builds Release x64, runs the tests and deploys a portable folder `dist\GeoMapAI` (Qt libraries, QML modules, plugins, GDAL/PROJ with `proj.db` and the MSVC runtime next to the EXE). Copy the whole folder to run it on another Windows 10/11 x64 PC; Qt, Qt Creator, Python, GDAL and the VC++ Redistributable are not required there. Add `-Zip` to also produce `dist\GeoMapAI-<version>-win64.zip`.
 
 Dependencies, CMake presets, Linux, CI and troubleshooting: [docs/BUILD.md](docs/BUILD.md).
+
+`GeoMapAI.exe <project folder>` opens that project at start.
 
 Settings (recent projects) are stored per user in `HKEY_CURRENT_USER\Software\GeoMapAI\GeoMap AI`, or in an INI file when started with `--settings-dir <folder>`.
 

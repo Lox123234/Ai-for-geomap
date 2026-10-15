@@ -17,6 +17,7 @@
 #include <QPainterPath>
 #include <QPdfWriter>
 #include <QSaveFile>
+#include <QTextStream>
 #include <QThread>
 #include <QThreadPool>
 #include <QUndoCommand>
@@ -750,6 +751,10 @@ QString MapService::addLayerFromPath(const QString &path, bool zoom)
         l.type = MapLayer::Raster;
         l.name = fi.completeBaseName();
         l.source = fi.absoluteFilePath();
+        if (m_useNextStyle) {   // analysis results come with their own colour ramp
+            l.style = m_nextStyle;
+            l.status = QStringLiteral("style");
+        }
         m_layers.insert(insertAt, l);
         prepareRaster(insertAt);
         added << l.id;
@@ -1258,7 +1263,7 @@ void MapService::paint(QPainter *painter, const QSizeF &size, bool interactive)
         if (m_hasHover && !m_sketchDone) pts << m_hover;
         QPolygonF screen;
         for (const QPointF &p : pts) screen << toScreen(p);
-        const bool area = m_tool == QLatin1String("area") || m_tool == QLatin1String("polygon");
+        const bool area = m_tool == QLatin1String("area") || m_tool == QLatin1String("polygon") || m_tool == QLatin1String("volume");
         QPen pen(SketchColor, 2, Qt::DashLine);
         pen.setCosmetic(true);
         painter->setPen(pen);
@@ -1270,6 +1275,14 @@ void MapService::paint(QPainter *painter, const QSizeF &size, bool interactive)
         painter->setBrush(SketchColor);
         painter->setPen(QPen(QColor(20, 24, 30), 1));
         for (const QPointF &p : m_sketch) painter->drawEllipse(toScreen(p), 4, 4);
+    }
+    // Point of the elevation profile under the chart cursor.
+    if (interactive && m_profileMarker >= 0 && m_profileMarker < m_profile.points.size()) {
+        const terrain::ProfilePoint &pp = m_profile.points[m_profileMarker];
+        const QPointF s = toScreen(QPointF(pp.x, pp.y));
+        painter->setPen(QPen(QColor(20, 24, 30), 2));
+        painter->setBrush(QColor(80, 230, 255));
+        painter->drawEllipse(s, 6, 6);
     }
 }
 
@@ -1409,10 +1422,12 @@ void MapService::pointerReleased(const QPointF &screen)
     if (!m_crs.isValid()) return;
     const QPointF map = toMap(screen);
     if (m_tool == QLatin1String("length") || m_tool == QLatin1String("area") || m_tool == QLatin1String("line")
-        || m_tool == QLatin1String("polygon")) {
+        || m_tool == QLatin1String("polygon") || m_tool == QLatin1String("profile") || m_tool == QLatin1String("volume")) {
         if (m_sketchDone) {
             m_sketch.clear();
             m_sketchDone = false;
+            m_terrainText.clear();
+            m_terrainDetails.clear();
         }
         m_sketch << map;
         updateMeasurement();
@@ -1460,6 +1475,8 @@ void MapService::finishSketch()
         m_sketchDone = false;
     } else {
         m_sketchDone = true;   // the measurement stays on screen until the next click
+        if (m_tool == QLatin1String("profile")) computeProfile(m_sketch);
+        else if (m_tool == QLatin1String("volume")) computeVolume(m_sketch);
     }
     updateMeasurement();
     emit repaint();
@@ -1470,6 +1487,8 @@ bool MapService::keyPressed(int key)
     if (key == Qt::Key_Escape) {
         m_sketch.clear();
         m_sketchDone = false;
+        m_terrainText.clear();
+        m_terrainDetails.clear();
         if (m_selectedFeature >= 0) {
             m_selectedFeature = -1;
             emit drawingsChanged();
@@ -1501,6 +1520,9 @@ void MapService::setTool(const QString &tool)
     m_tool = tool;
     m_sketch.clear();
     m_sketchDone = false;
+    m_terrainText.clear();
+    m_terrainDetails.clear();
+    ++m_terrainGeneration;
     if (tool != QLatin1String("edit") && m_selectedFeature >= 0) {
         m_selectedFeature = -1;
         emit drawingsChanged();
@@ -1546,6 +1568,8 @@ void MapService::clearMeasurement()
 {
     m_sketch.clear();
     m_sketchDone = false;
+    m_terrainText.clear();
+    m_terrainDetails.clear();
     updateMeasurement();
     emit repaint();
 }
@@ -1659,7 +1683,7 @@ void MapService::updateMeasurement()
     if (!m_sketch.isEmpty()) {
         pts = m_sketch;
         if (m_hasHover && !m_sketchDone) pts << m_hover;
-        closed = m_tool == QLatin1String("area") || m_tool == QLatin1String("polygon");
+        closed = m_tool == QLatin1String("area") || m_tool == QLatin1String("polygon") || m_tool == QLatin1String("volume");
     } else if (m_selectedFeature >= 0 && m_selectedFeature < drawingCount()) {
         const VectorFeature &f = m_layers[drawingsIndex()].vector.features[m_selectedFeature];
         if (!f.parts.isEmpty()) pts = QVector<QPointF>(f.parts.first().begin(), f.parts.first().end());
@@ -1667,9 +1691,18 @@ void MapService::updateMeasurement()
         what = f.attributes.value(QStringLiteral("name")).toString() + QStringLiteral(": ");
     }
     const QString ellipsoid = m_crs.isValid() ? m_crs.geographic().name() : QString();
+    const bool terrainTool = m_tool == QLatin1String("profile") || m_tool == QLatin1String("volume");
+    if (terrainTool && m_sketchDone && !m_terrainText.isEmpty()) {
+        m_measurementText = m_terrainText;
+        m_measurementDetails = m_terrainDetails;
+        emit measurementChanged();
+        return;
+    }
     if (pts.size() < 2) {
         m_measurementText = m_tool == QLatin1String("length") ? QStringLiteral("Щёлкайте по карте, чтобы измерить длину")
                           : m_tool == QLatin1String("area") ? QStringLiteral("Щёлкайте по карте, чтобы измерить площадь")
+                          : m_tool == QLatin1String("profile") ? QStringLiteral("Проведите линию профиля по модели высот")
+                          : m_tool == QLatin1String("volume") ? QStringLiteral("Обведите участок для расчёта объёма")
                           : QString();
         m_measurementDetails.clear();
     } else {
@@ -1869,4 +1902,321 @@ void MapService::exportMap(const QUrl &url)
     });
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     thread->start();
+}
+
+// ----------------------------------------------------------------- terrain analysis
+
+namespace {
+QString volumeText(double m3)
+{
+    const QLocale ru(QLocale::Russian);
+    return ru.toString(m3, 'f', m3 >= 1000 ? 0 : 1) + QStringLiteral(" м³");
+}
+QString heightText(double m) { return QLocale(QLocale::Russian).toString(m, 'f', 2) + QStringLiteral(" м"); }
+// File name part from a layer name: letters, digits, - and _ only.
+QString safeName(const QString &name)
+{
+    QString s;
+    for (const QChar c : name) s += (c.isLetterOrNumber() || c == QLatin1Char('-') || c == QLatin1Char('_')) ? c : QLatin1Char('_');
+    return s.isEmpty() ? QStringLiteral("dem") : s;
+}
+QString uniquePath(const QString &dir, const QString &stem, const QString &suffix)
+{
+    QString path = QDir(dir).filePath(stem + suffix);
+    for (int n = 2; QFileInfo::exists(path); ++n) path = QDir(dir).filePath(QStringLiteral("%1-%2%3").arg(stem).arg(n).arg(suffix));
+    return path;
+}
+} // namespace
+
+bool MapService::isElevation(const MapLayer &l) const
+{
+    return l.type == MapLayer::Raster && l.rasterInfo.valid && l.rasterInfo.bands == 1 && l.raster && !l.needsCrs;
+}
+
+QVariantList MapService::elevationLayers() const
+{
+    QVariantList list;
+    for (int i = int(m_layers.size()) - 1; i >= 0; --i) {
+        const MapLayer &l = m_layers[i];
+        if (!isElevation(l)) continue;
+        list << QVariantMap{{"id", l.id}, {"name", l.name}, {"min", l.style.min}, {"max", l.style.max}, {"visible", l.visible}};
+    }
+    return list;
+}
+
+QString MapService::terrainLayerId() const
+{
+    const int selected = indexOf(m_selectedLayer);
+    if (selected >= 0 && isElevation(m_layers[selected])) return m_layers[selected].id;
+    for (int i = int(m_layers.size()) - 1; i >= 0; --i)
+        if (m_layers[i].visible && isElevation(m_layers[i])) return m_layers[i].id;
+    return {};
+}
+
+QVariantMap MapService::contourSuggestion(const QString &layerId) const
+{
+    const int i = indexOf(layerId);
+    if (i < 0) return {};
+    const MapLayer &l = m_layers[i];
+    return {{"interval", terrain::suggestedInterval(l.style.min, l.style.max)}, {"base", 0.0}, {"min", l.style.min}, {"max", l.style.max}};
+}
+
+QString MapService::analyzeTerrain(const QString &layerId, const QString &kind, double interval, double base)
+{
+    if (m_project.isEmpty()) return QStringLiteral("Откройте проект.");
+    if (m_analysisBusy) return QStringLiteral("Уже идёт расчёт: %1").arg(m_analysisStatus);
+    const int i = indexOf(layerId);
+    if (i < 0 || !isElevation(m_layers[i]))
+        return QStringLiteral("Выберите модель высот (одноканальный растр с системой координат) на карте.");
+    const MapLayer &l = m_layers[i];
+    const QString dir = QDir(m_project).filePath(QStringLiteral("analysis"));
+    const QString stem = safeName(l.name);
+    QString out, title;
+    RasterStyle style;
+    style.mode = RasterStyle::SingleBand;
+    style.band = 1;
+    if (kind == QLatin1String("slope") || kind == QLatin1String("slopePercent")) {
+        const bool percent = kind == QLatin1String("slopePercent");
+        out = uniquePath(dir, stem + (percent ? QStringLiteral("-slope-percent") : QStringLiteral("-slope")), QStringLiteral(".tif"));
+        title = percent ? QStringLiteral("Карта уклонов (%)") : QStringLiteral("Карта уклонов (°)");
+        style.ramp = RasterStyle::Slope;
+        style.min = 0;
+        style.max = percent ? 100 : 45;
+    } else if (kind == QLatin1String("aspect")) {
+        out = uniquePath(dir, stem + QStringLiteral("-aspect"), QStringLiteral(".tif"));
+        title = QStringLiteral("Карта экспозиции склонов");
+        style.ramp = RasterStyle::Aspect;
+        style.min = 0;
+        style.max = 360;
+    } else if (kind == QLatin1String("contours")) {
+        if (!(interval > 0)) return QStringLiteral("Укажите шаг горизонталей больше нуля.");
+        const QString step = QString::number(interval, 'g', 6).replace(QLatin1Char('.'), QLatin1Char('_'));
+        out = uniquePath(dir, stem + QStringLiteral("-contours-%1m").arg(step), QStringLiteral(".gpkg"));
+        title = QStringLiteral("Горизонтали");
+    } else {
+        return QStringLiteral("Неизвестный вид анализа: %1").arg(kind);
+    }
+    m_analysisBusy = true;
+    m_analysisStatus = QStringLiteral("%1 по «%2»…").arg(title, l.name);
+    emit analysisChanged();
+    const QString source = l.source, name = l.name;
+    QThreadPool::globalInstance()->start([this, kind, source, out, interval, base, title, name, style] {
+        QString error, message;
+        if (kind == QLatin1String("contours")) {
+            const terrain::ContourResult r = terrain::contours(source, out, interval, base);
+            error = r.error;
+            if (r.ok())
+                message = QStringLiteral("%1 по «%2»: %3 линий, шаг %4 м, уровни %5 – %6.")
+                              .arg(title, name).arg(r.lines).arg(QLocale(QLocale::Russian).toString(interval))
+                              .arg(heightText(r.minLevel), heightText(r.maxLevel));
+            if (r.ok() && r.lines == 0) error = QStringLiteral("В пределах высот модели нет ни одного уровня с шагом %1 м").arg(interval);
+        } else {
+            const terrain::RasterResult r = kind == QLatin1String("aspect") ? terrain::aspect(source, out)
+                                                                            : terrain::slope(source, out, kind == QLatin1String("slopePercent"));
+            error = r.error;
+            if (r.ok() && r.stats.valid) {
+                const QLocale ru(QLocale::Russian);
+                const QString unit = kind == QLatin1String("slopePercent") ? QStringLiteral(" %") : QStringLiteral("°");
+                message = kind == QLatin1String("aspect")
+                    ? QStringLiteral("%1 по «%2» построена (0° — север, 90° — восток; ровные участки без значения).").arg(title, name)
+                    : QStringLiteral("%1 по «%2»: от %3%6 до %4%6, в среднем %5%6.")
+                          .arg(title, name, ru.toString(r.stats.min, 'f', 1), ru.toString(r.stats.max, 'f', 1), ru.toString(r.stats.mean, 'f', 1), unit);
+            }
+        }
+        QMetaObject::invokeMethod(this, [this, kind, out, error, message, style] {
+            m_analysisBusy = false;
+            m_analysisStatus.clear();
+            emit analysisChanged();
+            if (!error.isEmpty()) {
+                emit analysisFinished(false, error);
+                return;
+            }
+            m_nextStyle = style;
+            m_useNextStyle = kind != QLatin1String("contours");
+            const QString addError = addLayerFromPath(out, false);
+            m_useNextStyle = false;
+            if (!addError.isEmpty()) {
+                emit analysisFinished(false, addError);
+                return;
+            }
+            const QString id = layerIdForSource(out);
+            if (kind == QLatin1String("contours") && !id.isEmpty()) setLayerColor(id, QColor(226, 150, 72));
+            emit analysisFinished(true, message + QStringLiteral(" Файл: %1").arg(QDir::toNativeSeparators(out)));
+        }, Qt::QueuedConnection);
+    });
+    return {};
+}
+
+void MapService::computeProfile(const QVector<QPointF> &line)
+{
+    const QString id = terrainLayerId();
+    const int i = indexOf(id);
+    if (i < 0) {
+        m_terrainText = QStringLiteral("Нет модели высот на карте");
+        m_terrainDetails = QStringLiteral("Добавьте DSM или DTM (Вид → Цифровая модель высот, Файл → Импорт DEM) и проведите линию снова.");
+        return;
+    }
+    if (line.size() < 2) return;
+    const QString source = m_layers[i].source, name = m_layers[i].name;
+    const Crs crs = m_crs;
+    const int generation = ++m_terrainGeneration;
+    m_terrainText = QStringLiteral("Построение профиля по «%1»…").arg(name);
+    m_terrainDetails.clear();
+    QThreadPool::globalInstance()->start([this, source, name, line, crs, generation] {
+        const terrain::Profile p = terrain::profile(source, line, crs, 600);
+        QMetaObject::invokeMethod(this, [this, p, name, generation] {
+            if (generation != m_terrainGeneration) return;   // another line or tool meanwhile
+            m_profile = p;
+            m_profileLayer = name;
+            m_profileMarker = -1;
+            if (p.ok()) {
+                const QLocale ru(QLocale::Russian);
+                m_terrainText = QStringLiteral("Профиль: %1, высоты %2 – %3").arg(formatLength(p.length), heightText(p.minZ), heightText(p.maxZ));
+                m_terrainDetails = QStringLiteral("По «%1»: подъём %2, спуск %3, наибольший уклон %4° (между соседними точками профиля, шаг %5).")
+                                       .arg(name, heightText(p.ascent), heightText(p.descent), ru.toString(p.maxSlope, 'f', 1),
+                                            formatLength(p.points.size() > 1 ? p.length / (p.points.size() - 1) : 0));
+                if (p.noData > 0) m_terrainDetails += QStringLiteral(" Без данных: %1 точек из %2.").arg(p.noData).arg(p.points.size());
+            } else {
+                m_terrainText = QStringLiteral("Профиль не построен");
+                m_terrainDetails = p.error;
+            }
+            emit profileChanged();
+            updateMeasurement();
+            emit terrainResultReady();
+            emit repaint();
+        }, Qt::QueuedConnection);
+    });
+}
+
+void MapService::computeVolume(const QVector<QPointF> &ring)
+{
+    const QString id = terrainLayerId();
+    const int i = indexOf(id);
+    if (i < 0) {
+        m_terrainText = QStringLiteral("Нет модели высот на карте");
+        m_terrainDetails = QStringLiteral("Добавьте DSM или DTM и обведите участок снова.");
+        return;
+    }
+    if (ring.size() < 3) return;
+    static const QHash<QString, terrain::Base> bases = {
+        {QStringLiteral("level"), terrain::Base::Level}, {QStringLiteral("boundaryMean"), terrain::Base::BoundaryMean},
+        {QStringLiteral("boundaryMin"), terrain::Base::BoundaryMin}, {QStringLiteral("bestFit"), terrain::Base::BestFit},
+        {QStringLiteral("surface"), terrain::Base::Surface}};
+    const terrain::Base base = bases.value(m_volumeBase, terrain::Base::BoundaryMean);
+    QString surfacePath, surfaceName;
+    if (base == terrain::Base::Surface) {
+        const int s = indexOf(m_volumeSurface);
+        if (s < 0 || !isElevation(m_layers[s]) || s == i) {
+            m_terrainText = QStringLiteral("Выберите базовую поверхность");
+            m_terrainDetails = QStringLiteral("Для сравнения поверхностей укажите вторую модель высот (например, DTM под DSM).");
+            return;
+        }
+        surfacePath = m_layers[s].source;
+        surfaceName = m_layers[s].name;
+    }
+    const QString source = m_layers[i].source, name = m_layers[i].name;
+    const Crs crs = m_crs;
+    const double level = m_volumeLevel;
+    const int generation = ++m_terrainGeneration;
+    m_terrainText = QStringLiteral("Расчёт объёма по «%1»…").arg(name);
+    m_terrainDetails.clear();
+    QThreadPool::globalInstance()->start([this, source, name, ring, crs, base, level, surfacePath, surfaceName, generation] {
+        const terrain::Volume v = terrain::volume(source, ring, crs, base, level, surfacePath);
+        QMetaObject::invokeMethod(this, [this, v, name, base, surfaceName, generation] {
+            if (generation != m_terrainGeneration) return;
+            m_volume = v;
+            if (v.ok()) {
+                const QLocale ru(QLocale::Russian);
+                m_terrainText = QStringLiteral("Над базой %1 · под базой %2 · баланс %3")
+                                    .arg(volumeText(v.above), volumeText(v.below), volumeText(v.net()));
+                QString baseText;
+                switch (base) {
+                case terrain::Base::Level: baseText = QStringLiteral("горизонтальная плоскость %1").arg(heightText(v.baseLevel)); break;
+                case terrain::Base::BoundaryMean: baseText = QStringLiteral("средняя высота по контуру %1").arg(heightText(v.baseLevel)); break;
+                case terrain::Base::BoundaryMin: baseText = QStringLiteral("наименьшая высота по контуру %1").arg(heightText(v.baseLevel)); break;
+                case terrain::Base::BestFit: baseText = QStringLiteral("плоскость, подобранная по контуру"); break;
+                case terrain::Base::Surface: baseText = QStringLiteral("поверхность «%1»").arg(surfaceName); break;
+                }
+                m_terrainDetails = QStringLiteral("Модель «%1», база: %2. Площадь %3 (%4 ячеек, в плоскости проекции).")
+                                       .arg(name, baseText, formatArea(v.area), ru.toString(v.cells));
+                if (v.noData > 0) m_terrainDetails += QStringLiteral(" Ячеек без данных: %1 — не учтены.").arg(ru.toString(v.noData));
+            } else {
+                m_terrainText = QStringLiteral("Объём не рассчитан");
+                m_terrainDetails = v.error;
+            }
+            updateMeasurement();
+            emit terrainResultReady();
+        }, Qt::QueuedConnection);
+    });
+}
+
+QVariantMap MapService::profileForQml() const
+{
+    if (!m_profile.ok() || m_profile.points.isEmpty()) return {{"valid", false}};
+    QVariantList distances, heights;
+    for (const terrain::ProfilePoint &p : m_profile.points) {
+        distances << p.distance;
+        heights << p.z;   // NaN where there is no data
+    }
+    return {{"valid", true}, {"layer", m_profileLayer}, {"length", m_profile.length}, {"minZ", m_profile.minZ}, {"maxZ", m_profile.maxZ},
+            {"ascent", m_profile.ascent}, {"descent", m_profile.descent}, {"maxSlope", m_profile.maxSlope},
+            {"noData", m_profile.noData}, {"distances", distances}, {"heights", heights}};
+}
+
+void MapService::setProfileMarker(int index)
+{
+    if (index == m_profileMarker) return;
+    m_profileMarker = index;
+    emit profileMarkerChanged();
+    emit repaint();
+}
+
+void MapService::clearProfile()
+{
+    m_profile = {};
+    m_profileMarker = -1;
+    emit profileChanged();
+    emit repaint();
+}
+
+QString MapService::exportProfile(const QUrl &url)
+{
+    if (!m_profile.ok() || m_profile.points.isEmpty()) return QStringLiteral("Профиль ещё не построен.");
+    QSaveFile f(url.toLocalFile());
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return QStringLiteral("Не удалось записать %1").arg(displayPath(url));
+    QTextStream out(&f);
+    out << "distance_m,elevation_m,x,y\n";
+    for (const terrain::ProfilePoint &p : m_profile.points)
+        out << QString::number(p.distance, 'f', 3) << ',' << (std::isfinite(p.z) ? QString::number(p.z, 'f', 3) : QString()) << ','
+            << QString::number(p.x, 'f', 3) << ',' << QString::number(p.y, 'f', 3) << '\n';
+    out.flush();
+    if (!f.commit()) return QStringLiteral("Не удалось записать %1").arg(displayPath(url));
+    return {};
+}
+
+void MapService::setVolumeBase(const QString &base)
+{
+    if (base == m_volumeBase) return;
+    m_volumeBase = base;
+    emit volumeSettingsChanged();
+    if (m_tool == QLatin1String("volume") && m_sketchDone) computeVolume(m_sketch);
+    updateMeasurement();
+}
+
+void MapService::setVolumeLevel(double level)
+{
+    if (qFuzzyCompare(level, m_volumeLevel)) return;
+    m_volumeLevel = level;
+    emit volumeSettingsChanged();
+    if (m_tool == QLatin1String("volume") && m_sketchDone && m_volumeBase == QLatin1String("level")) computeVolume(m_sketch);
+    updateMeasurement();
+}
+
+void MapService::setVolumeSurface(const QString &layerId)
+{
+    if (layerId == m_volumeSurface) return;
+    m_volumeSurface = layerId;
+    emit volumeSettingsChanged();
+    if (m_tool == QLatin1String("volume") && m_sketchDone && m_volumeBase == QLatin1String("surface")) computeVolume(m_sketch);
+    updateMeasurement();
 }

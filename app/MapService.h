@@ -2,6 +2,7 @@
 
 #include "Crs.h"
 #include "RasterSource.h"
+#include "TerrainAnalysis.h"
 #include "VectorSource.h"
 #include <QAbstractListModel>
 #include <QColor>
@@ -97,6 +98,14 @@ class MapService final : public QObject
     Q_PROPERTY(bool exporting READ exporting NOTIFY exportChanged)
     Q_PROPERTY(QString gisVersion READ gisVersion CONSTANT)
     Q_PROPERTY(QStringList problems READ problems CONSTANT)
+    // Terrain analysis: background raster/contour jobs, the profile and volume tools.
+    Q_PROPERTY(bool analysisBusy READ analysisBusy NOTIFY analysisChanged)
+    Q_PROPERTY(QString analysisStatus READ analysisStatus NOTIFY analysisChanged)
+    Q_PROPERTY(QVariantMap profile READ profileForQml NOTIFY profileChanged)
+    Q_PROPERTY(int profileMarker READ profileMarker WRITE setProfileMarker NOTIFY profileMarkerChanged)
+    Q_PROPERTY(QString volumeBase READ volumeBase WRITE setVolumeBase NOTIFY volumeSettingsChanged)   // level | boundaryMean | boundaryMin | bestFit | surface
+    Q_PROPERTY(double volumeLevel READ volumeLevel WRITE setVolumeLevel NOTIFY volumeSettingsChanged)
+    Q_PROPERTY(QString volumeSurface READ volumeSurface WRITE setVolumeSurface NOTIFY volumeSettingsChanged)   // layer id
 
 public:
     explicit MapService(QObject *parent = nullptr);
@@ -188,6 +197,30 @@ public:
     Q_INVOKABLE QString exportDrawings(const QUrl &url);   // .geojson, .kml, .gpkg
     Q_INVOKABLE QString displayPath(const QUrl &url) const;
 
+    // Elevation models on the map (single-band rasters placed in the map CRS): {id, name, min, max}.
+    Q_INVOKABLE QVariantList elevationLayers() const;
+    // The DEM the profile and volume tools read: the selected one, else the top visible one.
+    Q_INVOKABLE QString terrainLayerId() const;
+    Q_INVOKABLE QVariantMap contourSuggestion(const QString &layerId) const;   // {interval, base}
+    // Builds slope | slopePercent | aspect | contours of a DEM layer in the background into
+    // <project>/analysis and adds the result to the map. "" when started, else the reason.
+    Q_INVOKABLE QString analyzeTerrain(const QString &layerId, const QString &kind, double interval = 0, double base = 0);
+    Q_INVOKABLE void clearProfile();
+    Q_INVOKABLE QString exportProfile(const QUrl &url);   // CSV: distance, elevation, x, y (map CRS)
+    bool analysisBusy() const { return m_analysisBusy; }
+    QString analysisStatus() const { return m_analysisStatus; }
+    QVariantMap profileForQml() const;
+    const terrain::Profile &profileResult() const { return m_profile; }
+    int profileMarker() const { return m_profileMarker; }
+    void setProfileMarker(int index);
+    QString volumeBase() const { return m_volumeBase; }
+    void setVolumeBase(const QString &base);
+    double volumeLevel() const { return m_volumeLevel; }
+    void setVolumeLevel(double level);
+    QString volumeSurface() const { return m_volumeSurface; }
+    void setVolumeSurface(const QString &layerId);
+    const terrain::Volume &volumeResult() const { return m_volume; }
+
     // For tests and exports: measurement of a line/ring given in map coordinates.
     struct Measure { double length = 0; double area = 0; double perimeter = 0; double planarLength = 0; double planarArea = 0; };
     Measure measure(const QVector<QPointF> &mapPoints, bool closed) const;
@@ -208,6 +241,12 @@ signals:
     void drawingsChanged();
     void exportChanged();
     void exportFinished(bool ok, const QString &message);
+    void analysisChanged();
+    void analysisFinished(bool ok, const QString &message);
+    void profileChanged();
+    void profileMarkerChanged();
+    void volumeSettingsChanged();
+    void terrainResultReady();   // a profile or volume finished (for tests and the UI)
     void repaint();
     void errorOccurred(const QString &message);
 
@@ -239,6 +278,9 @@ private:
     void applyDrawingChange();
     QString relativeSource(const QString &path) const;
     QString resolveSource(const QString &path) const;
+    void computeProfile(const QVector<QPointF> &line);
+    void computeVolume(const QVector<QPointF> &ring);
+    bool isElevation(const MapLayer &l) const;
 
     QString m_project;
     const PhotoModel *m_photos = nullptr;
@@ -277,4 +319,18 @@ private:
     bool m_exporting = false;
     bool m_loadingState = false;
     qint64 m_lastValueQuery = 0;
+    // Terrain analysis.
+    bool m_analysisBusy = false;
+    QString m_analysisStatus;
+    RasterStyle m_nextStyle;          // style of the next raster added by analyzeTerrain()
+    bool m_useNextStyle = false;
+    terrain::Profile m_profile;
+    QString m_profileLayer;
+    int m_profileMarker = -1;
+    terrain::Volume m_volume;
+    QString m_volumeBase = QStringLiteral("boundaryMean");
+    double m_volumeLevel = 0;
+    QString m_volumeSurface;
+    QString m_terrainText, m_terrainDetails;   // result of the profile/volume tool
+    int m_terrainGeneration = 0;
 };

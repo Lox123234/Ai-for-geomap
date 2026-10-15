@@ -40,6 +40,8 @@ src/gis/Geodesy                    geodesic length/area on the ellipsoid (PROJ g
 src/gis/RasterSource               GeoTIFF/COG/DEM: metadata, reprojection to the map CRS (warped VRT), tiles,
                                    styles (RGB, ramp, hillshade), values under the cursor; PyramidBuilder (cache)
 src/gis/VectorSource               GeoJSON/KML/GeoPackage reading (OGR) and writing
+src/gis/TerrainAnalysis            slope/aspect (gdaldem), contours (GDALContourGenerateEx), profiles (bilinear,
+                                   geodesic distances), cut/fill volumes against a base plane or another surface
 app/MapTiles                       tile cache (256 MB) and rendering pool
 app/MapService                     the map: layers and their model, view, tools, measurements, drawings with
                                    undo/redo, map.json, exports (PNG/PDF, GeoJSON/GPKG/KML); QML API "gis"

@@ -1,5 +1,7 @@
 #include <QCommandLineParser>
 #include <QDir>
+#include <QFileInfo>
+#include <QUrl>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -35,6 +37,7 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationName("GeoMap AI");
     QCoreApplication::setApplicationVersion(QStringLiteral(GEOMAP_VERSION));
     QQuickStyle::setStyle("Basic");
+    app.setWindowIcon(QIcon(QStringLiteral(":/geomap/geomap-256.png")));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("GeoMap AI — UAV photo projects"));
@@ -48,6 +51,8 @@ int main(int argc, char *argv[])
         QStringLiteral("Keep engines, downloads and work links in <dir> instead of %LOCALAPPDATA%\\GeoMapAI."),
         QStringLiteral("dir"));
     parser.addOption(dataDir);
+    parser.addPositionalArgument(QStringLiteral("project"),
+        QStringLiteral("Project folder (or its geomap.json) to open at start."), QStringLiteral("[project]"));
     parser.process(app);
     if (parser.isSet(dataDir)) Platform::setDataDirectory(parser.value(dataDir));
     if (parser.isSet(settingsDir)) {
@@ -113,6 +118,9 @@ int main(int argc, char *argv[])
     engine.loadFromModule("GeoMapAI", "Main");
     if (engine.rootObjects().isEmpty())
         return -1;
+    // A project given on the command line (shortcut, "Open with", script) opens with the window.
+    if (!parser.positionalArguments().isEmpty())
+        projects.openProject(QUrl::fromLocalFile(QFileInfo(parser.positionalArguments().constFirst()).absoluteFilePath()));
     // The window restores its saved geometry and maximizes itself when it does not fit (Main.qml).
     return app.exec();
 }
