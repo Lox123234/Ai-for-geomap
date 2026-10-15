@@ -22,7 +22,7 @@ class Scene3DService : public QObject
     Q_PROPERTY(QString status READ status NOTIFY layersChanged)
     Q_PROPERTY(int pointBudget READ pointBudget WRITE setPointBudget NOTIFY settingsChanged)
     Q_PROPERTY(float pointSize READ pointSize WRITE setPointSize NOTIFY settingsChanged)
-    Q_PROPERTY(QString colorMode READ colorMode WRITE setColorMode NOTIFY settingsChanged)          // "rgb" | "height"
+    Q_PROPERTY(QString colorMode READ colorMode WRITE setColorMode NOTIFY settingsChanged)          // "rgb" | "height" | "classes" | "intensity"
     Q_PROPERTY(float verticalScale READ verticalScale WRITE setVerticalScale NOTIFY settingsChanged) // visual only
     Q_PROPERTY(bool lighting READ lighting WRITE setLighting NOTIFY settingsChanged)
     Q_PROPERTY(bool showAxes READ showAxes WRITE setShowAxes NOTIFY settingsChanged)
@@ -57,7 +57,7 @@ public:
         view3d::Bounds bounds;      // scene coordinates, vertical scale not applied
         view3d::Camera camera;
         float pointSize = 2.0f;
-        bool heightColors = false;
+        int colorMode = 0;          // 0 source colours, 1 height, 2 point classes, 3 intensity
         float verticalScale = 1.0f;
         bool lighting = true;
         int revision = 0;
@@ -104,7 +104,7 @@ public:
     void setPointBudget(int points);
     float pointSize() const { return m_pointSize; }
     void setPointSize(float size);
-    QString colorMode() const { return m_heightColors ? QStringLiteral("height") : QStringLiteral("rgb"); }
+    QString colorMode() const;
     void setColorMode(const QString &mode);
     float verticalScale() const { return m_verticalScale; }
     void setVerticalScale(float scale);
@@ -148,7 +148,7 @@ private:
     int m_revision = 0;
     int m_pointBudget = 5000000;
     float m_pointSize = 2.0f;
-    bool m_heightColors = false;
+    int m_colorMode = 0;
     float m_verticalScale = 1.0f;
     bool m_lighting = true;
     bool m_showAxes = true;

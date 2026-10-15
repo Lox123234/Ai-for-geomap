@@ -7,6 +7,7 @@
 #include <QFileInfo>
 #include <QHash>
 #include <QtEndian>
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -426,6 +427,10 @@ PointCloud readPointCloudLas(const QString &path, int maxPoints, const Origin &o
     }
     cloud.totalPoints = count;
     const quint64 step = maxPoints > 0 && count > quint64(maxPoints) ? (count + maxPoints - 1) / maxPoints : 1;
+    // Classification: bits 0–4 of byte 15 in formats 0–5, byte 16 in formats 6–10. Intensity: bytes 12–13.
+    const bool extended = format >= 6;
+    QVector<quint16> rawIntensity;
+    bool anyClass = false;
     f.seek(dataOffset);
     const quint64 chunk = 65536;
     for (quint64 start = 0; start < count; start += chunk) {
@@ -443,6 +448,10 @@ PointCloud readPointCloudLas(const QString &path, int maxPoints, const Origin &o
             const QVector3D p(float(x - used.x), float(y - used.y), float(z - used.z));
             cloud.positions << p;
             cloud.bounds.add(p);
+            const quint8 cls = extended ? quint8(r[16]) : quint8(quint8(r[15]) & 0x1F);
+            cloud.classes << cls;
+            anyClass = anyClass || cls > 1;
+            rawIntensity << qFromLittleEndian<quint16>(r + 12);
             if (rgb >= 0) {
                 const int cr = qFromLittleEndian<quint16>(r + rgb), cg = qFromLittleEndian<quint16>(r + rgb + 2),
                           cb = qFromLittleEndian<quint16>(r + rgb + 4);
@@ -451,8 +460,54 @@ PointCloud readPointCloudLas(const QString &path, int maxPoints, const Origin &o
             }
         }
     }
+    if (!anyClass) cloud.classes.clear();   // 0 / 1 everywhere: never classified
+    // Intensity to 0..255 between the 1st and 99th percentile (a few bright returns would darken all).
+    if (!rawIntensity.isEmpty()) {
+        QVector<quint16> sorted = rawIntensity;
+        std::sort(sorted.begin(), sorted.end());
+        const double lo = sorted[int(sorted.size() * 0.01)], hi = sorted[qMin(int(sorted.size()) - 1, int(sorted.size() * 0.99))];
+        if (hi > lo) {
+            cloud.intensity.reserve(rawIntensity.size());
+            for (quint16 v : rawIntensity) cloud.intensity << quint8(qBound(0.0, (v - lo) / (hi - lo) * 255.0, 255.0));
+        }
+    }
     if (cloud.positions.isEmpty() && cloud.error.isEmpty()) cloud.error = QStringLiteral("В файле нет точек");
     return cloud;
+}
+
+quint32 classColor(int c)
+{
+    switch (c) {
+    case 0: return 0xffa0a0a0;   // never classified
+    case 1: return 0xffbebebe;   // unclassified
+    case 2: return 0xffa6763c;   // ground
+    case 3: return 0xffa6d66e;   // low vegetation
+    case 4: return 0xff50af46;   // medium vegetation
+    case 5: return 0xff227832;   // high vegetation
+    case 6: return 0xffe15a46;   // building
+    case 7: case 18: return 0xffff00ff;   // noise
+    case 9: return 0xff3c82e6;   // water
+    case 17: return 0xffe6c85a;  // bridge deck
+    default: return 0xffc8c8c8;
+    }
+}
+
+QString className(int c)
+{
+    switch (c) {
+    case 0: return QStringLiteral("не классифицировано");
+    case 1: return QStringLiteral("без класса");
+    case 2: return QStringLiteral("земля");
+    case 3: return QStringLiteral("низкая растительность");
+    case 4: return QStringLiteral("средняя растительность");
+    case 5: return QStringLiteral("высокая растительность");
+    case 6: return QStringLiteral("здания");
+    case 7: return QStringLiteral("шум (низкие точки)");
+    case 9: return QStringLiteral("вода");
+    case 17: return QStringLiteral("мосты");
+    case 18: return QStringLiteral("шум (высокие точки)");
+    default: return QStringLiteral("класс %1").arg(c);
+    }
 }
 
 PointCloud readPointCloud(const QString &path, int maxPoints, const Origin &origin)

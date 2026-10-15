@@ -1,10 +1,12 @@
 #include "Scene3DService.h"
 
 #include <QDir>
+#include <QHash>
 #include <QFileInfo>
 #include <QLocale>
 #include <QThreadPool>
 #include <QtMath>
+#include <algorithm>
 #include <cmath>
 
 using namespace view3d;
@@ -83,12 +85,16 @@ QString Scene3DService::add(const QString &kind, const QString &path, const QStr
     l.name = QFileInfo(path).completeBaseName();
     l.info = QStringLiteral("Загрузка…");
     l.version = 1;
-    // ODM's georeferenced cloud is LAZ (not read yet); the same points are in
-    // odm_filterpoints/point_cloud.ply of the job, local to coords.txt.
+    // LAZ is not read yet: an uncompressed LAS beside it (ODM --pc-las: the same georeferenced
+    // points with classes and intensity), else ODM's odm_filterpoints/point_cloud.ply of the job.
     QString path2 = path;
     if (kind == QLatin1String("pointcloud") && path.endsWith(QLatin1String(".laz"), Qt::CaseInsensitive)) {
+        const QString las = path.left(path.size() - 4) + QStringLiteral(".las");
         const QString coords = odmCoordsFor(path);
-        if (!coords.isEmpty()) {
+        if (QFileInfo(las).isFile()) {
+            path2 = las;
+            l.loaded = las;
+        } else if (!coords.isEmpty()) {
             QDir job = QFileInfo(coords).absoluteDir();
             job.cdUp();
             const QString ply = job.filePath(QStringLiteral("odm_filterpoints/point_cloud.ply"));
@@ -156,6 +162,19 @@ void Scene3DService::loaded(const QString &id, int, std::shared_ptr<const PointC
                 ? QStringLiteral("%1 точек, показано %2 (предел памяти)").arg(count(cloud->totalPoints), count(cloud->positions.size()))
                 : QStringLiteral("%1 точек").arg(count(cloud->positions.size()));
             if (cloud->colors.isEmpty()) l.info += QStringLiteral(", без цвета");
+            if (!cloud->classes.isEmpty()) {
+                // The classes present, largest first: "земля 46 %, высокая растительность 30 %, …".
+                QHash<int, qsizetype> counts;
+                for (quint8 c : cloud->classes) ++counts[c];
+                QList<QPair<qsizetype, int>> order;
+                for (auto it = counts.cbegin(); it != counts.cend(); ++it) order << qMakePair(it.value(), it.key());
+                std::sort(order.begin(), order.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+                QStringList parts;
+                for (int k = 0; k < qMin(4, int(order.size())); ++k)
+                    parts << QStringLiteral("%1 %2 %").arg(className(order[k].second)).arg(qRound(100.0 * order[k].first / cloud->classes.size()));
+                l.info += QStringLiteral(". Классы: ") + parts.join(QStringLiteral(", "));
+            }
+            if (!cloud->intensity.isEmpty()) l.info += QStringLiteral(", есть интенсивность");
             if (!l.loaded.isEmpty())
                 l.info += QStringLiteral(". Показан %1 того же задания (сжатый LAZ пока не читается)").arg(QFileInfo(l.loaded).fileName());
             l.info += cloud->georeferenced ? (cloud->crs.isEmpty() ? QString() : QStringLiteral(". CRS: ") + cloud->crs)
@@ -258,7 +277,7 @@ Scene3DService::Snapshot Scene3DService::snapshot() const
     s.bounds = bounds();
     s.camera = m_camera;
     s.pointSize = m_pointSize;
-    s.heightColors = m_heightColors;
+    s.colorMode = m_colorMode;
     s.verticalScale = m_verticalScale;
     s.lighting = m_lighting;
     s.revision = m_revision;
@@ -485,15 +504,20 @@ void Scene3DService::setPointSize(float size)
     emit changed();
 }
 
+QString Scene3DService::colorMode() const
+{
+    static const char *names[] = {"rgb", "height", "classes", "intensity"};
+    return QString::fromLatin1(names[qBound(0, m_colorMode, 3)]);
+}
+
 void Scene3DService::setColorMode(const QString &mode)
 {
-    const bool height = mode == QLatin1String("height");
-    if (height == m_heightColors) return;
-    m_heightColors = height;
+    const int m = mode == QLatin1String("height") ? 1 : mode == QLatin1String("classes") ? 2 : mode == QLatin1String("intensity") ? 3 : 0;
+    if (m == m_colorMode) return;
+    m_colorMode = m;
     emit settingsChanged();
     emit changed();
 }
-
 void Scene3DService::setVerticalScale(float scale)
 {
     scale = qBound(0.1f, scale, 20.0f);

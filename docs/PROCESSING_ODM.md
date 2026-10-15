@@ -77,8 +77,8 @@ ODM порождает десятки дочерних процессов (Pytho
 | --- | --- | --- | --- |
 | Только выравнивание | `--feature-quality high --end-with opensfm` | положения камер, разреженное облако, отчёт о качестве выравнивания | 1 × объём снимков |
 | Быстрый просмотр | `--fast-orthophoto --feature-quality medium --orthophoto-resolution 10` | ортофотоплан по разреженной реконструкции, 2.5D-сетка, отчёт | 3 × |
-| Сбалансированный | `--feature-quality high --pc-quality medium --dsm --orthophoto-resolution 5 --dem-resolution 10 --auto-boundary` | плотное облако, DSM, ортофотоплан, 3D-модель, отчёт | 8 × |
-| Высокое качество | `--feature-quality ultra --pc-quality high --dsm --dtm --orthophoto-resolution 2 --dem-resolution 5 --mesh-octree-depth 12 --auto-boundary` | то же + DTM, более детальная сетка | 15 × |
+| Сбалансированный | `--feature-quality high --pc-quality medium --dsm --orthophoto-resolution 5 --dem-resolution 10 --auto-boundary --pc-las` | плотное облако (LAZ и LAS), DSM, ортофотоплан, 3D-модель, отчёт | 8 × |
+| Высокое качество | `--feature-quality ultra --pc-quality high --dsm --dtm --orthophoto-resolution 2 --dem-resolution 5 --mesh-octree-depth 12 --auto-boundary --pc-las` | то же + DTM, более детальная сетка | 15 × |
 
 ### Пошаговая обработка
 

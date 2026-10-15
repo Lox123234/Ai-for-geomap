@@ -46,14 +46,10 @@ function Step([string]$title, [scriptblock]$body) {
     $results.Add([pscustomobject]@{ Шаг = $title; Итог = $(if ($ok) { 'ПРОЙДЕН' } else { 'ОШИБКА' }); Время = '{0:mm\:ss}' -f $timer.Elapsed })
 }
 function Run-Test([string]$exe, [string[]]$arguments = @()) {
-    & (Join-Path $bin $exe) @arguments 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -notmatch '^QDEBUG|FT_New_Face' } | ForEach-Object {
-        if ($_ -match '^(PASS|Totals: \d+ passed, 0 failed)') { Write-Host $_ -ForegroundColor Green }
-        elseif ($_ -match '^(FAIL|Totals)') { Write-Host $_ -ForegroundColor Red }
-        elseif ($_ -match '^SKIP') { Write-Host $_ -ForegroundColor Yellow }
-        else { Write-Host $_ }
-    }
+    # Straight to the console: Qt Test then writes Unicode itself (through a pipe it would use the
+    # ANSI code page and garble Cyrillic).
+    & (Join-Path $bin $exe) @arguments
 }
-
 Step 'Модульные, UI- и 3D-тесты (ctest)' {
     ctest --test-dir $Build -C Release -LE integration --output-on-failure
 }
@@ -88,7 +84,10 @@ if ($Dataset) {
 
 Write-Host ''
 Write-Host '=== Итог ===' -ForegroundColor Cyan
-$results | Format-Table -AutoSize | Out-String | Write-Host
+foreach ($r in $results) {
+    $color = if ($r.Итог -eq 'ПРОЙДЕН') { 'Green' } else { 'Red' }
+    Write-Host ("{0,-12} {1,6}  {2}" -f $r.Итог, $r.Время, $r.Шаг) -ForegroundColor $color
+}
 Write-Host "Снимки и изображения: $Output"
 if ($results | Where-Object { $_.Итог -ne 'ПРОЙДЕН' }) { Write-Host 'Есть ошибки.' -ForegroundColor Red; exit 1 }
 Write-Host 'Все шаги пройдены.' -ForegroundColor Green

@@ -93,7 +93,8 @@ Function ${UN}CheckNotRunning
     ClearErrors
     FileOpen $0 "$INSTDIR\${EXE}" a
     ${If} ${Errors}
-      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "GeoMap AI сейчас запущен. Закройте программу и нажмите «Повтор»." IDRETRY retry
+      ; Silent (/S) installs and uninstalls give up instead of waiting for a click.
+      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "GeoMap AI сейчас запущен. Закройте программу и нажмите «Повтор»." /SD IDCANCEL IDRETRY retry
       Abort
     ${EndIf}
     FileClose $0

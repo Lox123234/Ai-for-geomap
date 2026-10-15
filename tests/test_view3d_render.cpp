@@ -14,6 +14,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QTemporaryDir>
+#include <QtEndian>
 #include <QtQml/qqmlextensionplugin.h>
 #include <rhi/qrhi.h>
 #include <memory>
@@ -175,6 +176,22 @@ bool near(const QColor &c, const QColor &want, int tolerance = 40)
         && std::abs(c.blue() - want.blue()) <= tolerance;
 }
 
+// Whether any pixel of the 9 × 9 block around (x, y) has the colour (points leave gaps).
+bool anyNear(const QImage &image, int x, int y, const QColor &want, int tolerance = 30)
+{
+    for (int dy = -4; dy <= 4; ++dy)
+        for (int dx = -4; dx <= 4; ++dx)
+            if (near(image.pixelColor(x + dx, y + dy), want, tolerance)) return true;
+    return false;
+}
+int maxLightness(const QImage &image, int x, int y)
+{
+    int m = 0;
+    for (int dy = -4; dy <= 4; ++dy)
+        for (int dx = -4; dx <= 4; ++dx) m = qMax(m, image.pixelColor(x + dx, y + dy).lightness());
+    return m;
+}
+
 } // namespace
 
 class View3DRenderTest : public QObject
@@ -233,6 +250,48 @@ private slots:
         QVERIFY2(near(image.pixelColor(400, 300), QColor(44, 107, 191)), qPrintable(image.pixelColor(400, 300).name()));
         m_scene.setColorMode(QStringLiteral("rgb"));
         m_scene.clear();
+    }
+
+    // Classes and intensity of a LAS cloud: ground brown on the west half, buildings red on the east.
+    void classesAndIntensity()
+    {
+        QByteArray h(227, '\0');
+        memcpy(h.data(), "LASF", 4);
+        h[24] = 1; h[25] = 2;
+        const int n = 41 * 41;
+        const auto set16 = [&h](int o, quint16 v) { qToLittleEndian(v, h.data() + o); };
+        const auto set32 = [&h](int o, quint32 v) { qToLittleEndian(v, h.data() + o); };
+        const auto setD = [&h](int o, double v) { qToLittleEndian(v, h.data() + o); };
+        set16(94, 227); set32(96, 227); h[104] = 0; set16(105, 20); set32(107, n);
+        setD(131, 0.01); setD(139, 0.01); setD(147, 0.01); setD(155, 0); setD(163, 0); setD(171, 0);
+        setD(179, 20); setD(187, 0); setD(195, 20); setD(203, 0);
+        QByteArray a = h;
+        for (int y = 0; y <= 40; ++y)
+            for (int x = 0; x <= 40; ++x) {
+                char rec[20] = {};
+                qToLittleEndian(qint32(x * 50), rec);
+                qToLittleEndian(qint32(y * 50), rec + 4);
+                qToLittleEndian(qint32(1000), rec + 8);
+                qToLittleEndian(quint16(x < 20 ? 100 : 5000), rec + 12);   // dark west, bright east
+                rec[15] = char(x < 20 ? 2 : 6);
+                a.append(rec, 20);
+            }
+        QVERIFY(writeFile(m_dir.filePath(QStringLiteral("classes.las")), a));
+        QVERIFY(m_scene.addPointCloud(m_dir.filePath(QStringLiteral("classes.las"))).isEmpty());
+        QVERIFY(waitLoaded(m_scene));
+        m_scene.setPreset(QStringLiteral("top"));
+        m_scene.setPointSize(10);
+        m_scene.setColorMode(QStringLiteral("classes"));
+        QImage image = m_view.render();
+        keep(image, QStringLiteral("render-04-classes.png"));
+        QVERIFY2(anyNear(image, 250, 300, QColor(166, 118, 60)), qPrintable(image.pixelColor(250, 300).name()));
+        QVERIFY2(anyNear(image, 550, 300, QColor(225, 90, 70)), qPrintable(image.pixelColor(550, 300).name()));
+        QVERIFY(!anyNear(image, 250, 300, QColor(225, 90, 70)));
+        m_scene.setColorMode(QStringLiteral("intensity"));
+        image = m_view.render();
+        keep(image, QStringLiteral("render-05-intensity.png"));
+        QVERIFY2(maxLightness(image, 250, 300) < 60, qPrintable(QString::number(maxLightness(image, 250, 300))));
+        QVERIFY2(maxLightness(image, 550, 300) > 200, qPrintable(QString::number(maxLightness(image, 550, 300))));
     }
 
     // A textured quad seen from the top: the image appears with north up and east right.

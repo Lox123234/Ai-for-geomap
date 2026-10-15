@@ -260,13 +260,14 @@ QVector<ProcessingProfile> OdmEngine::profiles() const
          QStringLiteral("Плотное облако среднего качества, ЦМП (DSM), ортофотоплан 5 см/пикс."),
          {QStringLiteral("--feature-quality"), QStringLiteral("high"), QStringLiteral("--pc-quality"), QStringLiteral("medium"),
           QStringLiteral("--dsm"), QStringLiteral("--orthophoto-resolution"), QStringLiteral("5"),
-          QStringLiteral("--dem-resolution"), QStringLiteral("10"), QStringLiteral("--auto-boundary")}, 8},
+          QStringLiteral("--dem-resolution"), QStringLiteral("10"), QStringLiteral("--auto-boundary"),
+          QStringLiteral("--pc-las")}, 8},   // LAS next to LAZ: the 3D view reads it (classes, intensity)
         {QStringLiteral("high"), QStringLiteral("Высокое качество"),
          QStringLiteral("Максимальные признаки, плотное облако высокого качества, DSM и DTM, ортофотоплан 2 см/пикс. Долго и требует много памяти."),
          {QStringLiteral("--feature-quality"), QStringLiteral("ultra"), QStringLiteral("--pc-quality"), QStringLiteral("high"),
           QStringLiteral("--dsm"), QStringLiteral("--dtm"), QStringLiteral("--orthophoto-resolution"), QStringLiteral("2"),
           QStringLiteral("--dem-resolution"), QStringLiteral("5"), QStringLiteral("--mesh-octree-depth"), QStringLiteral("12"),
-          QStringLiteral("--auto-boundary")}, 15},
+          QStringLiteral("--auto-boundary"), QStringLiteral("--pc-las")}, 15},
     };
 }
 

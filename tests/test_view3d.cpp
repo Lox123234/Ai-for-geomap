@@ -50,7 +50,7 @@ QByteArray binaryPly(const QVector<QVector3D> &points, const QVector<QColor> &co
 
 // LAS 1.2, point format 2 (XYZ, RGB 16 bit), optionally with a CRS record (OGC WKT).
 QByteArray las12(const QVector<QVector3D> &points, const QVector<QColor> &colors, double ox, double oy, double scale,
-                 const QByteArray &wkt = {})
+                 const QByteArray &wkt = {}, const QVector<quint8> &classes = {}, const QVector<quint16> &intensities = {})
 {
     QByteArray vlr;
     if (!wkt.isEmpty()) {
@@ -86,7 +86,10 @@ QByteArray las12(const QVector<QVector3D> &points, const QVector<QColor> &colors
         put(a, qint32(std::lround(points[i].x() / scale)));
         put(a, qint32(std::lround(points[i].y() / scale)));
         put(a, qint32(std::lround(points[i].z() / scale)));
-        a.append(QByteArray(8, '\0'));   // intensity, flags, class, angle, user data, source id
+        put(a, quint16(i < intensities.size() ? intensities[i] : 0));   // intensity
+        a.append('\0');                                                 // return flags
+        a.append(char(i < classes.size() ? classes[i] : 0));             // classification
+        a.append(QByteArray(4, '\0'));                                  // scan angle, user data, source id
         put(a, quint16(colors[i].red() * 257));
         put(a, quint16(colors[i].green() * 257));
         put(a, quint16(colors[i].blue() * 257));
@@ -243,6 +246,57 @@ private slots:
         QVERIFY(writeFile(m_dir.filePath(QStringLiteral("bad.las")), "nothing"));
         QVERIFY(!readPointCloud(m_dir.filePath(QStringLiteral("bad.las")), 0).isValid());
         QVERIFY(!readPointCloud(m_dir.filePath(QStringLiteral("x.xyz")), 0).isValid());
+    }
+
+    void lasClassesAndIntensity()
+    {
+        // 100 points: classes 2 (ground) ×60, 5 (high vegetation) ×30, 6 (building) ×10; intensity 0..990.
+        QVector<QVector3D> pts;
+        QVector<QColor> colors;
+        QVector<quint8> classes;
+        QVector<quint16> intensity;
+        for (int i = 0; i < 100; ++i) {
+            pts << QVector3D(i, 0, 150);
+            colors << Qt::white;
+            classes << quint8(i < 60 ? 2 : i < 90 ? 5 : 6);
+            intensity << quint16(i * 10);
+        }
+        const QString path = m_dir.filePath(QStringLiteral("classes.las"));
+        QVERIFY(writeFile(path, las12(pts, colors, 576000, 5188000, 0.01, {}, classes, intensity)));
+        const PointCloud c = readPointCloud(path, 0);
+        QVERIFY2(c.isValid(), qPrintable(c.error));
+        QCOMPARE(c.classes.size(), 100);
+        QCOMPARE(int(c.classes[0]), 2);
+        QCOMPARE(int(c.classes[95]), 6);
+        QCOMPARE(c.intensity.size(), 100);
+        QVERIFY(c.intensity[0] == 0 && c.intensity[99] == 255);   // 1st..99th percentile stretched
+        QVERIFY(c.intensity[50] > 110 && c.intensity[50] < 145);
+        QCOMPARE(classColor(2), 0xffa6763cu);
+        QCOMPARE(className(6), QStringLiteral("здания"));
+        // The scene describes the classes, largest first.
+        Scene3DService scene;
+        QVERIFY(scene.addPointCloud(path).isEmpty());
+        QVERIFY(waitLoaded(scene));
+        const QString info = scene.layersForQml().first().toMap().value("info").toString();
+        QVERIFY2(info.contains(QStringLiteral("Классы: земля 60 %, высокая растительность 30 %, здания 10 %")), qPrintable(info));
+        QVERIFY(info.contains(QStringLiteral("интенсивность")));
+        scene.setColorMode(QStringLiteral("classes"));
+        QCOMPARE(scene.colorMode(), QStringLiteral("classes"));
+        QCOMPARE(scene.snapshot().colorMode, 2);
+        scene.setColorMode(QStringLiteral("intensity"));
+        QCOMPARE(scene.snapshot().colorMode, 3);
+        // An ODM LAZ with an LAS beside it: the LAS is shown (georeferenced, classes).
+        const QString job = m_dir.filePath(QStringLiteral("lasjob/odm_georeferencing"));
+        QVERIFY(QDir().mkpath(job));
+        QVERIFY(QFile::copy(path, job + QStringLiteral("/odm_georeferenced_model.las")));
+        QVERIFY(writeFile(job + QStringLiteral("/odm_georeferenced_model.laz"), "LASF compressed"));
+        QVERIFY(writeFile(job + QStringLiteral("/coords.txt"), "WGS84 UTM 15N\n576000 5188000\n"));
+        Scene3DService other;
+        QVERIFY(other.addPointCloud(job + QStringLiteral("/odm_georeferenced_model.laz")).isEmpty());
+        QVERIFY(waitLoaded(other));
+        const QString otherInfo = other.layersForQml().first().toMap().value("info").toString();
+        QVERIFY2(otherInfo.contains(QStringLiteral("odm_georeferenced_model.las")), qPrintable(otherInfo));
+        QVERIFY(otherInfo.contains(QStringLiteral("Классы")));
     }
 
     void objWithMaterialsAndTexture()

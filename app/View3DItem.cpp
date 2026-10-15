@@ -32,9 +32,9 @@ struct PointsUniforms
 {
     float mvp[16];
     float offset[4];
-    float params[4];
+    float params[4];    // viewport, point size, colour mode
     float heights[4];
-    float pad[4];
+    float data[4];      // x: the cloud has classes, y: intensity
 };
 struct MeshUniforms
 {
@@ -113,8 +113,9 @@ public:
                 memcpy(pu.mvp, mvp.constData(), sizeof(pu.mvp));
                 pu.offset[0] = off.x(); pu.offset[1] = off.y(); pu.offset[2] = off.z(); pu.offset[3] = vs;
                 pu.params[0] = float(size.width()); pu.params[1] = float(size.height());
-                pu.params[2] = m_snapshot.pointSize * dpr; pu.params[3] = m_snapshot.heightColors ? 1.0f : 0.0f;
+                pu.params[2] = m_snapshot.pointSize * dpr; pu.params[3] = float(m_snapshot.colorMode);
                 pu.heights[0] = zMin; pu.heights[1] = zMax; pu.heights[2] = g.hasColor ? 1.0f : 0.0f;
+                pu.data[0] = g.hasClasses ? 1.0f : 0.0f; pu.data[1] = g.hasIntensity ? 1.0f : 0.0f;
                 u->updateDynamicBuffer(g.ubo.get(), 0, sizeof(pu), &pu);
                 Gpu *gp = &g;
                 draws << [this, cb, gp] {
@@ -132,7 +133,7 @@ public:
                     mu.flags[0] = part.textured ? 1.0f : 0.0f;
                     // Textured photogrammetry already carries its light; shade colours and terrain.
                     mu.flags[1] = m_snapshot.lighting && (!part.textured || g.terrain) ? 1.0f : 0.0f;
-                    mu.flags[2] = m_snapshot.heightColors ? 1.0f : 0.0f;
+                    mu.flags[2] = m_snapshot.colorMode == 1 ? 1.0f : 0.0f;   // classes/intensity are point attributes
                     mu.flags[3] = g.hasColor ? 1.0f : 0.0f;
                     mu.heights[0] = zMin; mu.heights[1] = zMax;
                     const float az = qDegreesToRadians(315.0f), el = qDegreesToRadians(45.0f);
@@ -174,6 +175,8 @@ private:
         bool points = false;
         bool terrain = false;
         bool hasColor = false;
+        bool hasClasses = false;
+        bool hasIntensity = false;
         int count = 0;
         std::unique_ptr<QRhiBuffer> vbuf;
         std::unique_ptr<QRhiBuffer> ubo;
@@ -225,10 +228,12 @@ private:
         m_pointPipeline->setShaderStages({{QRhiShaderStage::Vertex, loadShader(QStringLiteral("points.vert"))},
                                           {QRhiShaderStage::Fragment, loadShader(QStringLiteral("points.frag"))}});
         QRhiVertexInputLayout pl;
-        pl.setBindings({{2 * sizeof(float)}, {4 * sizeof(float), QRhiVertexInputBinding::PerInstance}});
+        // Per point: position, colour (RGBA bytes), extra (class, intensity bytes).
+        pl.setBindings({{2 * sizeof(float)}, {5 * sizeof(float), QRhiVertexInputBinding::PerInstance}});
         pl.setAttributes({{0, 0, QRhiVertexInputAttribute::Float2, 0},
                           {1, 1, QRhiVertexInputAttribute::Float3, 0},
-                          {1, 2, QRhiVertexInputAttribute::UNormByte4, 3 * sizeof(float)}});
+                          {1, 2, QRhiVertexInputAttribute::UNormByte4, 3 * sizeof(float)},
+                          {1, 3, QRhiVertexInputAttribute::UNormByte4, 4 * sizeof(float)}});
         m_pointPipeline->setVertexInputLayout(pl);
         m_pointPipeline->setTopology(QRhiGraphicsPipeline::TriangleStrip);
         m_pointPipeline->setDepthTest(true);
@@ -280,15 +285,21 @@ private:
                 const PointCloud &c = *layer.cloud;
                 g.points = true;
                 g.hasColor = !c.colors.isEmpty();
+                g.hasClasses = c.classes.size() == c.positions.size();
+                g.hasIntensity = c.intensity.size() == c.positions.size();
                 g.count = int(c.positions.size());
-                QByteArray data(g.count * 16, Qt::Uninitialized);
+                QByteArray data(g.count * 20, Qt::Uninitialized);
                 char *p = data.data();
-                for (int i = 0; i < g.count; ++i, p += 16) {
+                for (int i = 0; i < g.count; ++i, p += 20) {
                     memcpy(p, &c.positions[i], 12);
                     const quint32 col = rgbaBytes(g.hasColor ? c.colors[i] : 0xffc8c8c8u);
                     memcpy(p + 12, &col, 4);
+                    p[16] = char(g.hasClasses ? c.classes[i] : 0);
+                    p[17] = char(g.hasIntensity ? c.intensity[i] : 0);
+                    p[18] = 0;
+                    p[19] = 0;
                 }
-                g.vbuf.reset(m_rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer, quint32(qMax(16, int(data.size())))));
+                g.vbuf.reset(m_rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer, quint32(qMax(20, int(data.size())))));
                 g.vbuf->create();
                 u->uploadStaticBuffer(g.vbuf.get(), data.constData());
                 g.ubo.reset(m_rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(PointsUniforms)));

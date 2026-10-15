@@ -32,6 +32,8 @@ struct PointCloud
 {
     QVector<QVector3D> positions;   // relative to the origin
     QVector<quint32> colors;        // 0xAARRGGBB, empty without colours
+    QVector<quint8> classes;        // ASPRS classes (LAS); empty when nothing is classified
+    QVector<quint8> intensity;      // LAS intensity scaled to 0..255 over the cloud; empty when absent
     quint64 totalPoints = 0;        // in the source
     Bounds bounds;
     Origin origin;
@@ -77,6 +79,10 @@ PointCloud readPointCloudPly(const QString &path, int maxPoints, const Origin &o
 // LAS 1.0–1.4, point formats 0–10, uncompressed (LAZ is reported as not supported yet).
 PointCloud readPointCloudLas(const QString &path, int maxPoints, const Origin &origin = {});
 PointCloud readPointCloud(const QString &path, int maxPoints, const Origin &origin = {});   // by extension
+
+// Colour and name of an ASPRS point class (2 ground, 3–5 vegetation, 6 building, 9 water, …).
+quint32 classColor(int asprsClass);   // 0xAARRGGBB
+QString className(int asprsClass);
 
 // Wavefront OBJ with MTL materials and map_Kd textures; polygons are triangulated; textures
 // larger than maxTexture are scaled down. Positions are taken as they are (local for ODM).

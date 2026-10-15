@@ -72,14 +72,15 @@ Item {
                     Label { text: "Цвет"; color: Theme.muted; font.pixelSize: 11 }
                     ComboBox {
                         id: colorBox
-                        implicitWidth: 112; implicitHeight: 26
+                        implicitWidth: 132; implicitHeight: 26
                         font.pixelSize: 11
-                        model: [{ text: "Исходный", value: "rgb" }, { text: "По высоте", value: "height" }]
+                        model: [{ text: "Исходный", value: "rgb" }, { text: "По высоте", value: "height" },
+                                { text: "Классы", value: "classes" }, { text: "Интенсивность", value: "intensity" }]
                         textRole: "text"; valueRole: "value"
-                        currentIndex: scene3d.colorMode === "height" ? 1 : 0
+                        currentIndex: Math.max(0, ["rgb", "height", "classes", "intensity"].indexOf(scene3d.colorMode))
                         onActivated: scene3d.colorMode = currentValue
                         ToolTip.visible: hovered; ToolTip.delay: 500
-                        ToolTip.text: "Цвет точек и поверхностей: исходный (RGB, текстура) или шкала высот сцены"
+                        ToolTip.text: "Цвет: исходный (RGB, текстура), шкала высот, классы точек LAS (земля, растительность, здания…) или интенсивность отражения. Облака без классов или интенсивности остаются в исходном цвете."
                     }
                     Label { text: "Высоты ×"; color: Theme.muted; font.pixelSize: 11; Layout.leftMargin: 6 }
                     ComboBox {
@@ -179,6 +180,30 @@ Item {
                 }
             }
 
+            // Legend of the point classes (colour mode "Классы").
+            Rectangle {
+                visible: scene3d.colorMode === "classes" && scene3d.layerCount > 0
+                anchors.top: parent.top; anchors.left: parent.left; anchors.margins: 10
+                width: legendColumn.implicitWidth + 16; height: legendColumn.implicitHeight + 12
+                radius: 6
+                color: "#CC171B22"; border.color: Theme.line
+                ColumnLayout {
+                    id: legendColumn
+                    anchors.centerIn: parent
+                    spacing: 2
+                    Repeater {
+                        model: [{ c: "#a6763c", t: "земля" }, { c: "#a6d66e", t: "низкая растительность" }, { c: "#50af46", t: "средняя растительность" },
+                                { c: "#227832", t: "высокая растительность" }, { c: "#e15a46", t: "здания" }, { c: "#3c82e6", t: "вода" },
+                                { c: "#ff00ff", t: "шум" }, { c: "#bebebe", t: "без класса" }]
+                        delegate: RowLayout {
+                            required property var modelData
+                            spacing: 6
+                            Rectangle { implicitWidth: 10; implicitHeight: 10; radius: 2; color: modelData.c }
+                            Label { text: modelData.t; color: Theme.text; font.pixelSize: 10 }
+                        }
+                    }
+                }
+            }
             // Loading
             Rectangle {
                 anchors.top: parent.top; anchors.right: parent.right; anchors.margins: 10
