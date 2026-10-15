@@ -193,8 +193,8 @@ private slots:
         QVERIFY(s->findByCommand(QStringLiteral("file.new"), "ToolIconButton")->property("enabled").toBool());
         QVERIFY(!s->findByCommand(QStringLiteral("file.save"), "ToolIconButton")->property("enabled").toBool());   // no project
         // Planned commands do not run and say why.
-        QVERIFY(!s->run(QStringLiteral("view.grid")));
-        QVERIFY(s->prop("transientMessage").toString().contains(QStringLiteral("C (0.3.x)")));
+        QVERIFY(!s->run(QStringLiteral("proc.tiled")));
+        QVERIFY(s->prop("transientMessage").toString().contains(QStringLiteral("после 1.0")));
         QVERIFY(!s->run(QStringLiteral("proc.optimize")));
         QVERIFY(s->prop("transientMessage").toString().contains(QStringLiteral("движком")));
         s->shot(QStringLiteral("ui-01-welcome.png"));
@@ -581,6 +581,34 @@ private slots:
         QCOMPARE(finished.count(), 1);
         QVERIFY2(finished.first().at(0).toBool(), qPrintable(finished.first().at(1).toString()));
         QVERIFY(finished.first().at(1).toString().contains(QStringLiteral("анализ")));
+
+        // Grid, legend and markers from the View menu; a marker with the height under it.
+        QVERIFY(s->run(QStringLiteral("view.grid")));
+        QVERIFY(s->map.showGrid());
+        QVERIFY(s->checked(QStringLiteral("view.grid")));
+        QVERIFY(s->run(QStringLiteral("view.legend")));
+        QObject *legend = s->window->findChild<QObject *>(QStringLiteral("mapLegend"));
+        QVERIFY(legend);
+        QTRY_VERIFY(legend->property("visible").toBool());
+        QVERIFY(s->run(QStringLiteral("tool.marker")));
+        click({576030.5, 5188070.5});
+        QCOMPARE(s->map.projectMarkers().size(), 1);
+        QCOMPARE(s->map.projectMarkers().first().z, 105.0);
+        s->shot(QStringLiteral("ui-map-grid-legend-marker.png"));
+        // The dialogs of this release open from their commands.
+        for (const auto &c : {std::pair{"project.markers", "markersDialog"}, std::pair{"tool.demEditor", "demEditorDialog"},
+                              std::pair{"tool.cloudEditor", "cloudEditorDialog"}, std::pair{"tool.classify", "cloudEditorDialog"},
+                              std::pair{"project.settings", "projectSettingsDialog"}, std::pair{"file.saveAs", "saveAsDialog"},
+                              std::pair{"project.check", "projectCheckDialog"}}) {
+            QVERIFY2(s->run(QString::fromLatin1(c.first)), c.first);
+            QObject *d = s->window->findChild<QObject *>(QString::fromLatin1(c.second));
+            QVERIFY2(d, c.second);
+            QTRY_VERIFY2(d->property("visible").toBool(), c.second);
+            if (QString::fromLatin1(c.second) == QLatin1String("projectCheckDialog"))
+                QVERIFY(d->property("checkResult").toMap().contains(QStringLiteral("ok")));
+            QMetaObject::invokeMethod(d, "close");
+            QTRY_VERIFY(!d->property("visible").toBool());
+        }
     }
     // The 3D view: commands, tools without a map CRS, and an ODM point cloud opened from the
     // project tree (the job's LAZ is shown through odm_filterpoints/point_cloud.ply). The

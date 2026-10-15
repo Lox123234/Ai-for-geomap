@@ -58,6 +58,8 @@ ApplicationWindow {
     property string activeJobText: ""
     property int clockTick: 0
     property bool showOptions: false
+    property bool legendShown: workspace.value("legendShown", false) === true || workspace.value("legendShown", false) === "true"
+    onLegendShownChanged: workspace.setValue("legendShown", legendShown)
     property var optionValues: ({})      // structured engine options set by the user
     property var optionDefs: []          // detached copy of processing.optionDefinitions
     property int detailTab: 0            // 0 results, 1 quality, 2 log
@@ -157,6 +159,12 @@ ApplicationWindow {
         case "analysis.viewshed": case "analysis.ai": case "proc.contours": return map
         case "tool.rasterCalc": case "analysis.vegetation": case "analysis.ndvi": case "analysis.export": return has
         case "analysis.aiModels": return true
+        case "file.saveAs": return has && idle
+        case "project.settings": case "project.check": case "project.markers": case "view.markers": case "tool.cloudEditor": case "tool.classify": return has
+        case "edit.selectAll": case "edit.invertSelection": return window.activeView === 3 && gis.drawingCount > 0
+        case "edit.copy": return window.activeView === 3 && gis.hasSelection
+        case "edit.paste": return window.activeView === 3 && map
+        case "view.grid": case "view.legend": case "tool.marker": case "tool.demEditor": return map
         case "proc.trueOrthophoto": return has && !processing.trueOrthoBusy
         // Terrain analysis needs the map (and a DEM on it, which the tools and dialog check).
         case "tool.profile": case "tool.volume": case "analysis.longProfile": case "analysis.cutFill":
@@ -211,6 +219,10 @@ ApplicationWindow {
         case "analysis.crossProfile": return window.activeView === 3 && gis.tool === "crossProfile"
         case "analysis.viewshed": return window.activeView === 3 && gis.tool === "viewshed"
         case "analysis.ai": case "tool.orthoEditor": return window.activeView === 3 && gis.tool === "aiSelect"
+        case "tool.marker": return window.activeView === 3 && gis.tool === "marker"
+        case "view.grid": return gis.showGrid
+        case "view.legend": return window.legendShown
+        case "view.markers": return gis.showMarkers
         case "view.panelProject": return window.showLeft
         case "view.panelProperties": return window.showRight
         case "view.panelLog": return window.showBottom
@@ -442,6 +454,21 @@ ApplicationWindow {
             window.flash("Редактор ортофотоплана: щёлкните объект, затем «Убрать с ортофотоплана» (Ctrl+Z — отменить)")
         },
         "proc.contours": function() { window.activeView = 3; terrainDialog.openFor("contours") },
+        "file.saveAs": function() { saveAsDialog.open() },
+        "project.settings": function() { projectSettingsDialog.open() },
+        "project.check": function() { projectCheckDialog.open() },
+        "project.markers": function() { markersDialog.open() },
+        "edit.selectAll": function() { gis.selectAllDrawings(); window.setTool("edit") },
+        "edit.invertSelection": function() { gis.invertDrawingSelection(); window.setTool("edit") },
+        "edit.copy": function() { var e = gis.copySelection(); if (e.length > 0) window.showError(e); else window.flash("Объекты скопированы в буфер обмена (GeoJSON): " + gis.selectionCount) },
+        "edit.paste": function() { var e = gis.pasteDrawings(); if (e.length > 0) window.showError(e); else window.flash("Объекты вставлены (Ctrl+Z — отменить)") },
+        "view.grid": function() { window.activeView = 3; gis.showGrid = !gis.showGrid },
+        "view.legend": function() { window.activeView = 3; window.legendShown = !window.legendShown },
+        "view.markers": function() { gis.showMarkers = !gis.showMarkers },
+        "tool.marker": function() { window.setTool("marker") },
+        "tool.demEditor": function() { window.activeView = 3; demEditorDialog.open() },
+        "tool.cloudEditor": function() { cloudEditorDialog.openFor("deleteInside") },
+        "tool.classify": function() { cloudEditorDialog.openFor("classify") },
         "proc.trueOrthophoto": function() {
             var error = processing.buildTrueOrthophoto("")
             if (error.length > 0) window.showError(error)
@@ -641,6 +668,16 @@ ApplicationWindow {
     TerrainDialog { id: terrainDialog }
     RasterCalcDialog { id: rasterCalcDialog }
     AiModelsDialog { id: aiModelsDialog }
+    MarkersDialog { id: markersDialog; host: window }
+    DemEditorDialog { id: demEditorDialog }
+    CloudEditorDialog { id: cloudEditorDialog; host: window }
+    ProjectSettingsDialog { id: projectSettingsDialog; host: window }
+    SaveAsDialog { id: saveAsDialog; host: window }
+    ProjectCheckDialog { id: projectCheckDialog }
+    Connections {
+        target: projects
+        function onSaveAsFinished(ok, message) { if (ok) window.flash(message); else window.showError(message) }
+    }
     ExportDialog { id: exportDialog; host: window }
     FolderDialog {
         id: analysisExportDialog
@@ -654,7 +691,7 @@ ApplicationWindow {
     Connections {
         target: gis
         function onAnalysisFinished(ok, message) {
-            if (terrainDialog.visible || rasterCalcDialog.visible) return
+            if (terrainDialog.visible || rasterCalcDialog.visible || demEditorDialog.visible) return
             if (ok) window.flash(message)
             else window.showError(message)
         }

@@ -10,7 +10,11 @@
 #include <memory>
 
 namespace {
-QByteArray utf8(const QString &path) { return QDir::toNativeSeparators(path).toUtf8(); }
+// GDAL's virtual file systems (/vsimem/, /vsizip/ …) keep their forward slashes.
+QByteArray utf8(const QString &path)
+{
+    return (path.startsWith(QLatin1String("/vsi")) ? path : QDir::toNativeSeparators(path)).toUtf8();
+}
 
 struct DatasetCloser { void operator()(GDALDataset *ds) const { GDALClose(ds); } };
 using Dataset = std::unique_ptr<GDALDataset, DatasetCloser>;

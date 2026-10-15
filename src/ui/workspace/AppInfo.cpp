@@ -46,3 +46,16 @@ bool AppInfo::openLogDirectory() const
 {
     return !m_logDirectory.isEmpty() && QDir().mkpath(m_logDirectory) && openPath(m_logDirectory);
 }
+
+bool AppInfo::fileExists(const QString &path) const
+{
+    return !path.isEmpty() && QFileInfo(path).isFile();
+}
+
+QString AppInfo::siblingLas(const QString &path) const
+{
+    if (path.endsWith(QLatin1String(".las"), Qt::CaseInsensitive)) return QFileInfo(path).isFile() ? path : QString();
+    if (!path.endsWith(QLatin1String(".laz"), Qt::CaseInsensitive)) return {};
+    const QString las = path.left(path.size() - 4) + QStringLiteral(".las");
+    return QFileInfo(las).isFile() ? las : QString();
+}

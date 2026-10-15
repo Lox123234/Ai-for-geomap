@@ -616,6 +616,63 @@ private slots:
         ProjectManager pm;
         QVERIFY2(pm.openProject(dirUrl(dir)), qUtf8Printable(pm.statusMessage()));
     }
+
+    // Name and description, "save as" (a copy that opens; the original untouched) and the
+    // integrity check.
+    void settingsSaveAsAndCheck()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        const QStringList sources = makeSources(tmp.filePath(QStringLiteral("src")));
+        QCOMPARE(sources.size(), 3);
+        ProjectManager pm;
+        QVERIFY(pm.createProject(dirUrl(tmp.path()), QStringLiteral("Оригинал")));
+        const QString original = pm.projectPath();
+        pm.importFiles(urls(sources));
+        QVERIFY(finishImport(pm));
+        QCOMPARE(pm.photoCount(), 3);
+        QCOMPARE(pm.renameProject(QStringLiteral("Карьер, съёмка 1")), QString());
+        QVERIFY(!pm.renameProject(QStringLiteral("   ")).isEmpty());
+        pm.setDescription(QStringLiteral("Заказчик: тест"));
+        QCOMPARE(readManifest(original).value("name").toString(), QStringLiteral("Карьер, съёмка 1"));
+        QCOMPARE(readManifest(original).value("description").toString(), QStringLiteral("Заказчик: тест"));
+        QVERIFY(writeFile(QDir(original).filePath(QStringLiteral("map.json")), "{\"schemaVersion\": 1, \"layers\": []}"));
+        QVERIFY(QDir().mkpath(QDir(original).filePath(QStringLiteral("cache/thumbs"))));
+        QVERIFY(writeFile(QDir(original).filePath(QStringLiteral("cache/thumbs/x.jpg")), "derived"));
+
+        // The integrity check of a healthy project.
+        QVariantMap check = pm.checkProject();
+        QVERIFY2(check.value("ok").toBool(), qPrintable(check.value("problems").toStringList().join('\n')));
+        QVERIFY(check.value("checked").toStringList().join(' ').contains(QStringLiteral("все 3")));
+
+        // Save as: copy without the cache, opened; the original stays.
+        const qint64 size = pm.projectSize();
+        QVERIFY(size > 0);
+        QVERIFY(!pm.saveProjectAs(dirUrl(original), QStringLiteral("Внутри")).isEmpty());   // not inside itself
+        QSignalSpy saved(&pm, &ProjectManager::saveAsFinished);
+        QCOMPARE(pm.saveProjectAs(dirUrl(tmp.path()), QStringLiteral("Копия")), QString());
+        QVERIFY(saved.wait(60000));
+        QVERIFY2(saved.first().at(0).toBool(), qPrintable(saved.first().at(1).toString()));
+        const QString copy = QDir(tmp.path()).filePath(QStringLiteral("Копия"));
+        QCOMPARE(QDir::cleanPath(pm.projectPath()), QDir::cleanPath(copy));
+        QCOMPARE(pm.photoCount(), 3);
+        QCOMPARE(pm.projectName(), QStringLiteral("Копия"));
+        QCOMPARE(pm.description(), QStringLiteral("Заказчик: тест"));
+        QVERIFY(QFileInfo::exists(QDir(copy).filePath(QStringLiteral("map.json"))));
+        QVERIFY(!QFileInfo::exists(QDir(copy).filePath(QStringLiteral("cache/thumbs/x.jpg"))));
+        QCOMPARE(readManifest(original).value("name").toString(), QStringLiteral("Карьер, съёмка 1"));
+        QVERIFY(!pm.saveProjectAs(dirUrl(tmp.path()), QStringLiteral("Копия")).isEmpty());   // exists
+
+        // A missing photo and a lost map layer are reported.
+        const QJsonArray photos = readManifest(copy).value("photos").toArray();
+        QVERIFY(QFile::remove(QDir(copy).filePath(photos.first().toObject().value("file").toString())));
+        QVERIFY(writeFile(QDir(copy).filePath(QStringLiteral("map.json")),
+                          "{\"schemaVersion\": 1, \"layers\": [{\"id\": \"a\", \"name\": \"Ортофото\", \"source\": \"нет.tif\"}]}"));
+        check = pm.checkProject();
+        QVERIFY(!check.value("ok").toBool());
+        QVERIFY(check.value("problems").toStringList().join('\n').contains(QStringLiteral("Нет снимка")));
+        QVERIFY(check.value("warnings").toStringList().join('\n').contains(QStringLiteral("Ортофото")));
+    }
 };
 
 QTEST_GUILESS_MAIN(ProjectManagerTest)

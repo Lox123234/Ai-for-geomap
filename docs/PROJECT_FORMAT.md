@@ -7,6 +7,8 @@
   geomap.json          манифест (schemaVersion 1)
   map.json             карта: CRS, вид, слои и их стили (с версии 0.3, schemaVersion 1)
   measurements.json    сохранённые измерения (с 0.4.2, schemaVersion 1)
+  markers.json         маркеры (с 0.5.1, schemaVersion 1): id, name, note, lon, lat (WGS 84), z и heightSource
+                       (высота модели под маркером при постановке), created
   analysis/            результаты анализа рельефа (с 0.4.1): <модель>-slope.tif, -aspect.tif,
                        -contours-<шаг>m.gpkg, <A>-minus-<B>.tif; с 0.5.0 также -viewshed.tif, -exg/-vari/-gli/-ndvi/-calc.tif;
                        файлы можно удалить, слои карты на них ссылаются
@@ -44,6 +46,7 @@
 {
   "schemaVersion": 1,
   "name": "Моя съёмка",
+  "description": "Заказчик, объект (необязательно, с 0.5.1)",
   "createdAt": "2026-10-14T08:00:00.000Z",
   "updatedAt": "2026-10-14T08:05:12.345Z",
   "photos": [
@@ -162,7 +165,9 @@
      "visible": true, "opacity": 1, "color": "#7ed321"},
     {"id": "photos", "type": "photos", "name": "Точки съёмки", "visible": true, "opacity": 1, "color": "#ff9f43"},
     {"id": "drawings", "type": "drawings", "name": "Рисунки и измерения", "visible": true, "opacity": 1, "color": "#54d6ff"}
-  ]
+  ],
+  "grid": false,
+  "markers": true
 }
 ```
 

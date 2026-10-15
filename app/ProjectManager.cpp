@@ -12,6 +12,10 @@
 #include <QLockFile>
 #include <QSaveFile>
 #include <QSettings>
+#include <QDirIterator>
+#include <QLocale>
+#include <QSet>
+#include <QThread>
 #include <QUrl>
 #include <cmath>
 
@@ -182,6 +186,7 @@ bool ProjectManager::createProject(const QUrl &parentDirectory, const QString &n
     setProjectPath(QDir(path).absolutePath());
     m_projectName = dirname;
     m_createdAt = created;
+    m_description.clear();
     m_photos.resetPhotos({}, m_projectPath);
     m_selectedIndex = -1;
     updateRecents(m_projectPath);
@@ -238,6 +243,7 @@ bool ProjectManager::openProject(const QUrl &projectDirectory)
     setProjectPath(path);
     m_projectName = root.value("name").toString(QFileInfo(path).fileName());
     m_createdAt = root.value("createdAt").toString();
+    m_description = root.value("description").toString();
     m_photos.resetPhotos(list, path);
     m_selectedIndex = list.isEmpty() ? -1 : 0;
     updateRecents(path);
@@ -252,9 +258,10 @@ bool ProjectManager::writeProject()
     if (!hasProject()) return false;
     QJsonArray photos;
     for (const Photo &p : m_photos.photos()) photos.append(serialize(p));
-    const QJsonObject root{{"schemaVersion", 1}, {"name", m_projectName},
-                           {"createdAt", m_createdAt}, {"updatedAt", now()},
-                           {"photos", photos}};
+    QJsonObject root{{"schemaVersion", 1}, {"name", m_projectName},
+                     {"createdAt", m_createdAt}, {"updatedAt", now()},
+                     {"photos", photos}};
+    if (!m_description.isEmpty()) root.insert("description", m_description);
     QSaveFile f(QDir(m_projectPath).filePath(ManifestFile));
     if (!f.open(QIODevice::WriteOnly)) return false;
     const QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Indented);
@@ -279,7 +286,7 @@ void ProjectManager::closeProject()
     m_lock.reset();
     clearImportIssues();
     setProjectPath({});
-    m_projectName.clear(); m_createdAt.clear();
+    m_projectName.clear(); m_createdAt.clear(); m_description.clear();
     m_photos.resetPhotos({}, {});
     m_selectedIndex = -1;
     emit projectChanged(); emit photosChanged(); emit selectionChanged();
@@ -479,4 +486,198 @@ QString ProjectManager::displayPath(const QUrl &url) const
 {
     // Decoded native path ("C:\Съёмки"), not "/C:/%D0%A1..." from string-mangling the URL.
     return QDir::toNativeSeparators(url.toLocalFile());
+}
+
+// ------------------------------------------------------------------ project settings, save as, check
+
+void ProjectManager::setDescription(const QString &text)
+{
+    if (!hasProject() || text == m_description) return;
+    m_description = text;
+    if (!writeProject()) error(QStringLiteral("Не удалось сохранить описание проекта."));
+    emit projectChanged();
+}
+
+QString ProjectManager::renameProject(const QString &name)
+{
+    if (!hasProject()) return QStringLiteral("Проект не открыт.");
+    const QString clean = name.trimmed().left(120);
+    if (clean.isEmpty()) return QStringLiteral("Введите название проекта.");
+    if (clean == m_projectName) return {};
+    const QString before = m_projectName;
+    m_projectName = clean;
+    if (!writeProject()) {
+        m_projectName = before;
+        return QStringLiteral("Не удалось сохранить проект.");
+    }
+    emit projectChanged();
+    updateStatus(QStringLiteral("Проект переименован: ") + clean);
+    return {};
+}
+
+namespace {
+// Files of a project to copy: everything but the lock and the derived cache.
+QStringList projectFiles(const QString &root, qint64 *bytes)
+{
+    QStringList files;
+    if (bytes) *bytes = 0;
+    const QDir base(root);
+    QDirIterator it(root, QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString path = it.next();
+        const QString rel = base.relativeFilePath(path);
+        if (rel == QLatin1String("geomap.lock") || rel.startsWith(QLatin1String("cache/")) || rel.endsWith(QLatin1String(".partial.tif"))) continue;
+        files << rel;
+        if (bytes) *bytes += it.fileInfo().size();
+    }
+    return files;
+}
+} // namespace
+
+qint64 ProjectManager::projectSize() const
+{
+    qint64 bytes = 0;
+    if (hasProject()) projectFiles(m_projectPath, &bytes);
+    return bytes;
+}
+
+QString ProjectManager::saveProjectAs(const QUrl &parentDirectory, const QString &name)
+{
+    if (!hasProject()) return QStringLiteral("Проект не открыт.");
+    if (m_busy) return QStringLiteral("Дождитесь окончания текущей операции.");
+    const QString dirname = normalizedName(name);
+    const QString parent = parentDirectory.toLocalFile();
+    if (dirname.isEmpty() || !QFileInfo(parent).isDir()) return QStringLiteral("Выберите существующую папку и укажите название копии.");
+    const QString target = QDir(parent).absoluteFilePath(dirname);
+    if (QFileInfo::exists(target)) return QStringLiteral("Папка уже существует: %1").arg(QDir::toNativeSeparators(target));
+    const QString source = QDir::cleanPath(m_projectPath);
+    if (QDir::cleanPath(target).startsWith(source + QLatin1Char('/'), Qt::CaseInsensitive))
+        return QStringLiteral("Копию нельзя положить внутрь самого проекта.");
+    if (!writeProject()) return QStringLiteral("Не удалось сохранить проект перед копированием.");
+    setBusy(true);
+    updateStatus(QStringLiteral("Копирование проекта в %1…").arg(QDir::toNativeSeparators(target)));
+    QThread *thread = QThread::create([this, source, target, dirname] {
+        qint64 total = 0;
+        const QStringList files = projectFiles(source, &total);
+        QString failed;
+        qint64 done = 0;
+        for (const QString &rel : files) {
+            const QString to = QDir(target).filePath(rel);
+            QDir().mkpath(QFileInfo(to).absolutePath());
+            if (!QFile::copy(QDir(source).filePath(rel), to)) { failed = rel; break; }
+            done += QFileInfo(to).size();
+        }
+        // The copy carries the new name in its manifest.
+        if (failed.isEmpty()) {
+            QFile f(QDir(target).filePath(ManifestFile));
+            QJsonObject root;
+            if (f.open(QIODevice::ReadOnly)) root = QJsonDocument::fromJson(f.readAll()).object();
+            f.close();
+            root.insert("name", dirname);
+            root.insert("updatedAt", now());
+            QSaveFile out(QDir(target).filePath(ManifestFile));
+            if (!out.open(QIODevice::WriteOnly) || out.write(QJsonDocument(root).toJson(QJsonDocument::Indented)) < 0 || !out.commit())
+                failed = ManifestFile;
+        }
+        QMetaObject::invokeMethod(this, [this, failed, target, done, total] {
+            setBusy(false);
+            if (!failed.isEmpty()) {
+                QDir(target).removeRecursively();
+                const QString message = QStringLiteral("Не удалось скопировать %1; копия удалена, исходный проект не изменён.").arg(failed);
+                error(message);
+                emit saveAsFinished(false, message);
+                return;
+            }
+            const bool opened = openProject(QUrl::fromLocalFile(target));
+            const QString message = QStringLiteral("Проект сохранён как %1 (%2 МБ)%3").arg(QDir::toNativeSeparators(target))
+                                        .arg(QLocale(QLocale::Russian).toString(total / 1048576.0, 'f', 1))
+                                        .arg(opened ? QStringLiteral(" и открыт") : QStringLiteral(", но не открыт"));
+            Q_UNUSED(done)
+            updateStatus(message);
+            emit saveAsFinished(opened, message);
+        }, Qt::QueuedConnection);
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
+    return {};
+}
+
+QVariantMap ProjectManager::checkProject() const
+{
+    QStringList checked, problems, warnings;
+    if (!hasProject()) return {{"ok", false}, {"problems", QStringList{QStringLiteral("Проект не открыт")}}};
+    const QDir root(m_projectPath);
+    // Manifest.
+    QFile manifest(root.filePath(ManifestFile));
+    QJsonObject doc;
+    if (!manifest.open(QIODevice::ReadOnly)) problems << QStringLiteral("Нет файла geomap.json");
+    else {
+        QJsonParseError e;
+        doc = QJsonDocument::fromJson(manifest.readAll(), &e).object();
+        if (e.error != QJsonParseError::NoError || doc.value("schemaVersion").toInt() != 1) problems << QStringLiteral("geomap.json повреждён или другой версии");
+        else checked << QStringLiteral("Манифест geomap.json: схема 1, %1 снимков в списке").arg(doc.value("photos").toArray().size());
+    }
+    // Photos: present, readable, same size as when imported; files nobody refers to.
+    QSet<QString> listed;
+    int missing = 0, changed = 0;
+    for (const QJsonValue &v : doc.value("photos").toArray()) {
+        const QJsonObject o = v.toObject();
+        const QString file = o.value("file").toString();
+        listed.insert(file);
+        const QFileInfo fi(root.filePath(file));
+        if (!fi.isFile()) { ++missing; if (missing <= 5) problems << QStringLiteral("Нет снимка %1 (%2)").arg(file, o.value("name").toString()); }
+        else if (qint64(o.value("bytes").toDouble()) > 0 && fi.size() != qint64(o.value("bytes").toDouble())) {
+            ++changed;
+            if (changed <= 5) problems << QStringLiteral("Размер снимка %1 изменился после импорта").arg(o.value("name").toString());
+        }
+    }
+    if (missing > 5) problems << QStringLiteral("…и ещё %1 отсутствующих снимков").arg(missing - 5);
+    if (!missing && !changed) checked << QStringLiteral("Снимки: все %1 на месте и не изменены").arg(listed.size());
+    int orphans = 0;
+    for (const QFileInfo &fi : QDir(root.filePath("photos")).entryInfoList(QDir::Files))
+        if (!listed.contains(QStringLiteral("photos/") + fi.fileName()) && !fi.fileName().contains(QLatin1String("_mask"))) ++orphans;
+    if (orphans) warnings << QStringLiteral("В папке photos %1 файлов не из списка проекта (можно удалить вручную)").arg(orphans);
+    // Jobs and their results.
+    int jobs = 0, brokenJobs = 0, missingResults = 0;
+    for (const QFileInfo &dir : QDir(root.filePath("jobs")).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        QFile jf(QDir(dir.absoluteFilePath()).filePath("job.json"));
+        if (!jf.open(QIODevice::ReadOnly)) continue;
+        ++jobs;
+        const QJsonObject job = QJsonDocument::fromJson(jf.readAll()).object();
+        if (job.value("schemaVersion").toInt() != 1) { ++brokenJobs; problems << QStringLiteral("Задание %1: job.json повреждён").arg(dir.fileName()); continue; }
+        for (const QJsonValue &a : job.value("outputs").toArray()) {
+            const QString file = a.toObject().value("file").toString();
+            if (!file.isEmpty() && !QFileInfo::exists(QDir(dir.absoluteFilePath()).filePath(file))) {
+                ++missingResults;
+                warnings << QStringLiteral("Задание %1: нет результата %2").arg(dir.fileName(), file);
+            }
+        }
+    }
+    if (jobs) checked << QStringLiteral("Заданий обработки: %1%2").arg(jobs).arg(brokenJobs || missingResults ? QString() : QStringLiteral(", результаты на месте"));
+    // Map layers.
+    QFile map(root.filePath("map.json"));
+    if (map.open(QIODevice::ReadOnly)) {
+        const QJsonObject state = QJsonDocument::fromJson(map.readAll()).object();
+        int layers = 0, lost = 0;
+        for (const QJsonValue &v : state.value("layers").toArray()) {
+            const QString src = v.toObject().value("source").toString();
+            if (src.isEmpty()) continue;
+            ++layers;
+            const QString path = QDir::isAbsolutePath(src) ? src : root.filePath(src);
+            if (!QFileInfo::exists(path)) {
+                ++lost;
+                warnings << QStringLiteral("Слой карты «%1»: нет файла %2").arg(v.toObject().value("name").toString(), QDir::toNativeSeparators(path));
+            }
+        }
+        checked << QStringLiteral("Карта: слоёв из файлов %1%2").arg(layers).arg(lost ? QStringLiteral(", без файла %1").arg(lost) : QString());
+    }
+    for (const char *name : {"measurements.json", "markers.json"}) {
+        QFile f(root.filePath(QLatin1String(name)));
+        if (!f.exists()) continue;
+        if (!f.open(QIODevice::ReadOnly) || QJsonDocument::fromJson(f.readAll()).isNull()) problems << QStringLiteral("%1 повреждён").arg(QLatin1String(name));
+        else checked << QStringLiteral("%1 читается").arg(QLatin1String(name));
+    }
+    if (QFileInfo(root.filePath("geomap.lock")).exists() && !m_lock)
+        warnings << QStringLiteral("Проект открыт без блокировки (папка только для чтения)");
+    return {{"ok", problems.isEmpty()}, {"checked", checked}, {"problems", problems}, {"warnings", warnings}};
 }

@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPainter>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <cmath>
@@ -614,6 +615,145 @@ private slots:
         QCOMPARE(reopened->crs().epsg(), 3857);
         QCOMPARE(reopened->drawingCount(), 2);
         QVERIFY(!reopened->setMapCrs(QStringLiteral("EPSG:0")).isEmpty());
+    }
+
+    // Editing on the map: the DEM editor and gap filling, markers, several selected drawings,
+    // the clipboard and the grid.
+    void mapEditingTools()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        const QString project = tmp.filePath(QStringLiteral("Правки"));
+        QVERIFY(QDir().mkpath(project));
+        // 40 × 40 m, 1 m cells: ground at 100 m, a 4 × 4 m object of 105 m, a hole inside, no data around.
+        const QString dem = tmp.filePath(QStringLiteral("dem.tif"));
+        const double gt[6] = {576000, 1, 0, 5188040, 0, -1};
+        QVERIFY(makeRaster(dem, 40, 40, 1, GDT_Float32, gt, 32615, [](int, int c, int r) {
+            if (c < 2 || r < 2 || c > 37 || r > 37) return -9999.0;
+            if (c >= 25 && c <= 27 && r >= 25 && r <= 27) return -9999.0;
+            return (c >= 10 && c < 14 && r >= 10 && r < 14) ? 105.0 : 100.0;
+        }, -9999));
+        auto value = [](const QString &path, int c, int r) {
+            float v = qQNaN();
+            GDALDatasetH ds = GDALOpen(QDir::toNativeSeparators(path).toUtf8().constData(), GA_ReadOnly);
+            if (ds) {
+                GDALRasterIO(GDALGetRasterBand(ds, 1), GF_Read, c, r, 1, 1, &v, 1, 1, GDT_Float32, 0, 0);
+                GDALClose(ds);
+            }
+            return double(v);
+        };
+        auto service = std::make_unique<MapService>();
+        service->setViewSize(QSizeF(800, 600));
+        service->setProject(project, nullptr);
+        QCOMPARE(service->addLayerFromPath(dem), QString());
+        QTRY_VERIFY_WITH_TIMEOUT(service->layerIdForSource(dem).size() > 0 && !service->layers().last().loading, 30000);
+        QCOMPARE(service->crs().epsg(), 32615);
+        service->setView(QPointF(576020, 5188020), 0.1);
+        auto click = [&](const QPointF &map, Qt::KeyboardModifiers m = Qt::NoModifier) {
+            const QPointF s = service->toScreen(map);
+            service->pointerPressed(s, Qt::LeftButton, m);
+            service->pointerReleased(s);
+        };
+        // The object outlined with a polygon and selected.
+        service->setTool(QStringLiteral("polygon"));
+        for (const QPointF &p : {QPointF(576009.8, 5188030.2), QPointF(576014.2, 5188030.2), QPointF(576014.2, 5188025.8), QPointF(576009.8, 5188025.8)})
+            click(p);
+        service->finishSketch();
+        QCOMPARE(service->drawingCount(), 1);
+        service->setTool(QStringLiteral("edit"));
+        click(QPointF(576012, 5188028));
+        QVERIFY(service->hasSelection());
+        QVERIFY(service->hasOutline());
+
+        // DEM editor: the object removed in a copy of the model, undo and redo.
+        QSignalSpy finished(service.get(), &MapService::analysisFinished);
+        QCOMPARE(service->editDem(QStringLiteral("interpolate"), 0, 0.5), QString());
+        QVERIFY(finished.wait(30000));
+        QVERIFY2(finished.last().at(0).toBool(), qPrintable(finished.last().at(1).toString()));
+        const QString copy = QDir(project).filePath(QStringLiteral("analysis/dem_правка.tif"));
+        QVERIFY(QFileInfo::exists(copy));
+        QVERIFY2(qAbs(value(copy, 11, 11) - 100) < 0.05, qPrintable(QString::number(value(copy, 11, 11))));
+        QCOMPARE(value(dem, 11, 11), 105.0);   // the user's file is untouched
+        QCOMPARE(value(copy, 30, 30), 100.0);  // outside the outline nothing changed
+        QVERIFY(service->undoText().contains(QStringLiteral("модели высот")));
+        service->undo();
+        QCOMPARE(value(copy, 11, 11), 105.0);
+        service->redo();
+        QVERIFY(qAbs(value(copy, 11, 11) - 100) < 0.05);
+        // A height for the area, in the same copy.
+        QCOMPARE(service->editDem(QStringLiteral("level"), 90, 0), QString());
+        QVERIFY(finished.wait(30000));
+        QCOMPARE(value(copy, 11, 11), 90.0);
+        service->undo();
+        QVERIFY(qAbs(value(copy, 11, 11) - 100) < 0.05);
+        QVERIFY(!service->editDem(QStringLiteral("melt")).isEmpty());
+
+        // Gap filling: the inner hole gets heights, the outside stays without data.
+        QCOMPARE(service->fillDemGaps(QString()), QString());
+        QVERIFY(finished.wait(30000));
+        QVERIFY2(finished.last().at(0).toBool(), qPrintable(finished.last().at(1).toString()));
+        const QString filled = QDir(project).filePath(QStringLiteral("analysis/dem_правка_заполнено.tif"));
+        QVERIFY(QFileInfo::exists(filled));
+        QVERIFY2(qAbs(value(filled, 26, 26) - 100) < 0.5, qPrintable(QString::number(value(filled, 26, 26))));
+        QCOMPARE(value(filled, 0, 0), -9999.0);
+        QCOMPARE(value(filled, 39, 20), -9999.0);
+
+        // A marker takes the height of the model under it.
+        const QString marker = service->addMarker(QPointF(576020.5, 5188019.5), QStringLiteral("Репер"));
+        QVERIFY(!marker.isEmpty());
+        QVERIFY(qAbs(service->projectMarkers().first().z - 100) < 0.01);
+        QCOMPARE(service->markersForQml().first().toMap().value("name").toString(), QStringLiteral("Репер"));
+
+        // Several selected drawings, the clipboard, one undo step for many.
+        service->setTool(QStringLiteral("point"));
+        const QVector<QPointF> points{QPointF(576005, 5188005), QPointF(576006, 5188005), QPointF(576007, 5188005)};
+        for (const QPointF &p : points) click(p);
+        QCOMPARE(service->drawingCount(), 4);
+        service->selectAllDrawings();
+        QCOMPARE(service->selectionCount(), 4);
+        service->invertDrawingSelection();
+        QCOMPARE(service->selectionCount(), 0);
+        service->setTool(QStringLiteral("edit"));
+        click(points[0], Qt::ControlModifier);
+        click(points[1], Qt::ControlModifier);
+        QCOMPARE(service->selectionCount(), 2);
+        click(points[1], Qt::ControlModifier);   // once more: out of the selection
+        QCOMPARE(service->selectionCount(), 1);
+        click(points[1], Qt::ControlModifier);
+        const QString json = service->selectionGeoJson();
+        QVERIFY(json.contains(QStringLiteral("\"FeatureCollection\"")));
+        QCOMPARE(json.count(QStringLiteral("\"Point\"")), 2);
+        QVERIFY(json.contains(QStringLiteral("-92.")));   // WGS 84 longitude, not UTM metres
+        QCOMPARE(service->pasteGeoJson(json.toUtf8()), QString());
+        QCOMPARE(service->drawingCount(), 6);
+        service->undo();
+        QCOMPARE(service->drawingCount(), 4);
+        QVERIFY(!service->pasteGeoJson("not a GeoJSON").isEmpty());
+        service->deleteSelected();
+        QCOMPARE(service->drawingCount(), 2);
+        service->undo();
+        QCOMPARE(service->drawingCount(), 4);
+
+        // The grid and the markers stay with the project.
+        service->setShowGrid(true);
+        QImage frame(400, 300, QImage::Format_ARGB32_Premultiplied);
+        frame.fill(Qt::black);
+        {
+            QPainter p(&frame);
+            service->paint(&p, frame.size(), true);
+        }
+        service->setProject(QString(), nullptr);
+        auto reopened = std::make_unique<MapService>();
+        reopened->setViewSize(QSizeF(800, 600));
+        reopened->setProject(project, nullptr);
+        QVERIFY(reopened->showGrid());
+        QCOMPARE(reopened->projectMarkers().size(), 1);
+        QCOMPARE(reopened->projectMarkers().first().name, QStringLiteral("Репер"));
+        const QString csv = tmp.filePath(QStringLiteral("markers.csv"));
+        QCOMPARE(reopened->exportMarkers(QUrl::fromLocalFile(csv)), QString());
+        QFile f(csv);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QVERIFY(QString::fromUtf8(f.readAll()).contains(QStringLiteral("Репер")));
     }
 };
 

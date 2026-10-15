@@ -83,7 +83,7 @@ private slots:
             QVERIFY2(conflict.contains(QStringLiteral("Сохранить")), qPrintable(conflict));
             QCOMPARE(r.shortcut(QStringLiteral("file.open")), QStringLiteral("Ctrl+O"));
             QVERIFY(!r.setShortcut(QStringLiteral("file.open"), QStringLiteral("Ctrl+Нечто")).isEmpty());
-            QVERIFY(!r.setShortcut(QStringLiteral("view.grid"), QStringLiteral("F9")).isEmpty());   // planned
+            QVERIFY(!r.setShortcut(QStringLiteral("proc.tiled"), QStringLiteral("F9")).isEmpty());   // planned
             // Removing a shortcut.
             QCOMPARE(r.setShortcut(QStringLiteral("tool.pan"), QString()), QString());
             QCOMPARE(r.shortcut(QStringLiteral("tool.pan")), QString());

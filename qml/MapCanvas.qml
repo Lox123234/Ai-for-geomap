@@ -15,12 +15,13 @@ Item {
                                          "point": "Точка", "line": "Линия", "polygon": "Полигон", "edit": "Правка / выбор",
                                          "profile": "Профиль высот", "volume": "Объём", "crossProfile": "Поперечные профили",
                                          "slope": "Уклон", "height": "Высота точки", "angle": "Угол", "viewshed": "Видимость",
-                                         "aiSelect": "ИИ-выделение" })
+                                         "aiSelect": "ИИ-выделение", "marker": "Маркер" })
     readonly property var toolHints: ({
         "slope": "Щелчок — первая точка, второй щелчок — уклон между ними · Esc — отмена",
         "angle": "Три щелчка: первая точка, вершина угла, вторая точка · Esc — отмена",
         "height": "Щелчок — высота точки по моделям высот на карте",
         "viewshed": "Щелчок — точка наблюдения (настройки справа)",
+        "marker": "Щелчок — маркер: координаты и высота модели под ним (список — Проект → Управление маркерами)",
         "aiSelect": "Щелчок — объект · Shift+щелчок — добавить часть · Ctrl+щелчок — исключить · Enter — на карту · Esc — сброс" })
     function number(text) { var v = Number(String(text).replace(",", ".").replace(/\s/g, "")); return v }
     readonly property bool profileShown: gis.profile.valid === true && !profileClosed
@@ -110,7 +111,7 @@ Item {
             }
             Label {
                 id: toolHint
-                visible: ["length", "area", "line", "polygon", "profile", "volume", "crossProfile", "slope", "angle", "height", "viewshed", "aiSelect"].indexOf(gis.tool) >= 0
+                visible: ["length", "area", "line", "polygon", "profile", "volume", "crossProfile", "slope", "angle", "height", "viewshed", "aiSelect", "marker"].indexOf(gis.tool) >= 0
                 // Centred, below the measurement box when both would overlap.
                 anchors.horizontalCenter: parent.horizontalCenter; anchors.top: parent.top
                 anchors.topMargin: measureBox.visible && measureBox.width + 24 > (parent.width - width) / 2 ? measureBox.height + 20 : 12
@@ -402,6 +403,66 @@ Item {
                 wrapMode: Text.Wrap
                 text: "Система координат карты ещё не выбрана.\nДобавьте снимки с GPS или слой с известной CRS (Файл → Импорт геоданных), либо задайте её: Проект → Система координат карты."
                 color: Theme.muted; font.pixelSize: 13
+            }
+            // On-screen legend of the visible layers (Вид → Показать легенду).
+            Rectangle {
+                id: legendBox
+                objectName: "mapLegend"
+                visible: canvas.host && canvas.host.legendShown && gis.crsDefined
+                anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 12
+                anchors.bottomMargin: canvas.profileShown ? profilePanel.height + 24 : 12
+                width: 240
+                height: Math.min(legendColumn.implicitHeight + 16, parent.height * 0.6)
+                radius: 6
+                color: "#E61A1F27"; border.color: Theme.line
+                clip: true
+                ColumnLayout {
+                    id: legendColumn
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 8
+                    spacing: 5
+                    Label { text: "ЛЕГЕНДА"; color: Theme.muted; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.2 }
+                    Repeater {
+                        model: gis.layerModel
+                        delegate: ColumnLayout {
+                            id: entry
+                            required property var model
+                            readonly property var stops: model.legend || []
+                            readonly property bool ramp: stops.length > 0
+                            visible: model.layerVisible === true
+                            Layout.fillWidth: true
+                            spacing: 2
+                            RowLayout {
+                                spacing: 6
+                                Rectangle {
+                                    implicitWidth: 14; implicitHeight: 10; radius: entry.model.layerType === "photos" ? 5 : 2
+                                    visible: !entry.ramp
+                                    color: entry.model.layerType === "raster" ? "#6E8C6E" : entry.model.layerColor
+                                }
+                                Label { Layout.fillWidth: true; text: entry.model.name; color: Theme.text; font.pixelSize: 11; elide: Text.ElideRight }
+                            }
+                            Canvas {
+                                visible: entry.ramp
+                                Layout.fillWidth: true; implicitHeight: 8
+                                onWidthChanged: requestPaint()
+                                onPaint: {
+                                    var ctx = getContext("2d")
+                                    ctx.reset()
+                                    var g = ctx.createLinearGradient(0, 0, width, 0)
+                                    for (var i = 0; i < entry.stops.length; ++i) g.addColorStop(entry.stops[i].position, entry.stops[i].color)
+                                    ctx.fillStyle = g
+                                    ctx.fillRect(0, 0, width, height)
+                                }
+                            }
+                            RowLayout {
+                                visible: entry.ramp && entry.model.rasterStyle !== undefined
+                                Layout.fillWidth: true
+                                Label { text: entry.model.rasterStyle ? Number(entry.model.rasterStyle.min).toLocaleString(Qt.locale("ru_RU"), 'f', 2) : ""; color: Theme.faint; font.pixelSize: 9 }
+                                Item { Layout.fillWidth: true }
+                                Label { text: entry.model.rasterStyle ? Number(entry.model.rasterStyle.max).toLocaleString(Qt.locale("ru_RU"), 'f', 2) : ""; color: Theme.faint; font.pixelSize: 9 }
+                            }
+                        }
+                    }
+                }
             }
             // Scale bar: ground distance measured geodesically at the centre of the view.
             Item {

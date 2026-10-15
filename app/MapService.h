@@ -131,6 +131,11 @@ class MapService final : public QObject
     Q_PROPERTY(double viewObserverHeight READ viewObserverHeight WRITE setViewObserverHeight NOTIFY viewshedSettingsChanged)
     Q_PROPERTY(double viewTargetHeight READ viewTargetHeight WRITE setViewTargetHeight NOTIFY viewshedSettingsChanged)
     Q_PROPERTY(double viewRadius READ viewRadius WRITE setViewRadius NOTIFY viewshedSettingsChanged)
+    // Coordinate grid over the map (persisted in map.json); markers of the project (markers.json).
+    Q_PROPERTY(bool showGrid READ showGrid WRITE setShowGrid NOTIFY viewOptionsChanged)
+    Q_PROPERTY(bool showMarkers READ showMarkers WRITE setShowMarkers NOTIFY viewOptionsChanged)
+    Q_PROPERTY(QVariantList markers READ markersForQml NOTIFY markersChanged)
+    Q_PROPERTY(int selectionCount READ selectionCount NOTIFY drawingsChanged)
 
 public:
     explicit MapService(QObject *parent = nullptr);
@@ -167,7 +172,7 @@ public:
     QString undoText() const { return m_undo.undoText(); }
     QString redoText() const { return m_undo.redoText(); }
     int drawingCount() const;
-    bool hasSelection() const { return m_selectedFeature >= 0; }
+    bool hasSelection() const { return m_selectedFeature >= 0 || !m_multiSelection.isEmpty(); }
     bool exporting() const { return m_exporting; }
     QString gisVersion() const;
     QStringList problems() const;
@@ -317,6 +322,55 @@ public:
     void setViewTargetHeight(double metres);
     double viewRadius() const { return m_viewRadius; }
     void setViewRadius(double metres);
+
+    // Several drawings selected at once (MapServiceEdit.cpp): Ctrl+click in the edit tool adds or
+    // removes one; delete, copy and the measurement work on all of them.
+    int selectionCount() const;
+    Q_INVOKABLE void selectAllDrawings();
+    Q_INVOKABLE void invertDrawingSelection();
+    // Selected drawings as a GeoJSON FeatureCollection (WGS 84, RFC 7946) in the system clipboard;
+    // paste adds the features of GeoJSON in the clipboard (any CRS GDAL reads) to the drawings.
+    // "" or the reason.
+    Q_INVOKABLE QString copySelection();
+    Q_INVOKABLE QString pasteDrawings();
+    QString selectionGeoJson() const;
+    QString pasteGeoJson(const QByteArray &geojson);   // one undo step; "" or the reason
+    bool showGrid() const { return m_showGrid; }
+    void setShowGrid(bool on);
+    bool showMarkers() const { return m_showMarkers; }
+    void setShowMarkers(bool on);
+
+    // Markers: named points of the project with their WGS 84 position and the height of the
+    // elevation model under them when they were placed (tool "marker").
+    struct Marker
+    {
+        QString id, name, note;
+        double lon = 0, lat = 0, z = std::numeric_limits<double>::quiet_NaN();
+        QString heightSource;   // elevation layer the height came from
+        QDateTime created;
+    };
+    const QVector<Marker> &projectMarkers() const { return m_markers; }
+    QVariantList markersForQml() const;
+    Q_INVOKABLE QString addMarker(const QPointF &mapPoint, const QString &name = {});   // new id, or ""
+    Q_INVOKABLE void removeMarker(const QString &id);
+    Q_INVOKABLE void renameMarker(const QString &id, const QString &name);
+    Q_INVOKABLE void setMarkerNote(const QString &id, const QString &note);
+    Q_INVOKABLE void zoomToMarker(const QString &id);
+    Q_INVOKABLE QString exportMarkers(const QUrl &url);   // CSV: name, lon, lat, x, y (map CRS), z, note
+
+    // DEM editor (MapServiceTerrainEdit.cpp), inside the AI candidate or the selected drawn polygon
+    // grown by `growMeters`, on the elevation model of the terrain tools: "interpolate" (remove an
+    // object: heights from its surroundings), "plane" (best-fit plane through the boundary),
+    // "level" (the height `level`), "smooth". In the program's copy <project>/analysis/<name>_правка.tif,
+    // which replaces the model on the map; undoable. "" when started, else the reason.
+    Q_INVOKABLE QString editDem(const QString &operation, double level = 0, double growMeters = 0.5);
+    // A new copy of the model with the holes inside it (not its outer edge) filled from around them.
+    Q_INVOKABLE QString fillDemGaps(const QString &layerId);
+    // Point clouds (LAS): "deleteInside", "keepInside", "classifyInside" (class `classCode`) with the
+    // outline as above, or "classify" (every point by its height above `dtmPath` and its colour).
+    // The result is a new LAS in <project>/analysis; cloudEditFinished tells where. "" or the reason.
+    Q_INVOKABLE QString editPointCloud(const QString &lasPath, const QString &operation, int classCode = 7, const QString &dtmPath = {});
+    Q_INVOKABLE bool hasOutline() const;   // an AI candidate or a selected drawn polygon
     bool aiBusy() const { return m_aiBusy; }
     QString aiStatus() const { return m_aiStatus; }
     bool hasAiCandidate() const { return !m_aiCandidate.isEmpty(); }
@@ -355,6 +409,9 @@ signals:
     void aiFinished(bool ok, const QString &message);   // an AI selection finished (for tests and the UI)
     void crossChanged();
     void viewshedSettingsChanged();
+    void viewOptionsChanged();
+    void markersChanged();
+    void cloudEditFinished(bool ok, const QString &message, const QString &path);
     void repaint();
     void errorOccurred(const QString &message);
 
@@ -479,4 +536,19 @@ private:
     double m_crossSpacing = 10, m_crossHalfWidth = 15;
     double m_viewObserver = 1.7, m_viewTarget = 0, m_viewRadius = 300;
     QVariantMap m_pointValues;                // numbers of the last slope / height / angle (saved with it)
+    // Selection, clipboard, grid and markers (MapServiceEdit.cpp).
+    void paintGrid(QPainter *painter, const QSizeF &size) const;
+    void paintMarkers(QPainter *painter) const;
+    void loadMarkers();
+    void saveMarkers() const;
+    QVector<int> selectedIndices() const;      // the primary selection first
+    void addDrawing(const VectorFeature &feature, const QString &undoText);   // undoable
+    QVector<QPolygonF> outlineRings() const;   // AI candidate, else the selected polygon; map CRS
+    // Puts an edited copy of layer `index` on the map in its place (the original hidden).
+    void showEditedCopy(int index, const QString &copy, const QString &suffix);
+    QSet<qint64> m_multiSelection;             // ids of further selected drawings
+    bool m_showGrid = false;
+    bool m_showMarkers = true;
+    QVector<Marker> m_markers;
+    int m_nextMarker = 1;
 };

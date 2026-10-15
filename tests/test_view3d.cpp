@@ -11,7 +11,9 @@
 #include <gdal.h>
 #include <ogr_srs_api.h>
 #include "Camera3D.h"
+#include "Crs.h"
 #include "GisEnvironment.h"
+#include "LasEdit.h"
 #include "Scene3D.h"
 #include "Scene3DService.h"
 
@@ -297,6 +299,74 @@ private slots:
         const QString otherInfo = other.layersForQml().first().toMap().value("info").toString();
         QVERIFY2(otherInfo.contains(QStringLiteral("odm_georeferenced_model.las")), qPrintable(otherInfo));
         QVERIFY(otherInfo.contains(QStringLiteral("Классы")));
+    }
+
+    // Editing of a LAS cloud: 20 × 20 m of ground at 100 m, a green "tree" 5 m high, a grey
+    // "building" 6 m high and one point under the ground; EPSG:32615 in the file.
+    void lasEditAndClassification()
+    {
+        QVector<QVector3D> pts;
+        QVector<QColor> colors;
+        for (int y = 0; y < 20; ++y)
+            for (int x = 0; x < 20; ++x) {
+                const bool tree = x >= 2 && x <= 6 && y >= 2 && y <= 6, building = x >= 12 && x <= 15 && y >= 12 && y <= 15;
+                pts << QVector3D(x + 0.5f, y + 0.5f, tree ? 105.0f : building ? 106.0f : 100.0f);
+                colors << (tree ? QColor(40, 150, 40) : QColor(130, 130, 130));
+            }
+        pts << QVector3D(10.5f, 10.5f, 97.0f);   // noise below the ground
+        colors << QColor(128, 128, 128);
+        const QByteArray wkt = Crs::fromEpsg(32615).wkt().toUtf8();
+        const QString path = m_dir.filePath(QStringLiteral("edit.las"));
+        QVERIFY(writeFile(path, las12(pts, colors, 576000, 5188000, 0.001, wkt)));
+        QCOMPARE(las::fileCrs(path).epsg(), 32615);
+
+        const QPolygonF building({QPointF(576011.8, 5188011.8), QPointF(576016.2, 5188011.8), QPointF(576016.2, 5188016.2), QPointF(576011.8, 5188016.2)});
+        const QString deleted = m_dir.filePath(QStringLiteral("out/deleted.las"));
+        las::Result r = las::edit(path, deleted, las::Operation::DeleteInside, {building}, Crs::fromEpsg(32615));
+        QVERIFY2(r.ok(), qPrintable(r.error));
+        QCOMPARE(r.total, 401);
+        QCOMPARE(r.changed, 16);
+        QCOMPARE(r.written, 385);
+        PointCloud c = readPointCloud(deleted, 0);
+        QVERIFY2(c.isValid(), qPrintable(c.error));
+        QCOMPARE(c.totalPoints, quint64(385));
+        QCOMPARE(las::fileCrs(deleted).epsg(), 32615);   // the CRS record is kept
+        // The building is gone from the header bounds too: the highest point is now the tree.
+        QFile f(deleted);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        const QByteArray header = f.read(227);
+        QCOMPARE(qFromLittleEndian<double>(header.constData() + 211), 105.0);
+        QCOMPARE(qFromLittleEndian<double>(header.constData() + 219), 97.0);
+        QCOMPARE(qFromLittleEndian<quint32>(header.constData() + 107), 385u);
+
+        // Keep inside (the same polygon given in WGS 84), classify inside.
+        QVector<QPointF> geo(building.begin(), building.end());
+        QVERIFY(CoordinateTransform(Crs::fromEpsg(32615), Crs::wgs84()).transform(geo));
+        r = las::edit(path, m_dir.filePath(QStringLiteral("out/kept.las")), las::Operation::KeepInside, {QPolygonF(geo)}, Crs::wgs84());
+        QVERIFY2(r.ok(), qPrintable(r.error));
+        QCOMPARE(r.written, 16);
+        r = las::edit(path, m_dir.filePath(QStringLiteral("out/classified-inside.las")), las::Operation::ClassifyInside, {building},
+                      Crs::fromEpsg(32615), 6);
+        QCOMPARE(r.changed, 16);
+        QCOMPARE(r.classes.value(6), 16);
+        QCOMPARE(r.written, 401);
+
+        // Classification by the height above a flat DTM and the colour.
+        const QString dtm = m_dir.filePath(QStringLiteral("flat-dtm.tif"));
+        const double gt[6] = {576000, 1, 0, 5188020, 0, -1};
+        QVERIFY(makeRaster(dtm, 20, 20, 1, GDT_Float32, gt, 32615, [](int, int, int) { return 100.0; }));
+        r = las::classify(path, m_dir.filePath(QStringLiteral("out/classes.las")), dtm);
+        QVERIFY2(r.ok(), qPrintable(r.error));
+        QCOMPARE(r.classes.value(2), 359);   // ground
+        QCOMPARE(r.classes.value(5), 25);    // high vegetation (the tree)
+        QCOMPARE(r.classes.value(6), 16);    // building
+        QCOMPARE(r.classes.value(7), 1);     // noise
+        c = readPointCloud(r.path, 0);
+        QCOMPARE(c.classes.size(), 401);
+        // Refusals: compressed LAZ, no outline.
+        QVERIFY(!las::edit(m_dir.filePath(QStringLiteral("x.laz")), m_dir.filePath(QStringLiteral("out/x.las")), las::Operation::DeleteInside,
+                           {building}, Crs::fromEpsg(32615)).ok());
+        QVERIFY(!las::edit(path, m_dir.filePath(QStringLiteral("out/y.las")), las::Operation::DeleteInside, {}, Crs::fromEpsg(32615)).ok());
     }
 
     void objWithMaterialsAndTexture()

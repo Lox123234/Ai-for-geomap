@@ -33,6 +33,8 @@ class ProjectManager final : public QObject
     Q_PROPERTY(QString importCurrentFile READ importCurrentFile NOTIFY importProgressChanged)
     Q_PROPERTY(bool importCancelling READ importCancelling NOTIFY importProgressChanged)
     Q_PROPERTY(QStringList importIssues READ importIssues NOTIFY importIssuesChanged)
+    Q_PROPERTY(QString description READ description WRITE setDescription NOTIFY projectChanged)
+    Q_PROPERTY(QString createdAt READ createdAt NOTIFY projectChanged)
 public:
     explicit ProjectManager(QObject *parent = nullptr);
     ~ProjectManager() override;
@@ -74,6 +76,19 @@ public:
     Q_INVOKABLE void revealProject() const;
     Q_INVOKABLE QString displayPath(const QUrl &url) const;
 
+    QString description() const { return m_description; }
+    void setDescription(const QString &text);
+    QString createdAt() const { return m_createdAt; }
+    // The name shown for the project (the folder keeps its name). "" or the reason.
+    Q_INVOKABLE QString renameProject(const QString &name);
+    // Size of what saveProjectAs copies (everything but the lock and the cache), bytes.
+    Q_INVOKABLE qint64 projectSize() const;
+    // Copies the open project into <parentDirectory>/<name> in the background (not the lock and
+    // the cache) and opens the copy; the original stays as it was. "" when started, else the reason.
+    Q_INVOKABLE QString saveProjectAs(const QUrl &parentDirectory, const QString &name);
+    // Read-only integrity check: {ok, checked[], problems[], warnings[]}.
+    Q_INVOKABLE QVariantMap checkProject() const;
+
 signals:
     // Emitted before the photo model resets, so image providers resolve the new
     // project when the delegates of the new model request their thumbnails.
@@ -88,6 +103,7 @@ signals:
     void importProgressChanged();
     void importIssuesChanged();
     void importFinished();
+    void saveAsFinished(bool ok, const QString &message);
 
 private:
     void updateStatus(const QString &status);
@@ -106,6 +122,7 @@ private:
     QString m_projectPath;
     QString m_projectName;
     QString m_createdAt;
+    QString m_description;
     QStringList m_recentProjects;
     QString m_status = QStringLiteral("Готов к работе");
     int m_selectedIndex = -1;

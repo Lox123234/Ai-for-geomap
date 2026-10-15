@@ -24,6 +24,8 @@ public:
     Q_INVOKABLE QString docPath(const QString &name) const;    // e.g. "DEPENDENCIES.md", "" if missing
     Q_INVOKABLE bool openPath(const QString &path) const;      // file or folder in the system's program
     Q_INVOKABLE bool openLogDirectory() const;                 // creates it first
+    Q_INVOKABLE bool fileExists(const QString &path) const;    // a file (not a folder) at the path
+    Q_INVOKABLE QString siblingLas(const QString &path) const; // the .las next to a .laz (or the path), "" if none
 
 private:
     QString m_logDirectory;

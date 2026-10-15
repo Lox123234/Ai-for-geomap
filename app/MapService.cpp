@@ -28,6 +28,7 @@
 #include <QUndoCommand>
 #include <QUuid>
 #include <cmath>
+#include <functional>
 #include <gdal.h>
 
 namespace {
@@ -82,6 +83,7 @@ struct Frame
     QSizeF size;
     int selectedPhoto = -1;
     int selectedFeature = -1;
+    QSet<qint64> selectedIds;   // further selected drawings (outlined, without vertex handles)
     QPointF toScreen(const QPointF &m) const
     {
         return QPointF((m.x() - center.x()) / resolution + size.width() / 2.0,
@@ -122,7 +124,9 @@ void paintVector(QPainter &p, const Frame &f, const VectorData &data, const QCol
         const VectorFeature &feature = data.features[i];
         if (feature.kind != VectorFeature::Point && feature.bounds.isValid() && !feature.bounds.intersects(view)) continue;
         const bool isSelected = handlesFor && i == selected;
-        QPen pen(isSelected ? QColor(255, 255, 255) : color, isSelected ? 3 : 2);
+        const bool alsoSelected = handlesFor && !isSelected && f.selectedIds.contains(feature.id);
+        QPen pen(isSelected || alsoSelected ? QColor(255, 255, 255) : color, isSelected || alsoSelected ? 3 : 2);
+        if (alsoSelected) pen.setStyle(Qt::DashLine);
         pen.setCosmetic(true);
         p.setPen(pen);
         if (feature.kind == VectorFeature::Point) {
@@ -274,6 +278,17 @@ private:
     {
         VectorData *d = m_service->drawings();
         if (!d) return;
+        // The selected drawing is followed by its id: insertions and removals shift positions.
+        const int selected = m_service->m_selectedFeature;
+        const qint64 selectedId = selected >= 0 && selected < d->features.size() ? d->features[selected].id : -1;
+        applyChange(d, forward);
+        m_service->m_selectedFeature = -1;
+        for (int i = 0; i < d->features.size() && selectedId >= 0; ++i)
+            if (d->features[i].id == selectedId) m_service->m_selectedFeature = i;
+        m_service->applyDrawingChange();
+    }
+    void applyChange(VectorData *d, bool forward)
+    {
         if (m_kind == MoveVertex) {
             for (VectorFeature &f : d->features) {
                 if (f.id != featureId || part >= f.parts.size() || vertex >= f.parts[part].size()) continue;
@@ -289,9 +304,7 @@ private:
                 d->features.removeAt(i);
                 break;
             }
-            m_service->m_selectedFeature = -1;
         }
-        m_service->applyDrawingChange();
     }
     MapService *m_service;
     Kind m_kind;
@@ -510,6 +523,10 @@ void MapService::setProject(const QString &directory, const PhotoModel *photos)
     m_pointValues.clear();
     m_measurements.clear();
     m_shownMeasurement.clear();
+    m_multiSelection.clear();
+    m_markers.clear();
+    m_showGrid = false;
+    m_showMarkers = true;
     ++m_aiGeneration;
     m_aiCandidate.clear();
     m_aiPoints.clear();
@@ -522,10 +539,13 @@ void MapService::setProject(const QString &directory, const PhotoModel *photos)
     if (!m_project.isEmpty()) {
         loadState();
         loadMeasurements();
+        loadMarkers();
     }
     emit profileChanged();
     emit measurementsChanged();
     emit aiChanged();
+    emit markersChanged();
+    emit viewOptionsChanged();
     m_model->reset();
     updateScale();
     emit projectChanged();
@@ -551,6 +571,8 @@ void MapService::loadState()
         m_center = QPointF(view.value("x").toDouble(), view.value("y").toDouble());
         m_resolution = view.value("resolution").toDouble(1.0);
         if (m_resolution <= 0) m_resolution = 1.0;
+        m_showGrid = state.value("grid").toBool(false);
+        m_showMarkers = state.value("markers").toBool(true);
         for (const QJsonValue &v : state.value("layers").toArray()) {
             const QJsonObject o = v.toObject();
             MapLayer l;
@@ -624,7 +646,7 @@ void MapService::saveState() const
     const QJsonObject state{{"schemaVersion", 1}, {"crs", m_crs.isValid() ? m_crs.wkt() : QString()},
                             {"crsEpsg", m_crs.epsg()}, {"crsNote", m_crsNote},
                             {"view", QJsonObject{{"x", m_center.x()}, {"y", m_center.y()}, {"resolution", m_resolution}}},
-                            {"layers", layers}};
+                            {"layers", layers}, {"grid", m_showGrid}, {"markers", m_showMarkers}};
     QSaveFile file(QDir(m_project).filePath(StateFile));
     if (file.open(QIODevice::WriteOnly)) {
         file.write(QJsonDocument(state).toJson(QJsonDocument::Indented));
@@ -1305,6 +1327,7 @@ void MapService::paint(QPainter *painter, const QSizeF &size, bool interactive)
     f.size = size;
     f.selectedPhoto = m_selectedPhoto;
     f.selectedFeature = m_selectedFeature;
+    f.selectedIds = m_multiSelection;
     QSet<TileKey> wanted;
     MissingTiles missing;
     paintFrame(*painter, f, m_tiles, &wanted, &missing);
@@ -1318,6 +1341,8 @@ void MapService::paint(QPainter *painter, const QSizeF &size, bool interactive)
                                          "или снимки с GPS — карта примет их систему координат."));
         return;
     }
+    if (m_showGrid) paintGrid(painter, size);
+    paintMarkers(painter);
     // Sketch of the measuring/drawing tool.
     if (!m_sketch.isEmpty()) {
         QVector<QPointF> pts = m_sketch;
@@ -1463,8 +1488,32 @@ void MapService::pointerPressed(const QPointF &screen, Qt::MouseButton button, Q
             }
         }
         const int hit = hitFeature(screen);
-        if (hit != m_selectedFeature) {
+        const VectorData *d = drawings();
+        if (modifiers.testFlag(Qt::ControlModifier) && d && hit >= 0) {
+            // Ctrl+click: one more drawing in the selection, or one less.
+            const qint64 id = d->features[hit].id;
+            if (hit == m_selectedFeature) {
+                m_selectedFeature = -1;
+                if (!m_multiSelection.isEmpty()) {   // another selected one becomes the primary
+                    const qint64 next = *m_multiSelection.cbegin();
+                    m_multiSelection.remove(next);
+                    for (int i = 0; i < d->features.size(); ++i) if (d->features[i].id == next) m_selectedFeature = i;
+                }
+            } else if (m_multiSelection.contains(id)) {
+                m_multiSelection.remove(id);
+            } else if (m_selectedFeature < 0) {
+                m_selectedFeature = hit;
+            } else {
+                m_multiSelection.insert(id);
+            }
+            updateMeasurement();
+            emit drawingsChanged();
+            emit repaint();
+            return;
+        }
+        if (hit != m_selectedFeature || !m_multiSelection.isEmpty()) {
             m_selectedFeature = hit;
+            m_multiSelection.clear();
             updateMeasurement();
             emit drawingsChanged();
             emit repaint();
@@ -1562,6 +1611,8 @@ void MapService::pointerReleased(const QPointF &screen)
             m_aiStatus = error;
             emit aiChanged();
         }
+    } else if (m_tool == QLatin1String("marker")) {
+        addMarker(map);
     } else if (m_tool == QLatin1String("point")) {
         VectorFeature f;
         f.kind = VectorFeature::Point;
@@ -1628,8 +1679,9 @@ bool MapService::keyPressed(int key)
         m_sketchDone = false;
         m_terrainText.clear();
         m_terrainDetails.clear();
-        if (m_selectedFeature >= 0) {
+        if (hasSelection()) {
             m_selectedFeature = -1;
+            m_multiSelection.clear();
             emit drawingsChanged();
         }
         updateMeasurement();
@@ -1646,7 +1698,7 @@ bool MapService::keyPressed(int key)
         finishSketch();
         return true;
     }
-    if (key == Qt::Key_Delete && m_selectedFeature >= 0) {
+    if (key == Qt::Key_Delete && hasSelection()) {
         deleteSelected();
         return true;
     }
@@ -1670,8 +1722,9 @@ void MapService::setTool(const QString &tool)
         emit crossChanged();
     }
     if (!m_aiCandidate.isEmpty() || m_aiBusy || !m_aiStatus.isEmpty()) clearAiCandidate();
-    if (tool != QLatin1String("edit") && m_selectedFeature >= 0) {
+    if (tool != QLatin1String("edit") && hasSelection()) {
         m_selectedFeature = -1;
+        m_multiSelection.clear();
         emit drawingsChanged();
     }
     updateMeasurement();
@@ -1679,20 +1732,37 @@ void MapService::setTool(const QString &tool)
     emit repaint();
 }
 
+void MapService::addDrawing(const VectorFeature &feature, const QString &undoText)
+{
+    auto *cmd = new DrawingCommand(this, DrawingCommand::Add, undoText);
+    cmd->feature = feature;
+    m_undo.push(cmd);
+}
+
 void MapService::deleteSelected()
 {
     VectorData *d = drawings();
-    if (!d || m_selectedFeature < 0 || m_selectedFeature >= d->features.size()) return;
-    auto *cmd = new DrawingCommand(this, DrawingCommand::Remove, QStringLiteral("Удаление объекта"));
-    cmd->feature = d->features[m_selectedFeature];
-    cmd->index = m_selectedFeature;
-    m_undo.push(cmd);
+    QVector<int> indices = selectedIndices();
+    if (!d || indices.isEmpty()) return;
+    // Highest index first, so the positions of the others stay valid; one undo step.
+    std::sort(indices.begin(), indices.end(), std::greater<int>());
+    if (indices.size() > 1) m_undo.beginMacro(QStringLiteral("Удаление объектов: %1").arg(indices.size()));
+    const QVector<VectorFeature> features = d->features;
+    m_multiSelection.clear();
+    for (int i : std::as_const(indices)) {
+        auto *cmd = new DrawingCommand(this, DrawingCommand::Remove, QStringLiteral("Удаление объекта"));
+        cmd->feature = features[i];
+        cmd->index = i;
+        m_undo.push(cmd);
+    }
+    if (indices.size() > 1) m_undo.endMacro();
 }
 
 void MapService::clearSelection()
 {
-    if (m_selectedFeature < 0) return;
+    if (!hasSelection()) return;
     m_selectedFeature = -1;
+    m_multiSelection.clear();
     emit drawingsChanged();
     emit repaint();
 }
@@ -1739,6 +1809,12 @@ void MapService::applyDrawingChange()
         m_model->layerChanged(i);
     }
     if (m_selectedFeature >= drawingCount()) m_selectedFeature = -1;
+    if (!m_multiSelection.isEmpty()) {   // drop the ids of drawings that are gone
+        QSet<qint64> present;
+        if (const VectorData *d = drawings())
+            for (const VectorFeature &f : d->features) if (m_multiSelection.contains(f.id)) present.insert(f.id);
+        m_multiSelection = present;
+    }
     updateMeasurement();
     scheduleSave();
     emit drawingsChanged();

@@ -4,7 +4,7 @@ if(CMAKE_HOST_WIN32 AND NOT DEFINED VCPKG_TARGET_TRIPLET)
     set(VCPKG_TARGET_TRIPLET x64-windows-geomap CACHE STRING "vcpkg triplet")
     set(VCPKG_HOST_TRIPLET x64-windows-geomap CACHE STRING "vcpkg host triplet")
 endif()
-project(GeoMapAI VERSION 0.5.0 LANGUAGES CXX)
+project(GeoMapAI VERSION 0.5.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -75,6 +75,8 @@ qt_add_library(GeoMapCore STATIC
     app/MapService.h
     app/MapService.cpp
     app/MapServiceAnalysis.cpp
+    app/MapServiceEdit.cpp
+    app/MapServiceTerrainEdit.cpp
     src/ui/commands/CommandRegistry.h
     src/ui/commands/CommandRegistry.cpp
     src/ui/workspace/WorkspaceState.h
@@ -93,6 +95,8 @@ qt_add_library(GeoMapCore STATIC
     src/view3d/Camera3D.cpp
     src/view3d/Scene3DService.h
     src/view3d/Scene3DService.cpp
+    src/view3d/LasEdit.h
+    src/view3d/LasEdit.cpp
     src/ai/ModelCard.h
     src/ai/ModelCard.cpp
     src/ai/SamSegmenter.h
@@ -170,7 +174,8 @@ set(GEOMAP_QML_FILES
     qml/CommandMenuItem.qml qml/MainToolBar.qml qml/ProjectTreePanel.qml qml/PhotoListPanel.qml
     qml/PhotoInspector.qml qml/BottomPanel.qml qml/MapController.qml qml/MapLayersPanel.qml
     qml/MapLayerProperties.qml qml/MapCanvas.qml qml/ShortcutsDialog.qml qml/View3DWorkspace.qml qml/View3DPanel.qml qml/TerrainDialog.qml qml/MeasurementsPanel.qml qml/ExportDialog.qml
-    qml/RasterCalcDialog.qml qml/AiModelsDialog.qml)
+    qml/RasterCalcDialog.qml qml/AiModelsDialog.qml qml/MarkersDialog.qml qml/DemEditorDialog.qml qml/CloudEditorDialog.qml
+    qml/ProjectSettingsDialog.qml qml/SaveAsDialog.qml qml/ProjectCheckDialog.qml)
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 foreach(file IN LISTS GEOMAP_QML_FILES)
     get_filename_component(name ${file} NAME)
