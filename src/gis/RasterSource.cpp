@@ -152,7 +152,7 @@ RasterStyle RasterStyle::automatic(const RasterInfo &info, const QVector<QPair<d
 QVariantMap RasterStyle::toVariant() const
 {
     return {{"mode", mode == Rgb ? "rgb" : "single"}, {"red", red}, {"green", green}, {"blue", blue}, {"alpha", alpha},
-            {"band", band}, {"ramp", ramp == Gray ? "gray" : ramp == Terrain ? "terrain" : ramp == Slope ? "slope" : ramp == Aspect ? "aspect" : "spectral"},
+            {"band", band}, {"ramp", ramp == Gray ? "gray" : ramp == Terrain ? "terrain" : ramp == Slope ? "slope" : ramp == Aspect ? "aspect" : ramp == Vegetation ? "vegetation" : ramp == Visibility ? "visibility" : "spectral"},
             {"min", min}, {"max", max}, {"rgbMin", QVariantList{rgbMin[0], rgbMin[1], rgbMin[2]}},
             {"rgbMax", QVariantList{rgbMax[0], rgbMax[1], rgbMax[2]}}, {"hillshade", hillshade}};
 }
@@ -172,6 +172,8 @@ RasterStyle RasterStyle::fromVariant(const QVariantMap &m, const RasterStyle &fa
     else if (ramp == QLatin1String("spectral")) s.ramp = Spectral;
     else if (ramp == QLatin1String("slope")) s.ramp = Slope;
     else if (ramp == QLatin1String("aspect")) s.ramp = Aspect;
+    else if (ramp == QLatin1String("vegetation")) s.ramp = Vegetation;
+    else if (ramp == QLatin1String("visibility")) s.ramp = Visibility;
     s.min = m.value("min", s.min).toDouble();
     s.max = m.value("max", s.max).toDouble();
     const QVariantList lo = m.value("rgbMin").toList(), hi = m.value("rgbMax").toList();
@@ -199,6 +201,11 @@ QVector<QPair<double, QColor>> RasterStyle::rampStops(Ramp ramp)
     case Aspect:   // north red, east yellow, south cyan, west blue, back to north
         return {{0.0, QColor(230, 60, 60)}, {0.25, QColor(240, 210, 60)}, {0.5, QColor(60, 200, 210)},
                 {0.75, QColor(70, 100, 230)}, {1.0, QColor(230, 60, 60)}};
+    case Vegetation:   // bare soil brown, sparse yellow, dense green
+        return {{0.0, QColor(120, 80, 50)}, {0.3, QColor(200, 170, 110)}, {0.5, QColor(235, 225, 120)},
+                {0.7, QColor(120, 190, 70)}, {1.0, QColor(20, 110, 40)}};
+    case Visibility:   // 0 hidden, 1 visible
+        return {{0.0, QColor(200, 60, 70)}, {0.49, QColor(200, 60, 70)}, {0.51, QColor(70, 210, 110)}, {1.0, QColor(70, 210, 110)}};
     }
     return {};
 }
@@ -345,6 +352,14 @@ void RasterSource::setPyramidPath(const QString &vrtPath)
 {
     QMutexLocker lock(&m_mutex);
     m_pyramidPath = vrtPath;
+    ++m_generation;
+    qDeleteAll(m_free);
+    m_free.clear();
+}
+
+void RasterSource::reload()
+{
+    QMutexLocker lock(&m_mutex);
     ++m_generation;
     qDeleteAll(m_free);
     m_free.clear();

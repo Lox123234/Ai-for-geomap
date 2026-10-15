@@ -10,6 +10,7 @@
 #include <QSettings>
 #include <QQmlEngine>
 #include <QtQml/qqmlextensionplugin.h>
+#include "AiService.h"
 #include "AppInfo.h"
 #include "AppLog.h"
 #include "CommandRegistry.h"
@@ -73,7 +74,10 @@ int main(int argc, char *argv[])
                      });
     // GDAL/OGR and PROJ; data folders next to the executable in deployed builds.
     GisEnvironment::initialize(QCoreApplication::applicationDirPath());
+    // Local AI models (cards in <app>/models and <data folder>/models); before the map that uses them.
+    ai::AiService aiModels;
     MapService map;
+    map.setAi(&aiModels);
     // After the photo model was reset (projectChanged), unlike projectDirectoryChanged.
     QObject::connect(&projects, &ProjectManager::projectChanged, &map, [&map, &projects] {
         if (projects.projectPath() != map.projectDirectory()) map.setProject(projects.projectPath(), projects.photoModel());
@@ -113,6 +117,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("gis", &map);
     engine.rootContext()->setContextProperty("scene3d", &scene3d);
     engine.rootContext()->setContextProperty("exporter", &exporter);
+    engine.rootContext()->setContextProperty("aiModels", &aiModels);
     engine.rootContext()->setContextProperty("commands", &commands);
     engine.rootContext()->setContextProperty("workspace", &workspace);
     engine.rootContext()->setContextProperty("appLog", &appLog);

@@ -1,0 +1,69 @@
+#pragma once
+
+#include <QString>
+#include <QVector>
+#include <functional>
+
+// True orthophoto from a finished reconstruction: every output pixel is taken directly from the
+// original photo that sees it most vertically, at the height of the surface model (DSM), with a
+// visibility check (z-buffer of the DSM per photo). Unlike a texture draped over a smoothed
+// mesh, crowns and roofs are not smeared: each object higher than `objectHeight` above the
+// ground is taken whole from one photo (no seam through a tree), the ground pixel by pixel with
+// soft transitions, and the photos' brightness is balanced on their overlaps.
+namespace ortho {
+
+// OpenSfM camera (normalised by max(width, height); Brown distortion).
+struct Camera
+{
+    int width = 0, height = 0;
+    double fx = 0, fy = 0, cx = 0, cy = 0, k1 = 0, k2 = 0, k3 = 0, p1 = 0, p2 = 0;
+};
+
+struct Shot
+{
+    QString image;       // path of the photo
+    Camera camera;
+    double R[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};   // X_camera = R · X_local + t
+    double t[3] = {0, 0, 0};
+    double centre[3] = {0, 0, 0};                // -Rᵀt
+    bool project(const double local[3], double *px, double *py, double *depth) const;   // pixels of the photo
+};
+
+struct Scene
+{
+    QVector<Shot> shots;
+    double offsetX = 0, offsetY = 0;   // local frame + offset = coordinates of the DSM's CRS
+};
+
+// The photos and their poses from an ODM job folder: opensfm/reconstruction.json (+ the offset
+// from odm_georeferencing/coords.txt), photos from images/ (or `photoFolder`).
+bool readOdmJob(const QString &jobDirectory, Scene *scene, QString *error, const QString &photoFolder = {});
+
+struct Options
+{
+    double resolution = 0;        // metres per pixel; 0 = the ground sample distance of the photos
+    double objectHeight = 2.0;    // objects (trees, buildings) above the ground taken from one photo
+    QString groundPath;           // DTM for object heights; empty = estimated from the DSM
+    bool balanceColours = true;
+    double blendDegrees = 3.0;    // ground: two photos whose view angles differ less than this are blended
+    std::function<bool(double)> progress;   // 0..1; false cancels
+};
+
+struct Result
+{
+    QString error;
+    int width = 0, height = 0;
+    double resolution = 0;        // metres per pixel
+    double groundSampleDistance = 0;
+    int photos = 0, objects = 0;
+    double coverage = 0;          // share of DSM pixels with colour
+    double hidden = 0;            // share of them hidden from every photo by the DSM (taken from the most vertical one)
+    double seconds = 0;
+    QVector<double> gains;        // brightness factor per photo (balanced)
+    bool ok() const { return error.isEmpty(); }
+};
+
+// Writes an RGBA GeoTIFF (tiled, DEFLATE, overviews) in the CRS and extent of the DSM.
+Result build(const Scene &scene, const QString &dsmPath, const QString &outputPath, const Options &options = {});
+
+} // namespace ortho

@@ -13,7 +13,16 @@ Item {
 
     readonly property var toolTitles: ({ "pan": "Перемещение", "length": "Линейка", "area": "Площадь",
                                          "point": "Точка", "line": "Линия", "polygon": "Полигон", "edit": "Правка / выбор",
-                                         "profile": "Профиль высот", "volume": "Объём" })
+                                         "profile": "Профиль высот", "volume": "Объём", "crossProfile": "Поперечные профили",
+                                         "slope": "Уклон", "height": "Высота точки", "angle": "Угол", "viewshed": "Видимость",
+                                         "aiSelect": "ИИ-выделение" })
+    readonly property var toolHints: ({
+        "slope": "Щелчок — первая точка, второй щелчок — уклон между ними · Esc — отмена",
+        "angle": "Три щелчка: первая точка, вершина угла, вторая точка · Esc — отмена",
+        "height": "Щелчок — высота точки по моделям высот на карте",
+        "viewshed": "Щелчок — точка наблюдения (настройки справа)",
+        "aiSelect": "Щелчок — объект · Shift+щелчок — добавить часть · Ctrl+щелчок — исключить · Enter — на карту · Esc — сброс" })
+    function number(text) { var v = Number(String(text).replace(",", ".").replace(/\s/g, "")); return v }
     readonly property bool profileShown: gis.profile.valid === true && !profileClosed
     property bool profileClosed: false
     Connections {
@@ -101,11 +110,11 @@ Item {
             }
             Label {
                 id: toolHint
-                visible: ["length", "area", "line", "polygon", "profile", "volume"].indexOf(gis.tool) >= 0
+                visible: ["length", "area", "line", "polygon", "profile", "volume", "crossProfile", "slope", "angle", "height", "viewshed", "aiSelect"].indexOf(gis.tool) >= 0
                 // Centred, below the measurement box when both would overlap.
                 anchors.horizontalCenter: parent.horizontalCenter; anchors.top: parent.top
                 anchors.topMargin: measureBox.visible && measureBox.width + 24 > (parent.width - width) / 2 ? measureBox.height + 20 : 12
-                text: "Щелчок — вершина · двойной щелчок, Enter или правая кнопка — завершить · Backspace — убрать вершину · Esc — отмена"
+                text: canvas.toolHints[gis.tool] || "Щелчок — вершина · двойной щелчок, Enter или правая кнопка — завершить · Backspace — убрать вершину · Esc — отмена"
                 color: Theme.text; font.pixelSize: 11
                 padding: 6
                 background: Rectangle { color: "#CC1A1F27"; radius: 5 }
@@ -161,6 +170,101 @@ Item {
                     }
                 }
             }
+            // Cross sections and viewshed: their settings.
+            Rectangle {
+                objectName: "terrainSettings"
+                visible: gis.tool === "crossProfile" || gis.tool === "viewshed"
+                anchors.right: parent.right; anchors.margins: 12
+                anchors.top: toolHint.visible ? toolHint.bottom : parent.top
+                anchors.topMargin: toolHint.visible ? 8 : 12
+                width: settingsColumn.implicitWidth + 20
+                height: settingsColumn.implicitHeight + 16
+                radius: 6
+                color: "#E61A1F27"; border.color: Theme.line
+                ColumnLayout {
+                    id: settingsColumn
+                    anchors.fill: parent; anchors.margins: 8
+                    spacing: 4
+                    Label {
+                        text: gis.tool === "viewshed" ? "Видимость" : "Поперечные профили"
+                        color: Theme.muted; font.pixelSize: 10; font.bold: true
+                    }
+                    Repeater {
+                        model: gis.tool === "viewshed"
+                               ? [{ t: "Наблюдатель над поверхностью, м", p: "viewObserverHeight" }, { t: "Цель над поверхностью, м", p: "viewTargetHeight" },
+                                  { t: "Радиус, м", p: "viewRadius" }]
+                               : [{ t: "Шаг между профилями, м", p: "crossSpacing" }, { t: "Ширина в каждую сторону, м", p: "crossHalfWidth" }]
+                        delegate: RowLayout {
+                            required property var modelData
+                            spacing: 6
+                            Label { text: modelData.t; color: Theme.muted; font.pixelSize: 11; Layout.preferredWidth: 190 }
+                            TextField {
+                                objectName: modelData.p
+                                implicitWidth: 80; implicitHeight: 26; font.pixelSize: 11; selectByMouse: true
+                                text: gis[modelData.p].toLocaleString(Qt.locale("ru_RU"), 'f', 1)
+                                onEditingFinished: { var v = canvas.number(text); if (!isNaN(v) && v >= 0) gis[modelData.p] = v }
+                            }
+                        }
+                    }
+                    Label { text: "Модель: " + (gis.layerCount >= 0 ? canvas.terrainName() : ""); color: Theme.faint; font.pixelSize: 10 }
+                }
+            }
+            // AI selection: what the model proposes and what to do with it.
+            Rectangle {
+                objectName: "aiPanel"
+                visible: gis.tool === "aiSelect"
+                anchors.right: parent.right; anchors.margins: 12
+                anchors.top: toolHint.visible ? toolHint.bottom : parent.top
+                anchors.topMargin: toolHint.visible ? 8 : 12
+                width: 300
+                height: aiColumn.implicitHeight + 16
+                radius: 6
+                color: "#E61A1F27"; border.color: Theme.line
+                ColumnLayout {
+                    id: aiColumn
+                    anchors.fill: parent; anchors.margins: 8
+                    spacing: 6
+                    RowLayout {
+                        Label { text: "ИИ-ВЫДЕЛЕНИЕ"; color: Theme.muted; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.2; Layout.fillWidth: true }
+                        BusyIndicator { visible: gis.aiBusy; running: gis.aiBusy; implicitWidth: 18; implicitHeight: 18 }
+                    }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.Wrap
+                        visible: aiModels.segmentationProblem.length > 0
+                        text: aiModels.segmentationProblem; color: Theme.bad; font.pixelSize: 11
+                    }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.Wrap
+                        text: gis.aiStatus.length > 0 ? gis.aiStatus : "Щёлкните по объекту на ортофотоплане: крыша, дерево, машина, водоём…"
+                        color: Theme.text; font.pixelSize: 11
+                    }
+                    RowLayout {
+                        spacing: 6
+                        FlatButton {
+                            objectName: "aiAccept"
+                            text: "На карту"; compact: true; implicitHeight: 26; emphasis: true
+                            enabled: gis.hasAiCandidate && !gis.aiBusy
+                            onClicked: { var n = gis.acceptAiCandidate(); if (n.length > 0) canvas.host.flash("Добавлено в объекты: " + n) }
+                            ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Добавить контур в нарисованные объекты (Enter)"
+                        }
+                        FlatButton {
+                            objectName: "aiRemove"
+                            text: "Убрать с ортофотоплана"; compact: true; implicitHeight: 26
+                            enabled: gis.hasAiCandidate && !gis.aiBusy && aiModels.inpaintingProblem.length === 0
+                            onClicked: { var e = gis.removeFromOrthophoto(0.3); if (e.length > 0) canvas.host.showError(e) }
+                            ToolTip.visible: hovered; ToolTip.delay: 500
+                            ToolTip.text: aiModels.inpaintingProblem.length > 0 ? aiModels.inpaintingProblem
+                                          : "Дорисовать место объекта по окружению (LaMa) в копии ортофотоплана; исходный файл не меняется, правку можно отменить"
+                        }
+                        FlatButton { text: "Сброс"; compact: true; implicitHeight: 26; enabled: gis.hasAiCandidate || gis.aiBusy; onClicked: gis.clearAiCandidate() }
+                    }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.Wrap
+                        text: "Локально, без интернета: " + aiModels.runtimeVersion + ". Модели и их лицензии — Анализ → Модели ИИ."
+                        color: Theme.faint; font.pixelSize: 10
+                    }
+                }
+            }
             // Elevation profile of the last line drawn with the profile tool.
             Rectangle {
                 id: profilePanel
@@ -175,7 +279,14 @@ Item {
                     spacing: 4
                     RowLayout {
                         Layout.fillWidth: true
-                        Label { text: "ПРОФИЛЬ ВЫСОТ"; color: Theme.muted; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.2 }
+                        Label {
+                            text: gis.profile.sections > 0 ? "ПОПЕРЕЧНЫЙ ПРОФИЛЬ " + (gis.profile.section + 1) + " / " + gis.profile.sections : "ПРОФИЛЬ ВЫСОТ"
+                            color: Theme.muted; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.2
+                        }
+                        FlatButton { visible: gis.profile.sections > 0; text: "‹"; compact: true; implicitHeight: 24; enabled: gis.crossIndex > 0
+                                     onClicked: gis.crossIndex = gis.crossIndex - 1 }
+                        FlatButton { visible: gis.profile.sections > 0; text: "›"; compact: true; implicitHeight: 24; enabled: gis.crossIndex < gis.crossCount - 1
+                                     onClicked: gis.crossIndex = gis.crossIndex + 1 }
                         Label {
                             Layout.fillWidth: true
                             text: gis.profile.valid ? "«" + gis.profile.layer + "» · " + canvas.formatLength(gis.profile.length)
@@ -279,9 +390,9 @@ Item {
                 nameFilters: ["CSV (*.csv)"]
                 defaultSuffix: "csv"
                 onAccepted: {
-                    var error = gis.exportProfile(selectedFile)
+                    var error = gis.crossCount > 0 ? gis.exportCrossSections(selectedFile) : gis.exportProfile(selectedFile)
                     if (error.length > 0) canvas.host.showError(error)
-                    else canvas.host.flash("Профиль сохранён: " + gis.displayPath(selectedFile))
+                    else canvas.host.flash((gis.crossCount > 0 ? "Поперечные профили сохранены: " : "Профиль сохранён: ") + gis.displayPath(selectedFile))
                 }
             }            Label {
                 anchors.centerIn: parent

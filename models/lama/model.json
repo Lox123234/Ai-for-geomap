@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "lama",
+  "name": "LaMa — удаление объектов и заполнение пропусков",
+  "task": "inpainting",
+  "license": "Apache-2.0",
+  "licenseFile": "LICENSE",
+  "source": "https://github.com/advimman/lama",
+  "weights": "big-lama (официальные веса авторов LaMa, обучение на Places2)",
+  "conversion": "https://huggingface.co/Carve/LaMa-ONNX (Apache-2.0): ONNX-экспорт big-lama, файл lama_fp32.onnx (opset 17, вход 512 × 512)",
+  "authors": "Roman Suvorov, Elizaveta Logacheva, Anton Mashikhin, Anastasia Remizova, Arsenii Ashukha, Aleksei Silvestrov, Naejin Kong, Harshith Goka, Kiwoong Park, Victor Lempitsky (Samsung AI Center, «Resolution-robust Large Mask Inpainting with Fourier Convolutions», WACV 2022)",
+  "input": "RGB-окно 512 × 512 и маска заполняемых пикселей; программа берёт окно вокруг каждой области с её окружением",
+  "output": "то же окно с дорисованными пикселями маски; остальные пиксели снимка не меняются",
+  "limitations": "Дорисованное — правдоподобная картинка по окружению, а не съёмка: для измерений и дешифрирования эти места не годятся, поэтому каждая правка сохраняется с контуром и пометкой «дорисовано ИИ». Модель обучена на наземных фотографиях, а не на аэросъёмке; лучше всего убирает небольшие объекты (машины, людей, мусор) на однородном фоне. Большие области (больше 512 пикселей с окружением) дорисовываются в уменьшенном окне и выходят размытыми.",
+  "files": [
+    {"role": "inpainter", "name": "lama_fp32.onnx", "sha256": "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6",
+     "url": "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx"}
+  ]
+}

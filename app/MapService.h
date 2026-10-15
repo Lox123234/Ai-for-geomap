@@ -21,6 +21,7 @@
 class PhotoModel;
 class TileCache;
 class QPainter;
+namespace ai { class AiService; }
 
 // One layer of the map. Rasters and vectors come from files; "photos" (GPS positions of the
 // project photos) and "drawings" (features drawn by the user) belong to the project.
@@ -115,6 +116,21 @@ class MapService final : public QObject
     Q_PROPERTY(bool hasBasemap READ hasBasemap NOTIFY layersChanged)
     Q_PROPERTY(bool basemapVisible READ basemapVisible NOTIFY layersChanged)
     Q_PROPERTY(QString shownMeasurement READ shownMeasurement NOTIFY measurementsChanged)
+    // Selection by click with a local AI model (tool "aiSelect"): the contour of the object under
+    // the click on the top RGB raster, shown as a candidate until it is added to the drawings.
+    Q_PROPERTY(bool aiBusy READ aiBusy NOTIFY aiChanged)
+    Q_PROPERTY(QString aiStatus READ aiStatus NOTIFY aiChanged)
+    Q_PROPERTY(bool hasAiCandidate READ hasAiCandidate NOTIFY aiChanged)
+    // Cross sections (tool "crossProfile"): one every crossSpacing metres along the drawn line,
+    // crossHalfWidth metres to each side; the profile panel shows section crossIndex.
+    Q_PROPERTY(double crossSpacing READ crossSpacing WRITE setCrossSpacing NOTIFY crossChanged)
+    Q_PROPERTY(double crossHalfWidth READ crossHalfWidth WRITE setCrossHalfWidth NOTIFY crossChanged)
+    Q_PROPERTY(int crossIndex READ crossIndex WRITE setCrossIndex NOTIFY crossChanged)
+    Q_PROPERTY(int crossCount READ crossCount NOTIFY crossChanged)
+    // Viewshed (tool "viewshed"): observer and target heights above the surface, radius, metres.
+    Q_PROPERTY(double viewObserverHeight READ viewObserverHeight WRITE setViewObserverHeight NOTIFY viewshedSettingsChanged)
+    Q_PROPERTY(double viewTargetHeight READ viewTargetHeight WRITE setViewTargetHeight NOTIFY viewshedSettingsChanged)
+    Q_PROPERTY(double viewRadius READ viewRadius WRITE setViewRadius NOTIFY viewshedSettingsChanged)
 
 public:
     explicit MapService(QObject *parent = nullptr);
@@ -259,9 +275,58 @@ public:
     };
     const QVector<SavedMeasurement> &savedMeasurements() const { return m_measurements; }
 
+    // AI selection. The image the model sees is the view ∩ the raster, longest side 1024 px;
+    // it is encoded once and reused while the view and the layer stay the same.
+    void setAi(ai::AiService *service) { m_ai = service; }
+    // A click at a map point: a new object, or (add/exclude) a refinement of the candidate.
+    // "" when started, else the reason.
+    Q_INVOKABLE QString aiSelectAt(const QPointF &mapPoint, bool add = false, bool exclude = false);
+    Q_INVOKABLE QString acceptAiCandidate();   // into the drawings (undoable); the feature name, or ""
+    Q_INVOKABLE void clearAiCandidate();
+    // Removes the object outlined by the AI candidate (or the selected drawn polygon), grown by
+    // `growMeters` for its edge and shadow, from the colour raster under it: an inpainting model
+    // (LaMa) fills it from the surroundings in the program's editable copy of the raster
+    // (<project>/analysis/<name>_ИИ-правка.tif), which replaces the original on the map. The
+    // user's file is never written. Undoable; every edit is listed in <copy>.edits.json.
+    // "" when started, else the reason.
+    Q_INVOKABLE QString removeFromOrthophoto(double growMeters = 0.3);
+    void rasterEdited(const QString &path);   // a raster file changed in place: reload its layers
+
+    // Raster calculator and vegetation indices of a raster layer, into <project>/analysis:
+    // index exg | vari | gli (RGB bands), ndvi (red and near-infrared bands) or calc (`expression`
+    // over B1, B2, …). "" when started, else the reason.
+    Q_INVOKABLE QString calculateRaster(const QString &layerId, const QString &index, const QString &expression = {},
+                                        int red = 1, int green = 2, int blue = 3, int nir = 4);
+    Q_INVOKABLE QString checkRasterExpression(const QString &layerId, const QString &expression) const;
+    Q_INVOKABLE QVariantList rasterLayers() const;   // {id, name, bands, rgb} of the raster layers (not elevation-only)
+    // Everything the analysis produced (rasters, contours, measurements, drawings, the profile and
+    // the cross sections) copied into a new folder inside `folder`. "" or the reason; on success
+    // analysisFinished(true, …) names the folder.
+    Q_INVOKABLE QString exportAnalysis(const QUrl &folder);
+    Q_INVOKABLE QString exportCrossSections(const QUrl &url);   // CSV: section, station, offset, elevation, x, y
+    double crossSpacing() const { return m_crossSpacing; }
+    void setCrossSpacing(double metres);
+    double crossHalfWidth() const { return m_crossHalfWidth; }
+    void setCrossHalfWidth(double metres);
+    int crossIndex() const { return m_crossIndex; }
+    void setCrossIndex(int index);
+    int crossCount() const { return int(m_cross.size()); }
+    double viewObserverHeight() const { return m_viewObserver; }
+    void setViewObserverHeight(double metres);
+    double viewTargetHeight() const { return m_viewTarget; }
+    void setViewTargetHeight(double metres);
+    double viewRadius() const { return m_viewRadius; }
+    void setViewRadius(double metres);
+    bool aiBusy() const { return m_aiBusy; }
+    QString aiStatus() const { return m_aiStatus; }
+    bool hasAiCandidate() const { return !m_aiCandidate.isEmpty(); }
+    const QVector<QPolygonF> &aiCandidate() const { return m_aiCandidate; }   // map CRS: outer ring, holes
+    double aiScore() const { return m_aiScore; }
+
     // For tests and exports: measurement of a line/ring given in map coordinates.
     struct Measure { double length = 0; double area = 0; double perimeter = 0; double planarLength = 0; double planarArea = 0; };
     Measure measure(const QVector<QPointF> &mapPoints, bool closed) const;
+    double polygonArea(const VectorFeature &polygon) const;   // geodesic, outer ring minus holes
     static QString formatLength(double meters);
     static QString formatArea(double squareMeters);
     QImage renderMap(const QSize &size, bool decorations) const;   // blocking
@@ -286,6 +351,10 @@ signals:
     void volumeSettingsChanged();
     void terrainResultReady();   // a profile or volume finished (for tests and the UI)
     void measurementsChanged();
+    void aiChanged();
+    void aiFinished(bool ok, const QString &message);   // an AI selection finished (for tests and the UI)
+    void crossChanged();
+    void viewshedSettingsChanged();
     void repaint();
     void errorOccurred(const QString &message);
 
@@ -378,4 +447,36 @@ private:
     QVector<SavedMeasurement> m_measurements;
     QString m_shownMeasurement;
     int m_nextMeasurementId = 1;
+    // AI selection.
+    void runAiSelection(int layerIndex);   // m_aiPoints/m_aiLabels on the image m_aiWindow/m_aiImageSize
+    void setAiText();
+    ai::AiService *m_ai = nullptr;      // outlives the map (created before it)
+    Qt::KeyboardModifiers m_pressModifiers;
+    bool m_aiBusy = false;
+    QString m_aiStatus;
+    int m_aiGeneration = 0;
+    QVector<QPointF> m_aiPoints;        // prompts of the candidate, map CRS
+    QVector<int> m_aiLabels;            // 1 = object, 0 = background
+    QVector<QPolygonF> m_aiCandidate;   // map CRS: outer ring, then holes
+    double m_aiScore = 0;
+    QString m_aiLayerId, m_aiLayerName, m_aiModelName;
+    QRectF m_aiWindow;                  // map rectangle of the encoded image
+    QSize m_aiImageSize;
+    QString m_aiImageKey;               // what the shared segmenter has encoded
+    QString m_aiText, m_aiDetails;
+    int m_nextAiId = 1;
+    // Analysis tools (MapServiceAnalysis.cpp).
+    bool isTerrainTool() const;
+    void computeCrossSections(const QVector<QPointF> &line);
+    void computeSlope(const QVector<QPointF> &two);
+    void computeHeight(const QPointF &point);
+    void computeAngle(const QVector<QPointF> &three);
+    void computeViewshed(const QPointF &observer);
+    void paintAnalysis(QPainter *painter) const;
+    QVector<terrain::Profile> m_cross;
+    QVector<QVector<QPointF>> m_crossLines;   // map CRS
+    int m_crossIndex = 0;
+    double m_crossSpacing = 10, m_crossHalfWidth = 15;
+    double m_viewObserver = 1.7, m_viewTarget = 0, m_viewRadius = 300;
+    QVariantMap m_pointValues;                // numbers of the last slope / height / angle (saved with it)
 };

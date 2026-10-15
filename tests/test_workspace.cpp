@@ -59,11 +59,13 @@ private slots:
             QVERIFY2(doc.contains(QStringLiteral("`%1`").arg(c.id)), qPrintable(c.id + QStringLiteral(" not in UI_COMMANDS.md")));
         }
         // Unavailable commands say why, ready ones say what they do.
-        QVERIFY(r.unavailableReason(QStringLiteral("analysis.ai")).contains(QStringLiteral("E (0.5)")));
+        QVERIFY(r.unavailableReason(QStringLiteral("proc.tiled")).contains(QStringLiteral("после 1.0")));
+        QVERIFY(r.unavailableReason(QStringLiteral("analysis.ai")).isEmpty());
         QVERIFY(r.unavailableReason(QStringLiteral("proc.optimize")).startsWith(QStringLiteral("Не поддерживается выбранным движком")));
         QVERIFY(r.unavailableReason(QStringLiteral("file.save")).isEmpty());
         QVERIFY(r.tooltip(QStringLiteral("file.save")).contains(QStringLiteral("Ctrl+S")));
-        QVERIFY(r.tooltip(QStringLiteral("tool.slope")).contains(QStringLiteral("этап C")));   // planned: the stage in the tooltip
+        QVERIFY(r.tooltip(QStringLiteral("proc.tiled")).contains(QStringLiteral("этап после 1.0")));   // planned: the stage in the tooltip
+        QVERIFY(r.tooltip(QStringLiteral("tool.slope")).contains(QStringLiteral("уклон")));
         QVERIFY(!r.isReady(QStringLiteral("unknown.command")));
     }
 

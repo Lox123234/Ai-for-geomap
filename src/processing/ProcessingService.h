@@ -13,6 +13,7 @@
 
 class PhotoModel;
 class QThread;
+class QThreadPool;
 
 // Processing jobs of the open project for QML, newest first.
 class JobListModel final : public QAbstractListModel
@@ -71,6 +72,11 @@ class ProcessingService final : public QObject
     Q_PROPERTY(QString activeJobId READ activeJobId NOTIFY jobsChanged)
     Q_PROPERTY(int jobCount READ jobCount NOTIFY jobsChanged)
     Q_PROPERTY(JobListModel *jobModel READ jobModel CONSTANT)
+    // True orthophoto (GeoMap AI) from the photos, poses and DSM of a finished job: built
+    // automatically after jobs with a DSM (when enabled) or on request.
+    Q_PROPERTY(bool trueOrthoBusy READ trueOrthoBusy NOTIFY trueOrthoChanged)
+    Q_PROPERTY(QString trueOrthoStatus READ trueOrthoStatus NOTIFY trueOrthoChanged)
+    Q_PROPERTY(bool autoTrueOrthophoto READ autoTrueOrthophoto WRITE setAutoTrueOrthophoto NOTIFY trueOrthoChanged)
 public:
     // Takes ownership of the engine.
     explicit ProcessingService(IProcessingEngine *engine, QObject *parent = nullptr);
@@ -138,6 +144,14 @@ public:
     // Opens a registered result of the job with the system's default application.
     Q_INVOKABLE void openOutput(const QString &id, const QString &file);
 
+    bool trueOrthoBusy() const { return !m_orthoJob.isEmpty(); }
+    QString trueOrthoStatus() const { return m_orthoStatus; }
+    bool autoTrueOrthophoto() const;
+    void setAutoTrueOrthophoto(bool on);
+    // Builds <job>/geomap/true_orthophoto.tif for the job (empty = the newest completed job with a
+    // DSM). "" when started, else the reason.
+    Q_INVOKABLE QString buildTrueOrthophoto(const QString &jobId = {});
+
 signals:
     void environmentChanged();
     void installChanged();
@@ -146,6 +160,8 @@ signals:
     void logUpdated(const QString &id);
     void jobFinished(const QString &id);
     void errorOccurred(const QString &message);
+    void trueOrthoChanged();
+    void trueOrthoFinished(const QString &jobId, bool ok, const QString &message);
 
 private:
     struct Check {
@@ -194,4 +210,8 @@ private:
     QString m_installStatus;
     qint64 m_diskReserve = 512LL * 1024 * 1024;
     JobListModel m_model;
+    QString m_orthoJob;                        // job whose true orthophoto is being built
+    QString m_orthoStatus;
+    std::shared_ptr<std::atomic_bool> m_orthoCancel;
+    QThreadPool *m_orthoPool;
 };

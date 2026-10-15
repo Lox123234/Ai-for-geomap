@@ -153,6 +153,11 @@ ApplicationWindow {
         case "edit.deselect": return gis.hasSelection
         case "edit.geometry": case "tool.select": case "tool.area":
         case "tool.point": case "tool.line": case "tool.polygon": case "tool.vertices": return map
+        case "tool.slope": case "tool.angle": case "tool.height": case "tool.orthoEditor": case "analysis.crossProfile":
+        case "analysis.viewshed": case "analysis.ai": case "proc.contours": return map
+        case "tool.rasterCalc": case "analysis.vegetation": case "analysis.ndvi": case "analysis.export": return has
+        case "analysis.aiModels": return true
+        case "proc.trueOrthophoto": return has && !processing.trueOrthoBusy
         // Terrain analysis needs the map (and a DEM on it, which the tools and dialog check).
         case "tool.profile": case "tool.volume": case "analysis.longProfile": case "analysis.cutFill":
         case "view.slope": case "view.aspect": case "view.contours": case "analysis.terrain":
@@ -200,6 +205,12 @@ ApplicationWindow {
         case "tool.polygon": return window.activeView === 3 && gis.tool === "polygon"
         case "tool.profile": case "analysis.longProfile": return window.activeView === 3 && gis.tool === "profile"
         case "tool.volume": case "analysis.cutFill": return window.activeView === 3 && gis.tool === "volume"
+        case "tool.slope": return window.activeView === 3 && gis.tool === "slope"
+        case "tool.angle": return window.activeView === 3 && gis.tool === "angle"
+        case "tool.height": return window.activeView === 3 && gis.tool === "height"
+        case "analysis.crossProfile": return window.activeView === 3 && gis.tool === "crossProfile"
+        case "analysis.viewshed": return window.activeView === 3 && gis.tool === "viewshed"
+        case "analysis.ai": case "tool.orthoEditor": return window.activeView === 3 && gis.tool === "aiSelect"
         case "view.panelProject": return window.showLeft
         case "view.panelProperties": return window.showRight
         case "view.panelLog": return window.showBottom
@@ -415,6 +426,27 @@ ApplicationWindow {
         "analysis.contours": function() { window.activeView = 3; terrainDialog.openFor("contours") },
         "analysis.elevationDiff": function() { window.activeView = 3; terrainDialog.openFor("difference") },
         "analysis.compare": function() { window.activeView = 3; terrainDialog.openFor("difference") },
+        "analysis.crossProfile": function() { window.setTool("crossProfile") },
+        "analysis.viewshed": function() { window.setTool("viewshed") },
+        "analysis.ai": function() { window.setTool("aiSelect") },
+        "analysis.aiModels": function() { aiModelsDialog.open() },
+        "analysis.vegetation": function() { window.activeView = 3; rasterCalcDialog.openFor("exg") },
+        "analysis.ndvi": function() { window.activeView = 3; rasterCalcDialog.openFor("ndvi") },
+        "analysis.export": function() { analysisExportDialog.open() },
+        "tool.rasterCalc": function() { window.activeView = 3; rasterCalcDialog.openFor("calc") },
+        "tool.slope": function() { window.setTool("slope") },
+        "tool.angle": function() { window.setTool("angle") },
+        "tool.height": function() { window.setTool("height") },
+        "tool.orthoEditor": function() {
+            window.setTool("aiSelect")
+            window.flash("Редактор ортофотоплана: щёлкните объект, затем «Убрать с ортофотоплана» (Ctrl+Z — отменить)")
+        },
+        "proc.contours": function() { window.activeView = 3; terrainDialog.openFor("contours") },
+        "proc.trueOrthophoto": function() {
+            var error = processing.buildTrueOrthophoto("")
+            if (error.length > 0) window.showError(error)
+            else window.flash("Строится истинный ортофотоплан — ход виден во вкладке «Обработка»")
+        },
         "help.docs": function() { window.openDoc("") },
         "help.shortcuts": function() { shortcutsDialog.open() },
         "help.environment": function() { processing.checkEnvironment(); environmentDialog.open() },
@@ -607,13 +639,31 @@ ApplicationWindow {
     header: MainToolBar { host: window }
 
     TerrainDialog { id: terrainDialog }
+    RasterCalcDialog { id: rasterCalcDialog }
+    AiModelsDialog { id: aiModelsDialog }
     ExportDialog { id: exportDialog; host: window }
+    FolderDialog {
+        id: analysisExportDialog
+        title: "Куда сохранить результаты анализа?"
+        onAccepted: {
+            var error = gis.exportAnalysis(selectedFolder)
+            if (error.length > 0) window.showError(error)
+        }
+    }
     // Results of terrain analysis started while the dialog was closed (or after it was closed).
     Connections {
         target: gis
         function onAnalysisFinished(ok, message) {
-            if (terrainDialog.visible) return
+            if (terrainDialog.visible || rasterCalcDialog.visible) return
             if (ok) window.flash(message)
+            else window.showError(message)
+        }
+        function onAiFinished(ok, message) { if (!ok) window.flash(message) }
+    }
+    Connections {
+        target: processing
+        function onTrueOrthoFinished(jobId, ok, message) {
+            if (ok) window.flash(message + " — «Вид → Ортофотоплан» покажет его на карте")
             else window.showError(message)
         }
     }
@@ -1707,6 +1757,22 @@ ApplicationWindow {
                                             wrapMode: Text.Wrap; color: "#6f7f92"; font.pixelSize: 10
                                         }
                                     }
+                                }
+                                // GeoMap AI's own orthophoto after ODM: directly from the photos over the DSM.
+                                CheckBox {
+                                    objectName: "autoTrueOrthophoto"
+                                    Layout.fillWidth: true
+                                    checked: processing.autoTrueOrthophoto
+                                    onToggled: processing.autoTrueOrthophoto = checked
+                                    text: "Истинный ортофотоплан GeoMap AI после обработки (резкие кроны и крыши; нужен DSM)"
+                                    font.pixelSize: 11
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    visible: processing.trueOrthoStatus.length > 0
+                                    text: processing.trueOrthoStatus
+                                    wrapMode: Text.Wrap
+                                    color: processing.trueOrthoBusy ? "#9fd3f5" : "#7FD1AE"; font.pixelSize: 11
                                 }
                                 Label {
                                     Layout.fillWidth: true

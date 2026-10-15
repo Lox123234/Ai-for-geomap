@@ -936,16 +936,23 @@ private slots:
         QVERIFY(writeFile(dir.filePath(QStringLiteral("odm_texturing_25d/odm_textured_model_geo.obj")), "v 0 0 0\n"));
 
         OdmEngine odm;
-        const QVector<Artifact> outputs = odm.collectOutputs(tmp.path());
+        QVector<Artifact> outputs = odm.collectOutputs(tmp.path());
         QCOMPARE(outputs.size(), 4);
         QCOMPARE(outputs[0].kind, QStringLiteral("orthophoto"));
-        QCOMPARE(outputs[0].details, QStringLiteral("EPSG:32630, 5,0 см/пикс, 100×80, каналов: 4"));
+        QCOMPARE(outputs[0].details, QStringLiteral("ODM, EPSG:32630, 5,0 см/пикс, 100×80, каналов: 4"));
         QCOMPARE(outputs[1].kind, QStringLiteral("pointcloud"));
         QCOMPARE(outputs[1].details, QStringLiteral("LAS 1.2, точек: 12345"));
         QCOMPARE(outputs[2].kind, QStringLiteral("mesh"));
         QCOMPARE(outputs[2].file, QStringLiteral("odm_texturing_25d/odm_textured_model_geo.obj"));
         QCOMPARE(outputs[3].kind, QStringLiteral("report"));
         QCOMPARE(outputs[3].details, QStringLiteral("PDF-отчёт ODM"));
+        // GeoMap AI's true orthophoto comes first: it is the project's orthophoto.
+        QVERIFY(writeFile(dir.filePath(QStringLiteral("geomap/true_orthophoto.tif")), geoTiff(false, false, 3072, 32630, 0.02)));
+        outputs = odm.collectOutputs(tmp.path());
+        QCOMPARE(outputs.size(), 5);
+        QCOMPARE(outputs[0].file, QStringLiteral("geomap/true_orthophoto.tif"));
+        QVERIFY2(outputs[0].details.startsWith(QStringLiteral("истинный (GeoMap AI), EPSG:32630, 2,0 см/пикс")), qPrintable(outputs[0].details));
+        QCOMPARE(outputs[1].file, QStringLiteral("odm_orthophoto/odm_orthophoto.tif"));
     }
 
     // ----------------------------------------------------------- GeoTiffInfo

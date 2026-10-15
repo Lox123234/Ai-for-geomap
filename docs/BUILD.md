@@ -55,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 1. находит самый новый комплект Qt 6.5+ `msvc20xx_64` (`QTDIR`, `Qt6_DIR`, `qtpaths` в `PATH`, `<диск>:\Qt`, `%USERPROFILE%\Qt`);
 2. находит Visual Studio 2022 через `vswhere` и vcpkg (`VCPKG_ROOT`, `VCPKG_INSTALLATION_ROOT` или `VC\vcpkg` любой установленной Visual Studio), конфигурирует CMake (`Visual Studio 17 2022`, x64, toolchain vcpkg) в `build/` и собирает Release; vcpkg при этом собирает или берёт из кэша GDAL и PROJ;
 3. запускает тесты (`ctest`);
-4. пересоздаёт папку развёртывания, запускает `windeployqt` (DLL Qt, QML-модули, плагины), копирует рантайм MSVC, DLL GDAL/PROJ и их данные (`share\proj\proj.db`, `share\gdal`), документацию (`docs`) и **встроенный OpenDroneMap** (`engines\odm`).
+4. пересоздаёт папку развёртывания, запускает `windeployqt` (DLL Qt, QML-модули, плагины), копирует рантайм MSVC, DLL GDAL/PROJ и их данные (`share\proj\proj.db`, `share\gdal`), документацию (`docs`), **ONNX Runtime** с уведомлениями о лицензиях (`licenses\onnxruntime`), **модели ИИ** (`models\<id>`: карточка, лицензия, веса с проверкой SHA-256) и **встроенный OpenDroneMap** (`engines\odm`).
 
 | Параметр | Назначение |
 | --- | --- |
@@ -68,6 +68,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 | `-OdmDir <папка>` | Другая папка ODM 3.6.x вместо `.odm\odm-3.6.2` |
 | `-NoOdm` | Сборка разработчика без ODM (всё, кроме обработки); так собирает CI |
 | `-Installer` | Дополнительно собрать установщик `dist\GeoMapAI-<версия>-win64-setup.exe` (NSIS 3: `.tools\nsis-*`, `PATH` или Program Files) |
+| `-FetchAi` | Один раз подготовить локальный ИИ: ONNX Runtime 1.30.0 (официальный архив, 78,8 МБ) в `.deps\onnxruntime-win-x64-1.30.0` и веса моделей из карточек `models\*\model.json` в `.deps\models\<id>` (MobileSAM 44 МБ, LaMa 208 МБ); каждый файл принимается только с совпадающим SHA-256. CMake находит ONNX Runtime в этой папке сам (`GEOMAP_ONNXRUNTIME_DIR`) |
+| `-NoAi` | Сборка и поставка без ONNX Runtime и моделей: инструменты ИИ объясняют, что их в этой сборке нет |
 | `-Generator "Visual Studio 18 2026"` | Другой экземпляр Visual Studio |
 
 Результат: `dist\GeoMapAI\GeoMapAI.exe` — переносимая папка: около 110 МБ без ODM (из них ~37 МБ — GDAL/PROJ и `proj.db`) и около 1,1 ГБ с встроенным ODM (архив ~400 МБ). Без ODM скрипт не собирает поставку, если не указан `-NoOdm`. Её можно скопировать на другой ПК с Windows 10/11 x64 в папку с правом записи (не `Program Files`); Qt, Qt Creator, Python, GDAL, PROJ, Docker, WSL и VC++ Redistributable там не нужны.

@@ -1,5 +1,6 @@
 #include "ProcessingService.h"
 #include "PhotoModel.h"
+#include "TrueOrthophoto.h"
 #include <QCoreApplication>
 #include <QDesktopServices>
 #include <QDir>
@@ -11,6 +12,7 @@
 #include <QSettings>
 #include <QStorageInfo>
 #include <QThread>
+#include <QThreadPool>
 #include <QUrl>
 #include <algorithm>
 
@@ -201,9 +203,10 @@ void JobListModel::remove(const QString &id)
 // ----------------------------------------------------------- ProcessingService
 
 ProcessingService::ProcessingService(IProcessingEngine *engine, QObject *parent)
-    : QObject(parent), m_engine(engine), m_model(engine)
+    : QObject(parent), m_engine(engine), m_model(engine), m_orthoPool(new QThreadPool(this))
 {
     m_engine->setParent(this);
+    m_orthoPool->setMaxThreadCount(1);
     m_profiles = m_engine->profiles();
 
     m_logNotify.setSingleShot(true);
@@ -237,6 +240,8 @@ ProcessingService::ProcessingService(IProcessingEngine *engine, QObject *parent)
 
 ProcessingService::~ProcessingService()
 {
+    if (m_orthoCancel) *m_orthoCancel = true;
+    m_orthoPool->waitForDone();
     stopAll(QStringLiteral("Обработка остановлена: приложение закрыто во время выполнения."));
     m_engine->disconnect(this);
 }
@@ -246,6 +251,7 @@ void ProcessingService::setProject(const QString &directory, const PhotoModel *p
     const QString dir = directory.isEmpty() ? QString() : QDir(directory).absolutePath();
     m_photos = photos;
     if (dir == m_project) return;
+    if (m_orthoCancel) *m_orthoCancel = true;   // its finish is ignored for another project
     stopAll(QStringLiteral("Обработка остановлена: проект закрыт во время выполнения."));
     m_project = dir;
     loadJobs();
@@ -657,11 +663,106 @@ void ProcessingService::onFinished(const QString &id, JobOutcome outcome, int ex
         }
         setState(*job, state, text);
         closeLog(QStringLiteral("%1 (код %2)").arg(text).arg(exitCode));
+        const bool dsm = std::any_of(job->outputs.cbegin(), job->outputs.cend(), [](const Artifact &a) { return a.kind == QLatin1String("dsm"); });
+        if (state == JobState::Completed && dsm && autoTrueOrthophoto() && !trueOrthoBusy()) buildTrueOrthophoto(id);
     } else {
         closeLog(message);
     }
     emit jobFinished(id);
     runNext();
+}
+
+bool ProcessingService::autoTrueOrthophoto() const
+{
+    return QSettings().value(QStringLiteral("processing/autoTrueOrthophoto"), true).toBool();
+}
+
+void ProcessingService::setAutoTrueOrthophoto(bool on)
+{
+    if (on == autoTrueOrthophoto()) return;
+    QSettings().setValue(QStringLiteral("processing/autoTrueOrthophoto"), on);
+    emit trueOrthoChanged();
+}
+
+QString ProcessingService::buildTrueOrthophoto(const QString &requested)
+{
+    if (m_project.isEmpty()) return QStringLiteral("Проект не открыт.");
+    if (trueOrthoBusy()) return QStringLiteral("Истинный ортофотоплан уже строится.");
+    QString id = requested;
+    const QString dsmFile = QStringLiteral("odm_dem/dsm.tif");
+    if (id.isEmpty())
+        for (const ProcessingJob &j : std::as_const(m_jobs))   // newest first
+            if (j.state == JobState::Completed && QFileInfo::exists(QDir(jobDirectory(j.id)).filePath(dsmFile))) {
+                id = j.id;
+                break;
+            }
+    if (id.isEmpty() || !findJob(id)) return QStringLiteral("Нет завершённого задания с моделью поверхности (DSM). Обработайте снимки профилем с DSM.");
+    const QString dir = jobDirectory(id);
+    if (!QFileInfo::exists(QDir(dir).filePath(dsmFile))) return QStringLiteral("В задании %1 нет модели поверхности (DSM).").arg(id);
+    if (!QFileInfo::exists(QDir(dir).filePath(QStringLiteral("opensfm/reconstruction.json"))))
+        return QStringLiteral("В задании %1 нет реконструкции снимков (opensfm).").arg(id);
+    m_orthoJob = id;
+    m_orthoStatus = QStringLiteral("Истинный ортофотоплан: подготовка…");
+    m_orthoCancel = std::make_shared<std::atomic_bool>(false);
+    emit trueOrthoChanged();
+    const auto cancel = m_orthoCancel;
+    const QString project = m_project;
+    m_orthoPool->start([this, id, dir, cancel, project] {
+        ortho::Scene scene;
+        QString error;
+        ortho::Result r;
+        const QString target = QDir(dir).filePath(QStringLiteral("geomap/true_orthophoto.tif"));
+        const QString partial = QDir(dir).filePath(QStringLiteral("geomap/true_orthophoto.partial.tif"));
+        if (!ortho::readOdmJob(dir, &scene, &error)) {
+            r.error = error;
+        } else {
+            ortho::Options options;
+            const QString dtm = QDir(dir).filePath(QStringLiteral("odm_dem/dtm.tif"));
+            if (QFileInfo::exists(dtm)) options.groundPath = dtm;
+            std::atomic_int lastPercent{-1};
+            options.progress = [this, cancel, &lastPercent](double v) {
+                const int percent = int(v * 100);
+                if (percent != lastPercent.exchange(percent))
+                    QMetaObject::invokeMethod(this, [this, percent] {
+                        if (m_orthoJob.isEmpty()) return;
+                        m_orthoStatus = QStringLiteral("Истинный ортофотоплан: %1 %").arg(percent);
+                        emit trueOrthoChanged();
+                    });
+                return !*cancel;
+            };
+            QFile::remove(partial);
+            r = ortho::build(scene, QDir(dir).filePath(QStringLiteral("odm_dem/dsm.tif")), partial, options);
+            if (r.ok()) {
+                QFile::remove(target);
+                if (!QFile::rename(partial, target)) r.error = QStringLiteral("Не удалось сохранить %1").arg(QDir::toNativeSeparators(target));
+            } else {
+                QFile::remove(partial);
+            }
+        }
+        QMetaObject::invokeMethod(this, [this, id, r, cancel, project] {
+            m_orthoJob.clear();
+            if (*cancel || project != m_project) {
+                m_orthoStatus.clear();
+                emit trueOrthoChanged();
+                return;
+            }
+            const bool ok = r.ok();
+            m_orthoStatus = ok ? QStringLiteral("Истинный ортофотоплан готов: %1×%2 пикс., %3 см/пикс., %4 с")
+                                     .arg(r.width).arg(r.height).arg(QLocale(QLocale::Russian).toString(r.resolution * 100, 'f', 1))
+                                     .arg(QLocale(QLocale::Russian).toString(r.seconds, 'f', 0))
+                               : QStringLiteral("Истинный ортофотоплан не построен: %1").arg(r.error);
+            if (ProcessingJob *job = findJob(id)) {
+                job->outputs = m_engine->collectOutputs(jobDirectory(id));
+                QString message = job->message;
+                const int at = message.indexOf(QStringLiteral(" Истинный ортофотоплан"));
+                if (at >= 0) message.truncate(at);
+                setState(*job, job->state, message + QLatin1Char(' ') + m_orthoStatus + QLatin1Char('.'));
+            }
+            emit trueOrthoChanged();
+            emit trueOrthoFinished(id, ok, m_orthoStatus);
+        });
+    });
+    return {};
 }
 
 void ProcessingService::setState(ProcessingJob &job, JobState state, const QString &message)

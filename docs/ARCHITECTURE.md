@@ -1,4 +1,4 @@
-# Architecture — GeoMap AI 0.4.0
+# Architecture — GeoMap AI 0.5.0
 
 ## Process
 
@@ -43,10 +43,22 @@ src/gis/VectorSource               GeoJSON/KML/GeoPackage reading (OGR) and writ
 src/gis/ResultExport               rasters to GeoTIFF/COG (GDAL translate, warp for CRS/cell size), OBJ with MTL/textures
 src/processing/ResultExporter      export of a job's results in the background (QML "exporter"), unique names, cancel
 src/gis/TerrainAnalysis            slope/aspect (gdaldem), contours (GDALContourGenerateEx), profiles (bilinear,
-                                   geodesic distances), cut/fill volumes against a base plane or another surface
+                                   geodesic distances), cut/fill volumes against a base plane or another surface,
+                                   cross sections, viewshed (GDALViewshedGenerate), raster calculator (own parser)
+src/gis/RasterEdit                 in-place RGB window edits of the program's raster copies, with overview refresh
+src/processing/TrueOrthophoto      true orthophoto from an ODM job: OpenSfM poses (Brown model) + DSM, z-buffer per
+                                   photo, object-wise photo choice, view-to-normal choice, gain compensation
+src/ai/ModelCard                   model cards (`model.json`): licence, origin, files with SHA-256; discovery
+src/ai/OrtCommon                   ONNX Runtime environment and CPU sessions (header for ORT builds only)
+src/ai/SamSegmenter                MobileSAM/SAM encoder + decoder: embedding once, prompts in milliseconds
+src/ai/Inpainter                   LaMa-style inpainting in 512 px windows around each masked part
+src/ai/MaskPolygons                mask → polygons (GDALPolygonize) and Douglas–Peucker simplification
+src/ai/AiService                   models for the interface (QML "aiModels"), the chosen model per task
 app/MapTiles                       tile cache (256 MB) and rendering pool
 app/MapService                     the map: layers and their model, view, tools, measurements, drawings with
-                                   undo/redo, map.json, exports (PNG/PDF, GeoJSON/GPKG/KML); QML API "gis"
+                                   undo/redo, map.json, exports (PNG/PDF, GeoJSON/GPKG/KML); QML API "gis";
+                                   AI selection and orthophoto edits (undoable); MapServiceAnalysis.cpp: cross
+                                   sections, slope/height/angle tools, viewshed, calculator, analysis export
 src/ui/commands/CommandRegistry    commands.json (resource): commands, menus, toolbar; user shortcuts in QSettings
 src/ui/workspace/WorkspaceState    window and panel layout in QSettings ("workspace/")
 src/ui/workspace/AppLog            operations journal (model + daily file in <data>/logs); Journal wires the services
@@ -155,3 +167,11 @@ QML ──Q_INVOKABLE──▶ ProcessingService ──createJob / start / cance
 14. GIS source files are opened read-only; derived data (pyramids) lives in the project cache and can be deleted.
 15. GDAL and PROJ run offline: no network access, no `.aux.xml` files next to the user's data (`GDAL_PAM_ENABLED=NO`).
 16. Metric values (metres) are shown only for data in a known CRS; ungeoreferenced 3D data is measured in file units, labelled.
+
+## Local AI
+
+Models run in the program's own process through ONNX Runtime (CPU, all cores but one, idle threads sleep). A model is a folder with a card (`model.json`) found in `<app>/models` (shipped) or `<data>/models` (the user's own); it is loaded only when the card is complete and every file matches its SHA-256. Loading happens on a worker thread the first time a model is needed; the loaded model is shared (cachedSegmenter, cachedInpainter) and used by one job at a time. MapService encodes the visible part of the raster once (key: layer, version, window, size) and answers each click with the decoder only. Orthophoto edits write windows of the program's copy of the raster and push an undo command with the pixels before and after; the user's files are never written. A build without ONNX Runtime (`-NoAi`) compiles stubs that explain why the tools are unavailable.
+
+## True orthophoto
+
+`ProcessingService` builds it on its own single-thread pool after a completed job with a DSM (setting processing/autoTrueOrthophoto) or on request, writing `geomap/true_orthophoto.partial.tif` and renaming it when complete; cancelled when the project changes or the program exits. `OdmEngine::collectOutputs` lists it before ODM's orthophoto, so the project tree and the map use it.

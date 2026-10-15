@@ -6,6 +6,10 @@ GeoMap AI распространяется по лицензии MIT (текст
 * Qt 6.8.3 — GNU LGPL-3.0.
 * GDAL 3.12.4, PROJ 9.8.1 и их библиотеки — MIT и совместимые разрешительные лицензии.
 * Среда выполнения Microsoft Visual C++ — по лицензии Microsoft на распространяемые компоненты.
+* ONNX Runtime 1.30.0 (Microsoft) — MIT; лицензия и уведомления сторонних компонентов — в licenses\onnxruntime.
+* Модели ИИ (папка models, у каждой карточка model.json и файл LICENSE):
+  - MobileSAM (Chaoning Zhang и соавт.; декодер Segment Anything, Meta AI) — Apache-2.0; ONNX-экспорт — Acly/MobileSAM;
+  - LaMa (Samsung AI Center, авторы статьи WACV 2022) — Apache-2.0; ONNX-экспорт — Carve/LaMa-ONNX.
 
 Полный список с версиями и лицензиями — docs\DEPENDENCIES.md в папке программы.
 

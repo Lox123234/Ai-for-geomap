@@ -117,6 +117,27 @@ OpenDroneMap входит в каждую поставку GeoMap AI (`engines\o
 3. описание поставки не должно выдавать ODM за часть GeoMap AI под MIT.
 
 Публикация такой поставки — только после решения владельца проекта (см. ТЗ).
+
+**ИИ-модели самого ODM (раскрытие).** Некоторые параметры ODM включают его собственные модели, которые ODM **скачивает сам при первом использовании** в `%PROGRAMDATA%\ODM\storage\models` (код `opendm/ai.py`):
+
+| Параметр ODM | Модель | Лицензия | Статус в GeoMap AI |
+| --- | --- | --- | --- |
+| `--pc-classify` («Классифицировать точки») | OpenPointClass `vehicles-vegetation-buildings` (uav4geo, релиз v1.1.3, 575 КБ) | код AGPL-3.0; условия весов не указаны | **была скачана ODM 2026-10-14** при тестовой обработке с классификацией (обнаружено и раскрыто владельцу 2026-10-15). Классификация в профилях не включается без явного выбора пользователя |
+| `--sky-removal` | OpenDroneMap/SkyRemoval v1.0.5 | код AGPL-3.0; условия весов не указаны | не используется; владелец не давал согласия на загрузку |
+| `--bg-removal` | U²-Net из релиза ODM v2.9.0 | — | не используется |
+
+### Локальный ИИ (с 0.5.0): ONNX Runtime и модели
+
+GeoMap AI выполняет модели сам, в своём процессе, через ONNX Runtime; снимки никуда не отправляются. Каждая модель — папка `models\<id>` с карточкой `model.json` (задача, лицензия, авторы, источник, преобразование, файлы с SHA-256) и текстом лицензии; модель без полной карточки или с несовпадающей суммой не загружается.
+
+| Компонент | Версия / файл | Лицензия (проверено) | Как попадает к пользователю |
+| --- | --- | --- | --- |
+| ONNX Runtime (Microsoft), официальный архив `onnxruntime-win-x64-1.30.0.zip` | 1.30.0, архив 78,8 МБ, SHA-256 `c6ba983baf5681af108599675d2a89c2d145512d02de28aed0bff177cd0ba949`; в поставке `onnxruntime.dll` (15,7 МБ) и `onnxruntime_providers_shared.dll` | **MIT** (`LICENSE`), уведомления — `ThirdPartyNotices.txt` (оба в `licenses\onnxruntime`) | DLL рядом с программой; только CPU |
+| MobileSAM (выделение по щелчку) | кодировщик `mobile_sam_image_encoder.onnx` (28,2 МБ, SHA-256 `580f5fb6…c749`), декодер `sam_mask_decoder_multi.onnx` (16,5 МБ, `8976b90a…2ffe`) | **Apache-2.0** (MobileSAM, Chaoning Zhang и соавт.; декодер — Segment Anything, Meta AI, Apache-2.0); ONNX-экспорт официальных весов — Acly/MobileSAM, коммит `0d3b4033…` | `models\mobilesam` |
+| LaMa (удаление объектов, заполнение пропусков) | `lama_fp32.onnx` (208,0 МБ, SHA-256 `1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6`) | **Apache-2.0** (advimman/lama, Samsung AI Center); ONNX-экспорт big-lama — Carve/LaMa-ONNX, Apache-2.0 | `models\lama` |
+
+Загрузка ONNX Runtime и LaMa согласована владельцем (2026-10-15). Отклонены по лицензии: CLIP OpenAI (карточка модели исключает развёрнутое использование), модели Ultralytics YOLO (AGPL-3.0).
+
 ### Тестовые данные
 
 | Набор | Лицензия | Использование |
@@ -131,5 +152,4 @@ OpenDroneMap входит в каждую поставку GeoMap AI (`engines\o
 | --- | --- | --- | --- |
 
 | LASzip или PDAL (чтение LAZ) | D+ | LASzip: Apache-2.0 (с 3.x; проверить), PDAL: BSD | Размер, сборка через vcpkg, лицензии зависимостей |
-| ONNX Runtime | E | MIT | Провайдеры GPU и их лицензии |
-| Модели сегментации | E | Разные | Карточка модели: лицензия весов и датасета обучения |
+| Провайдеры GPU для ONNX Runtime (DirectML, CUDA) | E+ | MIT (DirectML); CUDA — лицензия NVIDIA | Размер, распространение библиотек NVIDIA |

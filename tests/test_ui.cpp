@@ -12,6 +12,7 @@
 #include <QtQml/qqmlextensionplugin.h>
 #include <gdal.h>
 #include <ogr_srs_api.h>
+#include "AiService.h"
 #include "AppInfo.h"
 #include "AppLog.h"
 #include "CommandRegistry.h"
@@ -41,6 +42,7 @@ struct Session
     std::shared_ptr<MockEngine::Record> record = std::make_shared<MockEngine::Record>();
     ProjectManager projects;
     ProcessingService processing{new MockEngine(record)};
+    ai::AiService aiModels;
     MapService map;
     Scene3DService scene3d;
     ResultExporter exporter{&processing};
@@ -62,6 +64,7 @@ struct Session
         });
         QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &scene3d, &Scene3DService::clear);
         treeView.setSourceModel(&tree);
+        map.setAi(&aiModels);
         connectJournal(&log, &projects, &processing, &map);
         auto *thumbnails = new ThumbnailProvider;
         QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, thumbnails,
@@ -73,6 +76,7 @@ struct Session
         c->setContextProperty("gis", &map);
         c->setContextProperty("scene3d", &scene3d);
         c->setContextProperty("exporter", &exporter);
+        c->setContextProperty("aiModels", &aiModels);
         c->setContextProperty("commands", &commands);
         c->setContextProperty("workspace", &workspace);
         c->setContextProperty("appLog", &log);
@@ -204,7 +208,7 @@ private slots:
         QObject *processingMenu = nullptr;
         for (QObject *m : menus) if (m->property("title").toString().contains(QStringLiteral("Обработка"))) processingMenu = m;
         QVERIFY(processingMenu);
-        QCOMPARE(processingMenu->property("count").toInt(), 28);   // 22 commands + 6 separators
+        QCOMPARE(processingMenu->property("count").toInt(), 29);   // 23 commands + 6 separators
         QMetaObject::invokeMethod(processingMenu, "open");
         QTRY_VERIFY(processingMenu->property("opened").toBool());
         s->shot(QStringLiteral("ui-06-menu-processing.png"));
@@ -498,6 +502,85 @@ private slots:
         QVERIFY(text.contains(QStringLiteral("2400.000")));
         s->map.removeMeasurement(saved);
         QCOMPARE(s->map.savedMeasurements().size(), 0);
+
+        auto click = [&](const QPointF &p) {
+            const QPointF screen = s->map.toScreen(p);
+            s->map.pointerPressed(screen, Qt::LeftButton, Qt::NoModifier);
+            s->map.pointerReleased(screen);
+        };
+        QSignalSpy terrain(&s->map, &MapService::terrainResultReady);
+        // Slope between two points: from the ground onto the box (5 m up).
+        QVERIFY(s->run(QStringLiteral("tool.slope")));
+        QCOMPARE(s->map.tool(), QStringLiteral("slope"));
+        click({576010.5, 5188070.5});
+        click({576030.5, 5188070.5});
+        QTRY_VERIFY_WITH_TIMEOUT(s->map.measurementText().startsWith(QStringLiteral("Уклон")), 30000);
+        QVERIFY2(s->map.measurementText().contains(QStringLiteral("+5,00 м")), qPrintable(s->map.measurementText()));
+        QVERIFY(s->map.canSaveMeasurement());
+        // Height of a point; angle of three points.
+        QVERIFY(s->run(QStringLiteral("tool.height")));
+        click({576030.5, 5188070.5});
+        QVERIFY2(s->map.measurementText().contains(QStringLiteral("105,00 м")), qPrintable(s->map.measurementText()));
+        QVERIFY(s->run(QStringLiteral("tool.angle")));
+        click({576000.5, 5188060});
+        click({576010.5, 5188060});
+        click({576010.5, 5188050});
+        QVERIFY2(s->map.measurementText().startsWith(QStringLiteral("Угол 90,00°")), qPrintable(s->map.measurementText()));
+        // Cross sections: the settings panel, one section per 10 m, navigation and CSV.
+        QVERIFY(s->run(QStringLiteral("analysis.crossProfile")));
+        QObject *settings = s->window->findChild<QObject *>(QStringLiteral("terrainSettings"));
+        QVERIFY(settings);
+        QTRY_VERIFY(settings->property("visible").toBool());
+        s->map.setCrossHalfWidth(20);
+        click({576030.5, 5188090});
+        click({576030.5, 5188050});
+        s->map.finishSketch();
+        QTRY_VERIFY_WITH_TIMEOUT(s->map.crossCount() == 5, 30000);
+        QCOMPARE(s->map.profileForQml().value("sections").toInt(), 5);
+        s->map.setCrossIndex(2);   // through the box: 5 m up and down again
+        QVERIFY(std::abs(s->map.profileResult().ascent - 5) < 0.01);
+        const QString cross = QDir(tmp.path()).filePath(QStringLiteral("cross.csv"));
+        QCOMPARE(s->map.exportCrossSections(QUrl::fromLocalFile(cross)), QString());
+        QVERIFY(QFileInfo(cross).size() > 1000);
+        // Viewshed: a layer of visible / hidden cells.
+        QVERIFY(s->run(QStringLiteral("analysis.viewshed")));
+        const int beforeView = s->map.layerCount();
+        finished.clear();
+        click({576005.5, 5188050});
+        QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 30000);
+        QVERIFY2(finished.first().at(0).toBool(), qPrintable(finished.first().at(1).toString()));
+        QVERIFY(finished.first().at(1).toString().startsWith(QStringLiteral("Видно")));
+        QTRY_COMPARE(s->map.layerCount(), beforeView + 1);
+        // Raster calculator from its dialog's command.
+        QVERIFY(s->run(QStringLiteral("tool.rasterCalc")));
+        QObject *calc = s->window->findChild<QObject *>(QStringLiteral("rasterCalcDialog"));
+        QVERIFY(calc);
+        QTRY_VERIFY(calc->property("visible").toBool());
+        QMetaObject::invokeMethod(calc, "close");
+        finished.clear();
+        QCOMPARE(s->map.checkRasterExpression(demId, QStringLiteral("B2")), QStringLiteral("Канала B2 нет: в растре каналов 1"));
+        QCOMPARE(s->map.calculateRaster(demId, QStringLiteral("calc"), QStringLiteral("B1 - 100")), QString());
+        QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 30000);
+        QVERIFY2(finished.first().at(1).toString().contains(QStringLiteral("от 0,000 до 5,000")), qPrintable(finished.first().at(1).toString()));
+        QVERIFY(s->map.calculateRaster(demId, QStringLiteral("exg")).contains(QStringLiteral("цветной")));
+        // AI: the tool, its panel and the models dialog.
+        QVERIFY(s->run(QStringLiteral("analysis.ai")));
+        QCOMPARE(s->map.tool(), QStringLiteral("aiSelect"));
+        QObject *ai = s->window->findChild<QObject *>(QStringLiteral("aiPanel"));
+        QVERIFY(ai);
+        QTRY_VERIFY(ai->property("visible").toBool());
+        QVERIFY(s->run(QStringLiteral("analysis.aiModels")));
+        QObject *models = s->window->findChild<QObject *>(QStringLiteral("aiModelsDialog"));
+        QVERIFY(models);
+        QTRY_VERIFY(models->property("visible").toBool());
+        s->shot(QStringLiteral("ui-ai-models.png"));
+        QMetaObject::invokeMethod(models, "close");
+        // Everything the analysis produced, into a new folder.
+        finished.clear();
+        QCOMPARE(s->map.exportAnalysis(QUrl::fromLocalFile(tmp.path())), QString());
+        QCOMPARE(finished.count(), 1);
+        QVERIFY2(finished.first().at(0).toBool(), qPrintable(finished.first().at(1).toString()));
+        QVERIFY(finished.first().at(1).toString().contains(QStringLiteral("анализ")));
     }
     // The 3D view: commands, tools without a map CRS, and an ODM point cloud opened from the
     // project tree (the job's LAZ is shown through odm_filterpoints/point_cloud.ply). The

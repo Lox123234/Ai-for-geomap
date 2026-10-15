@@ -1,8 +1,13 @@
 #include "MapService.h"
+#include "AiService.h"
 #include "Geodesy.h"
 #include "GisEnvironment.h"
+#include "Inpainter.h"
 #include "MapTiles.h"
+#include "MaskPolygons.h"
 #include "PhotoModel.h"
+#include "RasterEdit.h"
+#include "SamSegmenter.h"
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -292,6 +297,34 @@ private:
     Kind m_kind;
 };
 
+// A window of an edited raster before and after an AI edit (bands 1–3).
+class RasterPatchCommand final : public QUndoCommand
+{
+public:
+    RasterPatchCommand(MapService *service, const QString &path, const QRect &window, const QImage &before, const QImage &after)
+        : QUndoCommand(QStringLiteral("Удаление объекта с ортофотоплана (ИИ)")), m_service(service), m_path(path), m_window(window),
+          m_before(before), m_after(after) {}
+    void redo() override
+    {
+        if (m_first) m_first = false;   // already written when the edit was made
+        else write(m_after);
+    }
+    void undo() override { write(m_before); }
+
+private:
+    void write(const QImage &image)
+    {
+        QString error;
+        if (!rasteredit::writeRgb(m_path, m_window, image, &error)) emit m_service->errorOccurred(error);
+        m_service->rasterEdited(m_path);
+    }
+    MapService *m_service;
+    QString m_path;
+    QRect m_window;
+    QImage m_before, m_after;
+    bool m_first = true;
+};
+
 // ------------------------------------------------------------ LayerListModel
 
 LayerListModel::LayerListModel(MapService *service) : QAbstractListModel(service), m_service(service) {}
@@ -471,8 +504,19 @@ void MapService::setProject(const QString &directory, const PhotoModel *photos)
     m_profile = {};
     m_volume = {};
     m_profileMarker = -1;
+    m_cross.clear();
+    m_crossLines.clear();
+    m_crossIndex = 0;
+    m_pointValues.clear();
     m_measurements.clear();
     m_shownMeasurement.clear();
+    ++m_aiGeneration;
+    m_aiCandidate.clear();
+    m_aiPoints.clear();
+    m_aiLabels.clear();
+    m_aiText.clear();
+    m_aiDetails.clear();
+    if (!m_aiBusy) m_aiStatus.clear();
     m_project = directory.isEmpty() ? QString() : QDir(directory).absolutePath();
     m_photos = photos;
     if (!m_project.isEmpty()) {
@@ -481,6 +525,7 @@ void MapService::setProject(const QString &directory, const PhotoModel *photos)
     }
     emit profileChanged();
     emit measurementsChanged();
+    emit aiChanged();
     m_model->reset();
     updateScale();
     emit projectChanged();
@@ -602,7 +647,7 @@ void MapService::saveDrawings() const
         if (f.kind == VectorFeature::Line) f.attributes.insert(QStringLiteral("length_m"), toMillimetres(measure(pts, false).length));
         if (f.kind == VectorFeature::Polygon) {
             const Measure m = measure(pts, true);
-            f.attributes.insert(QStringLiteral("area_m2"), toMillimetres(m.area));
+            f.attributes.insert(QStringLiteral("area_m2"), toMillimetres(polygonArea(f)));
             f.attributes.insert(QStringLiteral("perimeter_m"), toMillimetres(m.perimeter));
         }
     }
@@ -1292,6 +1337,33 @@ void MapService::paint(QPainter *painter, const QSizeF &size, bool interactive)
         painter->setPen(QPen(QColor(20, 24, 30), 1));
         for (const QPointF &p : m_sketch) painter->drawEllipse(toScreen(p), 4, 4);
     }
+    paintAnalysis(painter);
+    // Contour proposed by the AI selection and its prompts (+ on the object, − excluded).
+    if (!m_aiCandidate.isEmpty() || !m_aiPoints.isEmpty()) {
+        QPainterPath path;
+        path.setFillRule(Qt::OddEvenFill);
+        for (const QPolygonF &ring : m_aiCandidate) {
+            QPolygonF s;
+            for (const QPointF &p : ring) s << toScreen(p);
+            path.addPolygon(s);
+            path.closeSubpath();
+        }
+        QPen pen(QColor(255, 92, 205), 2);
+        pen.setCosmetic(true);
+        painter->setPen(pen);
+        painter->setBrush(QColor(255, 92, 205, 60));
+        painter->drawPath(path);
+        for (int i = 0; i < m_aiPoints.size(); ++i) {
+            const QPointF s = toScreen(m_aiPoints[i]);
+            const bool on = m_aiLabels.value(i) == 1;
+            painter->setPen(QPen(QColor(20, 24, 30), 1.5));
+            painter->setBrush(on ? QColor(90, 220, 120) : QColor(240, 80, 80));
+            painter->drawEllipse(s, 6, 6);
+            painter->setPen(QPen(Qt::white, 2));
+            painter->drawLine(s - QPointF(3, 0), s + QPointF(3, 0));
+            if (on) painter->drawLine(s - QPointF(0, 3), s + QPointF(0, 3));
+        }
+    }
     // The saved measurement chosen in the panel.
     for (const SavedMeasurement &s : m_measurements) {
         if (s.id != m_shownMeasurement || s.geometry.size() < 2 || !m_crs.isValid()) continue;
@@ -1361,9 +1433,10 @@ void MapService::pointerMoved(const QPointF &screen)
     }
 }
 
-void MapService::pointerPressed(const QPointF &screen, Qt::MouseButton button, Qt::KeyboardModifiers)
+void MapService::pointerPressed(const QPointF &screen, Qt::MouseButton button, Qt::KeyboardModifiers modifiers)
 {
     m_pressScreen = m_lastScreen = screen;
+    m_pressModifiers = modifiers;
     m_panning = false;
     m_dragFeature = m_dragVertex = -1;
     if (button == Qt::MiddleButton) {
@@ -1455,16 +1528,40 @@ void MapService::pointerReleased(const QPointF &screen)
     if (!m_crs.isValid()) return;
     const QPointF map = toMap(screen);
     if (m_tool == QLatin1String("length") || m_tool == QLatin1String("area") || m_tool == QLatin1String("line")
-        || m_tool == QLatin1String("polygon") || m_tool == QLatin1String("profile") || m_tool == QLatin1String("volume")) {
+        || m_tool == QLatin1String("polygon") || m_tool == QLatin1String("profile") || m_tool == QLatin1String("volume")
+        || m_tool == QLatin1String("crossProfile") || m_tool == QLatin1String("slope") || m_tool == QLatin1String("angle")) {
         if (m_sketchDone) {
             m_sketch.clear();
             m_sketchDone = false;
             m_terrainText.clear();
             m_terrainDetails.clear();
+            m_pointValues.clear();
         }
         m_sketch << map;
+        // Two points make a slope, three an angle.
+        if ((m_tool == QLatin1String("slope") && m_sketch.size() == 2) || (m_tool == QLatin1String("angle") && m_sketch.size() == 3)) {
+            finishSketch();
+            return;
+        }
         updateMeasurement();
         emit repaint();
+    } else if (m_tool == QLatin1String("height") || m_tool == QLatin1String("viewshed")) {
+        m_sketch = {map};
+        m_sketchDone = true;
+        m_terrainText.clear();
+        m_terrainDetails.clear();
+        m_pointValues.clear();
+        if (m_tool == QLatin1String("height")) computeHeight(map);
+        else computeViewshed(map);
+        updateMeasurement();
+        emit repaint();
+    } else if (m_tool == QLatin1String("aiSelect")) {
+        const QString error = aiSelectAt(map, m_pressModifiers.testFlag(Qt::ShiftModifier),
+                                         m_pressModifiers.testFlag(Qt::ControlModifier) || m_pressModifiers.testFlag(Qt::AltModifier));
+        if (!error.isEmpty()) {
+            m_aiStatus = error;
+            emit aiChanged();
+        }
     } else if (m_tool == QLatin1String("point")) {
         VectorFeature f;
         f.kind = VectorFeature::Point;
@@ -1481,11 +1578,16 @@ void MapService::pointerDoubleClicked(const QPointF &)
 {
     // The first click of the pair already added a vertex; the second must not add another.
     m_ignoreRelease = true;
+    if (m_tool == QLatin1String("aiSelect")) return;   // the first click already asked the model
     finishSketch();
 }
 
 void MapService::finishSketch()
 {
+    if (m_tool == QLatin1String("aiSelect")) {
+        acceptAiCandidate();
+        return;
+    }
     if (m_sketch.isEmpty()) return;
     const bool line = m_tool == QLatin1String("line"), polygon = m_tool == QLatin1String("polygon");
     if (line || polygon) {
@@ -1510,6 +1612,9 @@ void MapService::finishSketch()
         m_sketchDone = true;   // the measurement stays on screen until the next click
         if (m_tool == QLatin1String("profile")) computeProfile(m_sketch);
         else if (m_tool == QLatin1String("volume")) computeVolume(m_sketch);
+        else if (m_tool == QLatin1String("crossProfile")) computeCrossSections(m_sketch);
+        else if (m_tool == QLatin1String("slope") && m_sketch.size() >= 2) computeSlope({m_sketch.first(), m_sketch.last()});
+        else if (m_tool == QLatin1String("angle") && m_sketch.size() >= 3) computeAngle(m_sketch);
     }
     updateMeasurement();
     emit repaint();
@@ -1518,6 +1623,7 @@ void MapService::finishSketch()
 bool MapService::keyPressed(int key)
 {
     if (key == Qt::Key_Escape) {
+        if (!m_aiCandidate.isEmpty() || m_aiBusy) clearAiCandidate();
         m_sketch.clear();
         m_sketchDone = false;
         m_terrainText.clear();
@@ -1556,6 +1662,14 @@ void MapService::setTool(const QString &tool)
     m_terrainText.clear();
     m_terrainDetails.clear();
     ++m_terrainGeneration;
+    m_pointValues.clear();
+    if (!m_cross.isEmpty()) {
+        m_cross.clear();
+        m_crossLines.clear();
+        m_crossIndex = 0;
+        emit crossChanged();
+    }
+    if (!m_aiCandidate.isEmpty() || m_aiBusy || !m_aiStatus.isEmpty()) clearAiCandidate();
     if (tool != QLatin1String("edit") && m_selectedFeature >= 0) {
         m_selectedFeature = -1;
         emit drawingsChanged();
@@ -1696,6 +1810,417 @@ MapService::Measure MapService::measure(const QVector<QPointF> &mapPoints, bool 
     return m;
 }
 
+double MapService::polygonArea(const VectorFeature &f) const
+{
+    double area = 0;
+    for (int k = 0; k < f.parts.size(); ++k) {
+        const double a = measure(QVector<QPointF>(f.parts[k].begin(), f.parts[k].end()), true).area;
+        area += k == 0 ? a : -a;
+    }
+    return qMax(0.0, area);
+}
+
+// ----------------------------------------------------------- AI selection
+
+QString MapService::aiSelectAt(const QPointF &mapPoint, bool add, bool exclude)
+{
+    if (!m_crs.isValid()) return QStringLiteral("Сначала задайте систему координат карты.");
+    if (m_aiBusy) return QStringLiteral("ИИ ещё обрабатывает предыдущий щелчок.");
+    if (!m_ai) return QStringLiteral("Локальный AI не подключён.");
+    const QString problem = m_ai->segmentationProblem();
+    if (!problem.isEmpty()) return problem;
+    // Shift/Ctrl refine the candidate while the click is inside the image the model has seen.
+    const bool refine = (add || exclude) && !m_aiCandidate.isEmpty() && m_aiWindow.contains(mapPoint) && indexOf(m_aiLayerId) >= 0;
+    if (exclude && !refine) return QStringLiteral("Сначала выделите объект щелчком, затем исключайте лишнее Ctrl+щелчком.");
+    int index = -1;
+    if (refine) {
+        index = indexOf(m_aiLayerId);
+        m_aiPoints << mapPoint;
+        m_aiLabels << (exclude ? 0 : 1);
+    } else {
+        // The top visible colour raster under the click (an orthophoto or a background image).
+        for (int i = int(m_layers.size()) - 1; i >= 0 && index < 0; --i) {
+            const MapLayer &l = m_layers[i];
+            if (l.visible && l.type == MapLayer::Raster && l.raster && l.raster->isValid() && l.style.mode == RasterStyle::Rgb
+                && l.raster->mapExtent().contains(mapPoint))
+                index = i;
+        }
+        if (index < 0) return QStringLiteral("Под щелчком нет видимого ортофотоплана или другого цветного растра.");
+        const QSizeF span(m_viewSize.width() * m_resolution, m_viewSize.height() * m_resolution);
+        const QRectF view(m_center.x() - span.width() / 2, m_center.y() - span.height() / 2, span.width(), span.height());
+        const QRectF window = view.intersected(m_layers[index].raster->mapExtent());
+        if (window.width() < 16 * m_resolution || window.height() < 16 * m_resolution)
+            return QStringLiteral("В окне карты слишком маленький участок растра: приблизьте его.");
+        const double longest = qMax(window.width(), window.height());
+        m_aiImageSize = QSize(qMax(16, int(std::lround(1024 * window.width() / longest))), qMax(16, int(std::lround(1024 * window.height() / longest))));
+        m_aiWindow = window;
+        m_aiLayerId = m_layers[index].id;
+        m_aiPoints = {mapPoint};
+        m_aiLabels = {1};
+        m_aiCandidate.clear();
+        m_aiText.clear();
+        m_aiDetails.clear();
+    }
+    runAiSelection(index);
+    return {};
+}
+
+void MapService::runAiSelection(int index)
+{
+    const MapLayer &l = m_layers[index];
+    const ai::ModelCard card = m_ai->segmentationCard();
+    const QRectF window = m_aiWindow;
+    const QSize size = m_aiImageSize;
+    // What the shared segmenter must have encoded for these prompts.
+    const QString key = QStringLiteral("%1|%2|%3|%4 %5 %6 %7|%8x%9")
+                            .arg(l.source, QString::number(l.version), card.directory)
+                            .arg(window.x(), 0, 'g', 17).arg(window.y(), 0, 'g', 17).arg(window.width(), 0, 'g', 17).arg(window.height(), 0, 'g', 17)
+                            .arg(size.width()).arg(size.height());
+    const bool encode = key != m_aiImageKey;
+    QVector<QPointF> pixels;   // row 0 = top (north) of the window
+    for (const QPointF &p : std::as_const(m_aiPoints))
+        pixels << QPointF((p.x() - window.left()) / window.width() * size.width(), (window.bottom() - p.y()) / window.height() * size.height());
+    const QVector<int> labels = m_aiLabels;
+    const int generation = ++m_aiGeneration;
+    const std::shared_ptr<RasterSource> source = l.raster;
+    m_aiLayerName = l.name;
+    m_aiModelName = card.name.section(QStringLiteral(" — "), 0, 0);   // "MobileSAM"
+    m_aiBusy = true;
+    m_aiStatus = encode ? QStringLiteral("ИИ: анализ изображения (%1)…").arg(m_aiModelName) : QStringLiteral("ИИ: построение контура…");
+    emit aiChanged();
+    QThreadPool::globalInstance()->start([this, card, source, window, size, key, encode, pixels, labels, generation] {
+        QElapsedTimer timer;
+        timer.start();
+        QString error;
+        bool encoded = false;
+        ai::SamSegmenter::Result result;
+        QVector<ai::MaskPolygon> polygons;
+        std::shared_ptr<ai::SamSegmenter> segmenter = ai::cachedSegmenter(card, &error);
+        if (segmenter && encode) {
+            encoded = segmenter->setImage(source->renderRegion(window, size), &error);
+            if (!encoded) segmenter.reset();
+        }
+        if (segmenter) {
+            result = segmenter->segment(pixels, labels);
+            error = result.error;
+            if (result.ok()) polygons = ai::maskPolygons(result.mask, &error);
+        }
+        const double seconds = timer.elapsed() / 1000.0;
+        const float score = result.score;
+        QMetaObject::invokeMethod(this, [this, key, encode, encoded, error, polygons, pixels, labels, window, size, generation, seconds, score] {
+            m_aiBusy = false;
+            if (encode) m_aiImageKey = encoded ? key : QString();
+            if (generation != m_aiGeneration) {   // cleared, another tool or another project meanwhile
+                m_aiStatus.clear();
+                emit aiChanged();
+                return;
+            }
+            // The object: the largest polygon that contains a click on the object.
+            int best = -1;
+            for (int i = 0; i < polygons.size(); ++i) {
+                bool hit = false;
+                for (int j = 0; j < pixels.size() && !hit; ++j) hit = labels[j] == 1 && polygons[i].contains(pixels[j]);
+                if (hit && (best < 0 || polygons[i].area > polygons[best].area)) best = i;
+            }
+            if (!error.isEmpty() || best < 0) {
+                m_aiStatus = !error.isEmpty() ? QStringLiteral("ИИ: %1").arg(error)
+                                              : QStringLiteral("ИИ не выделил объект под щелчком. Щёлкните ближе к центру объекта или приблизьте карту.");
+                // The failed prompt is dropped; a refinement keeps the previous candidate.
+                if (!m_aiPoints.isEmpty()) {
+                    m_aiPoints.removeLast();
+                    m_aiLabels.removeLast();
+                }
+                if (m_aiCandidate.isEmpty()) {
+                    m_aiPoints.clear();
+                    m_aiLabels.clear();
+                }
+                emit aiChanged();
+                emit aiFinished(false, m_aiStatus);
+                emit repaint();
+                return;
+            }
+            // Pixel edges → map. SAM's masks are upsampled from a quarter of the image, so their
+            // edges wobble by a pixel or two: simplified with a tolerance of 1.5 px.
+            auto toMap = [&](const QPolygonF &ring) {
+                QPolygonF out;
+                for (const QPointF &p : ai::simplifyRing(ring, 1.5))
+                    out << QPointF(window.left() + p.x() * window.width() / size.width(), window.bottom() - p.y() * window.height() / size.height());
+                return out;
+            };
+            const ai::MaskPolygon &object = polygons[best];
+            m_aiCandidate = {toMap(object.outer)};
+            for (const QPolygonF &hole : object.holes)   // specks inside the object are not holes
+                if (std::fabs(shoelace(QVector<QPointF>(hole.begin(), hole.end()))) >= qMax(16.0, object.area * 0.01)) m_aiCandidate << toMap(hole);
+            m_aiScore = score;
+            m_aiStatus = QStringLiteral("ИИ: контур готов (%1 с)").arg(number(seconds, 1));
+            setAiText();
+            updateMeasurement();
+            emit aiChanged();
+            emit aiFinished(true, m_aiText);
+            emit repaint();
+        });
+    });
+}
+
+void MapService::setAiText()
+{
+    VectorFeature f;
+    f.kind = VectorFeature::Polygon;
+    f.parts = m_aiCandidate;
+    const Measure m = measure(QVector<QPointF>(m_aiCandidate.first().begin(), m_aiCandidate.first().end()), true);
+    int positive = 0;
+    for (int label : std::as_const(m_aiLabels)) positive += label == 1;
+    m_aiText = QStringLiteral("Объект ИИ: площадь %1, периметр %2").arg(formatArea(polygonArea(f)), formatLength(m.perimeter));
+    m_aiDetails = QStringLiteral("%1 · оценка модели %2 · растр «%3» · подсказок: %4 на объекте, %5 исключено. "
+                                 "Enter — добавить на карту, Shift+щелчок — добавить часть, Ctrl+щелчок — исключить, Esc — сбросить.")
+                      .arg(m_aiModelName, number(m_aiScore, 2), m_aiLayerName)
+                      .arg(positive).arg(m_aiLabels.size() - positive);
+}
+
+QString MapService::acceptAiCandidate()
+{
+    if (m_aiCandidate.isEmpty() || m_aiBusy) return {};
+    VectorFeature f;
+    f.kind = VectorFeature::Polygon;
+    f.id = m_nextFeatureId++;
+    f.parts = m_aiCandidate;
+    f.bounds = m_aiCandidate.first().boundingRect();
+    const QString name = QStringLiteral("ИИ-объект %1").arg(f.id);
+    f.attributes.insert(QStringLiteral("name"), name);
+    f.attributes.insert(QStringLiteral("method"), QStringLiteral("ИИ: %1, выделение по щелчку").arg(m_aiModelName));
+    f.attributes.insert(QStringLiteral("ai_score"), std::round(m_aiScore * 1000.0) / 1000.0);
+    f.attributes.insert(QStringLiteral("source_layer"), m_aiLayerName);
+    auto *cmd = new DrawingCommand(this, DrawingCommand::Add, QStringLiteral("Добавление объекта ИИ"));
+    cmd->feature = f;
+    m_undo.push(cmd);
+    m_aiCandidate.clear();
+    m_aiPoints.clear();
+    m_aiLabels.clear();
+    m_aiText.clear();
+    m_aiDetails.clear();
+    m_aiStatus = QStringLiteral("Добавлено на карту: %1").arg(name);
+    updateMeasurement();
+    emit aiChanged();
+    emit repaint();
+    return name;
+}
+
+void MapService::rasterEdited(const QString &path)
+{
+    const QString wanted = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    for (int i = 0; i < m_layers.size(); ++i) {
+        MapLayer &l = m_layers[i];
+        if (l.type != MapLayer::Raster || QDir::cleanPath(QFileInfo(l.source).absoluteFilePath()).compare(wanted, Qt::CaseInsensitive) != 0) continue;
+        if (l.raster) l.raster->reload();
+        ++l.version;
+        changed(i);
+    }
+    emit repaint();
+}
+
+QString MapService::removeFromOrthophoto(double growMeters)
+{
+    if (m_project.isEmpty() || !m_crs.isValid()) return QStringLiteral("Откройте проект с картой.");
+    if (m_aiBusy) return QStringLiteral("ИИ ещё работает.");
+    if (!m_ai) return QStringLiteral("Локальный AI не подключён.");
+    const QString problem = m_ai->inpaintingProblem();
+    if (!problem.isEmpty()) return problem;
+    // The outline: the AI proposal, else the selected drawn polygon.
+    QVector<QPolygonF> rings = m_aiCandidate;
+    const bool fromCandidate = !rings.isEmpty();
+    if (!fromCandidate) {
+        const VectorData *d = drawings();
+        if (d && m_selectedFeature >= 0 && m_selectedFeature < d->features.size() && d->features[m_selectedFeature].kind == VectorFeature::Polygon)
+            rings = d->features[m_selectedFeature].parts;
+    }
+    if (rings.isEmpty() || rings.first().size() < 3)
+        return QStringLiteral("Выделите объект: щелчком инструмента «ИИ-выделение» или выберите нарисованный полигон.");
+    QRectF bounds = rings.first().boundingRect();
+    int index = fromCandidate ? indexOf(m_aiLayerId) : -1;
+    for (int i = int(m_layers.size()) - 1; i >= 0 && index < 0; --i) {
+        const MapLayer &l = m_layers[i];
+        if (l.visible && l.type == MapLayer::Raster && l.raster && l.raster->isValid() && l.style.mode == RasterStyle::Rgb
+            && l.raster->mapExtent().intersects(bounds))
+            index = i;
+    }
+    if (index < 0) return QStringLiteral("Под объектом нет ортофотоплана.");
+    const MapLayer &ortho = m_layers[index];
+    const RasterInfo info = ortho.rasterInfo;
+    if (info.dataType != QLatin1String("Byte") || info.bands < 3) return QStringLiteral("Удалять объекты можно только с цветного 8-битного растра.");
+    const double *gt = info.geoTransform;
+    if (gt[2] != 0 || gt[4] != 0) return QStringLiteral("Повёрнутые растры пока не правятся.");
+    // The outline in pixels of the file.
+    const Crs layerCrs = ortho.assignedCrs.isValid() ? ortho.assignedCrs : info.crs;
+    CoordinateTransform toLayer(m_crs, layerCrs);
+    QVector<QPolygonF> pixelRings;
+    for (const QPolygonF &ring : std::as_const(rings)) {
+        QVector<QPointF> pts(ring.begin(), ring.end());
+        if (!toLayer.transform(pts)) return QStringLiteral("Не удалось пересчитать контур в систему координат растра.");
+        QPolygonF px;
+        for (const QPointF &p : pts) px << QPointF((p.x() - gt[0]) / gt[1], (p.y() - gt[3]) / gt[5]);
+        pixelRings << px;
+    }
+    // Size of a pixel on the ground, for the growth in metres.
+    const QPointF c = pixelRings.first().boundingRect().center();
+    QVector<QPointF> probe{QPointF(gt[0] + c.x() * gt[1], gt[3] + c.y() * gt[5]), QPointF(gt[0] + (c.x() + 1) * gt[1], gt[3] + c.y() * gt[5])};
+    CoordinateTransform(layerCrs, m_crs).transform(probe);
+    const double pixelMeters = qMax(1e-6, measure(probe, false).length);
+    const double growPixels = qMax(0.0, growMeters) / pixelMeters;
+    // Edits go to the program's own copy of the raster.
+    const QString analysis = QDir(m_project).filePath(QStringLiteral("analysis"));
+    const bool inPlace = QDir::cleanPath(QFileInfo(ortho.source).absolutePath()).compare(QDir::cleanPath(analysis), Qt::CaseInsensitive) == 0
+                         && QFileInfo(ortho.source).completeBaseName().contains(QStringLiteral("_ИИ-правка"));
+    QString target = ortho.source;
+    if (!inPlace) {
+        const QString base = QFileInfo(ortho.source).completeBaseName() + QStringLiteral("_ИИ-правка");
+        target = QDir(analysis).filePath(base + QStringLiteral(".tif"));
+        for (int n = 2; QFileInfo::exists(target); ++n) target = QDir(analysis).filePath(QStringLiteral("%1 (%2).tif").arg(base).arg(n));
+    }
+    const ai::ModelCard card = m_ai->inpaintingCard();
+    const QString source = ortho.source, layerId = ortho.id, layerName = ortho.name;
+    QVector<QPointF> outlineWgs(rings.first().begin(), rings.first().end());
+    CoordinateTransform(m_crs, Crs::wgs84()).transform(outlineWgs);
+    const double area = [&] {
+        VectorFeature f;
+        f.kind = VectorFeature::Polygon;
+        f.parts = rings;
+        return polygonArea(f);
+    }();
+    ++m_aiGeneration;
+    m_aiBusy = true;
+    m_aiStatus = inPlace ? QStringLiteral("ИИ: удаление объекта с ортофотоплана…") : QStringLiteral("Подготовка копии ортофотоплана для правки…");
+    emit aiChanged();
+    const QSize rasterSize(info.width, info.height);
+    QThreadPool::globalInstance()->start([this, card, source, target, inPlace, pixelRings, growPixels, rasterSize, layerId, layerName,
+                                          fromCandidate, outlineWgs, area] {
+        QString error;
+        QRect window;
+        QImage before;
+        ai::Inpainter::Result result;
+        int pixels = 0;
+        QElapsedTimer timer;
+        timer.start();
+        if (!inPlace && !rasteredit::makeEditableCopy(source, target, &error)) {}
+        else {
+            // The object and enough surroundings for the model's 512 px context.
+            QRectF pb;
+            for (const QPolygonF &r : pixelRings) pb = pb.isNull() ? r.boundingRect() : pb.united(r.boundingRect());
+            const QRect box = pb.toAlignedRect().adjusted(-int(growPixels) - 1, -int(growPixels) - 1, int(growPixels) + 1, int(growPixels) + 1);
+            const int margin = qMax(256, qMin(1500, qMax(box.width(), box.height())));
+            window = box.adjusted(-margin, -margin, margin, margin).intersected(QRect(QPoint(0, 0), rasterSize));
+            QImage alpha;
+            if (window.isEmpty()) error = QStringLiteral("Контур вне растра");
+            else if (rasteredit::readRgb(target, window, &before, &alpha, &error)) {
+                QImage mask(window.size(), QImage::Format_Grayscale8);
+                mask.fill(0);
+                {
+                    QPainter p(&mask);
+                    p.translate(-window.topLeft());
+                    QPainterPath path;
+                    path.setFillRule(Qt::OddEvenFill);
+                    for (const QPolygonF &r : pixelRings) {
+                        path.addPolygon(r);
+                        path.closeSubpath();
+                    }
+                    p.setPen(growPixels > 0.5 ? QPen(Qt::white, 2 * growPixels, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin) : QPen(Qt::NoPen));
+                    p.setBrush(Qt::white);
+                    p.drawPath(path);
+                }
+                for (int y = 0; y < mask.height(); ++y) {   // nodata is not painted over
+                    uchar *m = mask.scanLine(y);
+                    const uchar *a = alpha.constScanLine(y);
+                    for (int x = 0; x < mask.width(); ++x) {
+                        if (!a[x]) m[x] = 0;
+                        pixels += m[x] > 0;
+                    }
+                }
+                std::shared_ptr<ai::Inpainter> inpainter = pixels ? ai::cachedInpainter(card, &error) : nullptr;
+                if (!pixels) error = QStringLiteral("Контур не задевает данных ортофотоплана");
+                else if (inpainter) {
+                    result = inpainter->inpaint(before, mask);
+                    if (!result.ok()) error = result.error;
+                    else rasteredit::writeRgb(target, window, result.image, &error);
+                }
+            }
+        }
+        const double seconds = timer.elapsed() / 1000.0;
+        QMetaObject::invokeMethod(this, [this, card, target, inPlace, window, before, result, pixels, error, layerId, layerName, fromCandidate,
+                                         outlineWgs, area, seconds] {
+            m_aiBusy = false;
+            if (!error.isEmpty()) {
+                m_aiStatus = QStringLiteral("ИИ: %1").arg(error);
+                emit aiChanged();
+                emit aiFinished(false, m_aiStatus);
+                return;
+            }
+            if (!inPlace) {
+                // The copy replaces the original on the map: right above it, the original hidden.
+                const QString added = addLayerFromPath(target, false);
+                const QString copyId = layerIdForSource(target);
+                if (!added.isEmpty() || copyId.isEmpty()) {
+                    m_aiStatus = QStringLiteral("ИИ: правка сохранена в %1, но слой не добавлен: %2").arg(QDir::toNativeSeparators(target), added);
+                    emit aiChanged();
+                    emit aiFinished(false, m_aiStatus);
+                    return;
+                }
+                if (MapLayer *copy = layer(copyId)) copy->name = QStringLiteral("%1 (правка ИИ)").arg(layerName);
+                while (indexOf(copyId) > indexOf(layerId) + 1) moveLayer(copyId, -1);
+                setLayerVisible(layerId, false);
+                selectLayer(copyId);
+                changed(indexOf(copyId));
+                scheduleSave();
+            } else {
+                rasterEdited(target);
+            }
+            m_undo.push(new RasterPatchCommand(this, target, window, before, result.image));
+            // What was painted by the model, for whoever uses the raster later.
+            QFile log(target + QStringLiteral(".edits.json"));
+            QJsonArray edits;
+            if (log.open(QIODevice::ReadOnly)) edits = QJsonDocument::fromJson(log.readAll()).object().value(QStringLiteral("edits")).toArray();
+            log.close();
+            QJsonArray outline;
+            for (const QPointF &p : outlineWgs) outline.append(QJsonArray{p.x(), p.y()});
+            edits.append(QJsonObject{{"time", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
+                                     {"method", QStringLiteral("удаление объекта: дорисовано ИИ (%1)").arg(card.name.section(QStringLiteral(" — "), 0, 0))},
+                                     {"model", card.id}, {"modelSha256", card.files.value(0).sha256},
+                                     {"window", QJsonArray{window.x(), window.y(), window.width(), window.height()}},
+                                     {"pixels", pixels}, {"areaM2", std::round(area * 100) / 100}, {"outlineWgs84", outline}});
+            if (log.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                log.write(QJsonDocument(QJsonObject{{"note", QStringLiteral("Пиксели внутри этих контуров дорисованы моделью по окружению; это не съёмка.")},
+                                                    {"edits", edits}}).toJson(QJsonDocument::Indented));
+            if (fromCandidate) {
+                m_aiCandidate.clear();
+                m_aiPoints.clear();
+                m_aiLabels.clear();
+                m_aiText.clear();
+                m_aiDetails.clear();
+                updateMeasurement();
+            }
+            m_aiStatus = QStringLiteral("Объект убран с ортофотоплана: %1 пикс. дорисовано за %2 с%3")
+                             .arg(pixels).arg(number(seconds, 1))
+                             .arg(result.scaled ? QStringLiteral(" (крупная область — дорисована в уменьшенном окне)") : QString());
+            emit aiChanged();
+            emit aiFinished(true, m_aiStatus);
+            emit repaint();
+        });
+    });
+    return {};
+}
+
+void MapService::clearAiCandidate()
+{
+    ++m_aiGeneration;   // a running selection is dropped when it finishes
+    m_aiCandidate.clear();
+    m_aiPoints.clear();
+    m_aiLabels.clear();
+    m_aiText.clear();
+    m_aiDetails.clear();
+    if (!m_aiBusy) m_aiStatus.clear();
+    updateMeasurement();
+    emit aiChanged();
+    emit repaint();
+}
+
 QString MapService::formatLength(double m)
 {
     return m >= 10000 ? QStringLiteral("%1 км").arg(number(m / 1000, 3)) : QStringLiteral("%1 м").arg(number(m, m < 100 ? 2 : 1));
@@ -1724,18 +2249,29 @@ void MapService::updateMeasurement()
         what = f.attributes.value(QStringLiteral("name")).toString() + QStringLiteral(": ");
     }
     const QString ellipsoid = m_crs.isValid() ? m_crs.geographic().name() : QString();
-    const bool terrainTool = m_tool == QLatin1String("profile") || m_tool == QLatin1String("volume");
+    if (m_tool == QLatin1String("aiSelect") && m_selectedFeature < 0) {
+        m_measurementText = !m_aiText.isEmpty() ? m_aiText : QStringLiteral("Щёлкните по объекту на ортофотоплане — ИИ обведёт его контур");
+        m_measurementDetails = m_aiDetails;
+        emit measurementChanged();
+        return;
+    }
+    const bool terrainTool = isTerrainTool();
     if (terrainTool && m_sketchDone && !m_terrainText.isEmpty()) {
         m_measurementText = m_terrainText;
         m_measurementDetails = m_terrainDetails;
         emit measurementChanged();
         return;
     }
-    if (pts.size() < 2) {
+    if (pts.size() < 2 || m_tool == QLatin1String("height") || m_tool == QLatin1String("viewshed")) {
         m_measurementText = m_tool == QLatin1String("length") ? QStringLiteral("Щёлкайте по карте, чтобы измерить длину")
                           : m_tool == QLatin1String("area") ? QStringLiteral("Щёлкайте по карте, чтобы измерить площадь")
                           : m_tool == QLatin1String("profile") ? QStringLiteral("Проведите линию профиля по модели высот")
                           : m_tool == QLatin1String("volume") ? QStringLiteral("Обведите участок для расчёта объёма")
+                          : m_tool == QLatin1String("crossProfile") ? QStringLiteral("Проведите ось (Enter — готово): профили поперёк неё через заданный шаг")
+                          : m_tool == QLatin1String("slope") ? QStringLiteral("Щёлкните две точки: уклон и перепад высот между ними")
+                          : m_tool == QLatin1String("height") ? QStringLiteral("Щёлкните точку: её высота по моделям высот")
+                          : m_tool == QLatin1String("angle") ? QStringLiteral("Щёлкните три точки: угол при второй")
+                          : m_tool == QLatin1String("viewshed") ? QStringLiteral("Щёлкните точку наблюдения: что видно с неё по модели поверхности")
                           : QString();
         m_measurementDetails.clear();
     } else {
@@ -1767,7 +2303,7 @@ QString MapService::exportDrawings(const QUrl &url)
         if (f.kind == VectorFeature::Line) f.attributes.insert(QStringLiteral("length_m"), toMillimetres(measure(pts, false).length));
         if (f.kind == VectorFeature::Polygon) {
             const Measure m = measure(pts, true);
-            f.attributes.insert(QStringLiteral("area_m2"), toMillimetres(m.area));
+            f.attributes.insert(QStringLiteral("area_m2"), toMillimetres(polygonArea(f)));
             f.attributes.insert(QStringLiteral("perimeter_m"), toMillimetres(m.perimeter));
         }
     }
@@ -2215,7 +2751,8 @@ QVariantMap MapService::profileForQml() const
     }
     return {{"valid", true}, {"layer", m_profileLayer}, {"length", m_profile.length}, {"minZ", m_profile.minZ}, {"maxZ", m_profile.maxZ},
             {"ascent", m_profile.ascent}, {"descent", m_profile.descent}, {"maxSlope", m_profile.maxSlope},
-            {"noData", m_profile.noData}, {"distances", distances}, {"heights", heights}};
+            {"noData", m_profile.noData}, {"distances", distances}, {"heights", heights},
+            {"sections", int(m_cross.size())}, {"section", m_crossIndex}, {"halfWidth", m_crossHalfWidth}};
 }
 
 void MapService::setProfileMarker(int index)
@@ -2286,6 +2823,10 @@ QString kindTitle(const QString &kind)
     if (kind == QLatin1String("area")) return QStringLiteral("Площадь");
     if (kind == QLatin1String("profile")) return QStringLiteral("Профиль высот");
     if (kind == QLatin1String("volume")) return QStringLiteral("Объём");
+    if (kind == QLatin1String("slope")) return QStringLiteral("Уклон");
+    if (kind == QLatin1String("height")) return QStringLiteral("Высота точки");
+    if (kind == QLatin1String("angle")) return QStringLiteral("Угол");
+    if (kind == QLatin1String("viewshed")) return QStringLiteral("Видимость");
     return kind;
 }
 QString csvField(const QString &s)
@@ -2304,6 +2845,8 @@ bool MapService::canSaveMeasurement() const
     if (m_tool == QLatin1String("profile"))
         return m_profile.ok() && !m_profile.points.isEmpty() && m_terrainText.startsWith(QStringLiteral("Профиль:"));
     if (m_tool == QLatin1String("volume")) return m_volume.ok() && m_volume.cells > 0 && m_terrainText.startsWith(QStringLiteral("Над базой"));
+    if (m_tool == QLatin1String("slope") || m_tool == QLatin1String("height") || m_tool == QLatin1String("angle") || m_tool == QLatin1String("viewshed"))
+        return !m_pointValues.isEmpty();
     return false;
 }
 
@@ -2330,6 +2873,13 @@ QString MapService::saveMeasurement(const QString &name)
                        .arg(m_terrainLayerName).arg(m_profile.points.size());
         s.values = {{"length_m", mm(m_profile.length)}, {"min_z", mm(m_profile.minZ)}, {"max_z", mm(m_profile.maxZ)},
                     {"ascent_m", mm(m_profile.ascent)}, {"descent_m", mm(m_profile.descent)}, {"max_slope_deg", mm(m_profile.maxSlope)}};
+    } else if (s.kind == QLatin1String("slope") || s.kind == QLatin1String("height") || s.kind == QLatin1String("angle")
+               || s.kind == QLatin1String("viewshed")) {
+        s.layer = m_terrainLayerName;
+        s.values = m_pointValues;
+        s.method = s.kind == QLatin1String("angle") ? QStringLiteral("Азимуты сторон по сетке %1, длины — по эллипсоиду").arg(m_crs.label())
+                 : s.kind == QLatin1String("viewshed") ? QStringLiteral("GDAL viewshed по «%1» с учётом кривизны Земли и рефракции").arg(m_terrainLayerName)
+                 : QStringLiteral("Значения модели «%1» (билинейно между центрами ячеек)").arg(m_terrainLayerName);
     } else {
         s.layer = m_terrainLayerName;
         static const QHash<QString, QString> bases = {

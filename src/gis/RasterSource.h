@@ -41,7 +41,8 @@ struct RasterInfo
 struct RasterStyle
 {
     enum Mode { Rgb, SingleBand };
-    enum Ramp { Gray, Terrain, Spectral, Slope, Aspect };   // Slope: flat green → steep red; Aspect: compass hues
+    // Slope: flat green → steep red; Aspect: compass hues; Vegetation: soil → dense green; Visibility: hidden red, visible green
+    enum Ramp { Gray, Terrain, Spectral, Slope, Aspect, Vegetation, Visibility };
     Mode mode = Rgb;
     int red = 1, green = 2, blue = 3;   // 1-based bands
     int alpha = 0;                      // alpha band, 0 = none
@@ -85,6 +86,8 @@ public:
     RasterStyle style() const;
     // Switches to a cached VRT that has pyramids (after PyramidBuilder succeeded).
     void setPyramidPath(const QString &vrtPath);
+    // The file was edited in place: later renders open fresh handles.
+    void reload();
 
     // Tile (level, tx, ty) of the map-CRS grid: covers TileSize << level grid pixels.
     // Returns a null image for tiles outside the grid or on read errors.

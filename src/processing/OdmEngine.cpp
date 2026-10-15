@@ -1138,6 +1138,7 @@ QVector<Artifact> OdmEngine::collectOutputs(const QString &jobDirectory) const
 {
     struct Known { const char *kind; const char *file; };
     static const Known known[] = {
+        {"orthophoto", "geomap/true_orthophoto.tif"},   // GeoMap AI's true orthophoto first: the project's orthophoto
         {"orthophoto", "odm_orthophoto/odm_orthophoto.tif"},
         {"dsm", "odm_dem/dsm.tif"},
         {"dtm", "odm_dem/dtm.tif"},
@@ -1158,8 +1159,11 @@ QVector<Artifact> OdmEngine::collectOutputs(const QString &jobDirectory) const
         a.kind = QLatin1String(k.kind);
         a.file = file;
         a.bytes = info.size();
-        if (file.endsWith(QLatin1String(".tif"))) {
+        if (file.startsWith(QLatin1String("geomap/"))) {
+            a.details = QStringLiteral("истинный (GeoMap AI), ") + GeoTiffInfo::read(info.filePath()).describe();
+        } else if (file.endsWith(QLatin1String(".tif"))) {
             a.details = GeoTiffInfo::read(info.filePath()).describe();
+            if (a.kind == QLatin1String("orthophoto")) a.details = QStringLiteral("ODM, ") + a.details;
         } else if (file.endsWith(QLatin1String(".laz")) || file.endsWith(QLatin1String(".las"))) {
             a.details = describeLas(info.filePath());
         } else if (file.endsWith(QLatin1String(".pdf"))) {

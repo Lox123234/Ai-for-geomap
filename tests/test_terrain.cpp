@@ -242,6 +242,102 @@ private slots:
         QVERIFY(!terrain::difference(m_dir.filePath("flat.tif"), m_dir.filePath("far.tif"), m_dir.filePath("out/diff4.tif")).ok());
     }
 
+    // Cross sections of a plane rising 0.1 m per metre to the east, along a north–south axis.
+    void crossSectionsOfAPlane()
+    {
+        const QVector<QPointF> axis{{X0 + 50.5, Y0 - 10}, {X0 + 50.5, Y0 - 70}};   // heading south
+        QVector<QVector<QPointF>> lines;
+        const QVector<terrain::Profile> s = terrain::crossSections(m_dir.filePath("east.tif"), axis, utm(), 10, 20, 81, &lines);
+        QCOMPARE(s.size(), 7);   // stations 0, 10, …, 60 m
+        QCOMPARE(lines.size(), 7);
+        for (int i = 0; i < s.size(); ++i) {
+            QVERIFY2(s[i].ok(), qPrintable(s[i].error));
+            // Left of a southward axis is east: from 107.05 m down to 103.05 m.
+            QVERIFY(qAbs(s[i].points.first().z - (100 + 0.1 * 70.5)) < 1e-3);
+            QVERIFY(qAbs(s[i].points.last().z - (100 + 0.1 * 30.5)) < 1e-3);
+            QVERIFY(qAbs(s[i].descent - 4.0) < 1e-3);
+            QVERIFY(qAbs(s[i].length - 40) < 0.1);
+            QVERIFY(qAbs(lines[i].first().y() - (Y0 - 10 - 10 * i)) < 1e-6);
+        }
+        QVERIFY(!terrain::crossSections(m_dir.filePath("east.tif"), {{-93, 46.8}, {-93, 46.7}}, Crs::wgs84(), 10, 20).first().ok());
+        QVERIFY(terrain::crossSections(m_dir.filePath("east.tif"), axis, utm(), 0, 20).isEmpty());
+    }
+
+    // Viewshed over flat ground with a 10 m wall: from the west, nothing behind the wall is seen.
+    void viewshedBehindAWall()
+    {
+        QVERIFY(makeDem(m_dir.filePath("wall.tif"), 200, 100, [](int c, int) { return c >= 100 && c < 102 ? 110.0 : 100.0; }));
+        const terrain::Viewshed v = terrain::viewshed(m_dir.filePath("wall.tif"), {X0 + 50.5, Y0 - 50.5}, utm(), 1.7, 0, 1000,
+                                                      m_dir.filePath("out/viewshed.tif"));
+        QVERIFY2(v.ok(), qPrintable(v.error));
+        QCOMPARE(v.observerZ, 100.0);
+        QVERIFY2(qAbs(v.area - 20000) < 1, qPrintable(QString::number(v.area)));
+        QVERIFY2(qAbs(v.visibleArea - 10200) < 300, qPrintable(QString::number(v.visibleArea)));   // the west half and the wall
+        GDALDatasetH ds = GDALOpen(QDir::toNativeSeparators(v.path).toUtf8().constData(), GA_ReadOnly);
+        QVERIFY(ds);
+        uchar west = 9, east = 9;
+        GDALRasterIO(GDALGetRasterBand(ds, 1), GF_Read, 20, 50, 1, 1, &west, 1, 1, GDT_Byte, 0, 0);
+        GDALRasterIO(GDALGetRasterBand(ds, 1), GF_Read, 150, 50, 1, 1, &east, 1, 1, GDT_Byte, 0, 0);
+        GDALClose(ds);
+        QCOMPARE(int(west), 1);
+        QCOMPARE(int(east), 0);
+        // A small radius: only the area within it counts.
+        const terrain::Viewshed near = terrain::viewshed(m_dir.filePath("wall.tif"), {X0 + 50.5, Y0 - 50.5}, utm(), 1.7, 0, 20,
+                                                         m_dir.filePath("out/viewshed-20.tif"));
+        QVERIFY(near.ok());
+        QVERIFY2(qAbs(near.area - 3.14159 * 400) < 60, qPrintable(QString::number(near.area)));
+        QVERIFY(qAbs(near.visibleArea - near.area) < 1);
+        QVERIFY(!terrain::viewshed(m_dir.filePath("wall.tif"), {X0 - 500, Y0}, utm(), 1.7, 0, 100, m_dir.filePath("out/v3.tif")).ok());
+    }
+
+    // Raster calculator: vegetation indices and expressions on bands with known values.
+    void calculatorAndIndices()
+    {
+        // 100 × 10, RGBA: green vegetation in the west half, grey soil in the east; column 0 transparent.
+        const QString path = m_dir.filePath("rgba.tif");
+        GDALDatasetH ds = GDALCreate(GDALGetDriverByName("GTiff"), QDir::toNativeSeparators(path).toUtf8().constData(), 100, 10, 4, GDT_Byte, nullptr);
+        QVERIFY(ds);
+        double gt[6] = {X0, 1, 0, Y0, 0, -1};
+        GDALSetGeoTransform(ds, gt);
+        GDALSetRasterColorInterpretation(GDALGetRasterBand(ds, 4), GCI_AlphaBand);
+        for (int b = 1; b <= 4; ++b) {
+            QVector<uchar> v(1000);
+            for (int r = 0; r < 10; ++r)
+                for (int c = 0; c < 100; ++c) {
+                    const bool west = c < 50;
+                    const int values[2][4] = {{120, 100, 80, 255}, {50, 150, 50, 255}};
+                    v[r * 100 + c] = uchar(b == 4 ? (c == 0 ? 0 : 255) : values[west][b - 1]);
+                }
+            GDALRasterIO(GDALGetRasterBand(ds, b), GF_Write, 0, 0, 100, 10, v.data(), 100, 10, GDT_Byte, 0, 0);
+        }
+        GDALClose(ds);
+        double above = 0;
+        const terrain::RasterResult exg = terrain::calculate(path, terrain::indexExpression(QStringLiteral("exg")), m_dir.filePath("out/exg.tif"),
+                                                             terrain::indexThreshold(QStringLiteral("exg")), &above);
+        QVERIFY2(exg.ok(), qPrintable(exg.error));
+        QVERIFY(qAbs(pixel(exg.path, 10, 5) - 0.8) < 1e-6);    // (300 − 100) / 250
+        QVERIFY(qAbs(pixel(exg.path, 80, 5) - 0.0) < 1e-6);    // (200 − 200) / 300
+        QCOMPARE(pixel(exg.path, 0, 5), -9999.0);              // transparent
+        QVERIFY2(qAbs(above - 49.0 / 99.0) < 1e-6, qPrintable(QString::number(above)));
+        QVERIFY(qAbs(exg.stats.max - 0.8) < 1e-6 && qAbs(exg.stats.min) < 1e-6);
+        // NDVI-like expression with functions; division by zero is nodata.
+        const terrain::RasterResult e = terrain::calculate(path, QStringLiteral("max(B1, B2) - sqrt(abs(-B3)) * 2"), m_dir.filePath("out/e.tif"));
+        QVERIFY2(e.ok(), qPrintable(e.error));
+        QVERIFY(qAbs(pixel(e.path, 10, 5) - (150 - std::sqrt(50.0) * 2)) < 1e-3);
+        const terrain::RasterResult zero = terrain::calculate(path, QStringLiteral("B1/(B2-B2)"), m_dir.filePath("out/zero.tif"));
+        QVERIFY(zero.ok());
+        QVERIFY(!zero.stats.valid);
+        QCOMPARE(pixel(zero.path, 10, 5), -9999.0);
+        // Errors are explained before anything is computed.
+        QVERIFY(terrain::checkExpression(QStringLiteral("B5"), 4).contains(QStringLiteral("B5")));
+        QVERIFY(!terrain::checkExpression(QStringLiteral("(B1+"), 4).isEmpty());
+        QVERIFY(!terrain::checkExpression(QStringLiteral("B1 B2"), 4).isEmpty());
+        QVERIFY(!terrain::checkExpression(QStringLiteral("max(B1)"), 4).isEmpty());
+        QVERIFY(terrain::checkExpression(QStringLiteral("-(B1 - 2.5) * min(B2, 3)"), 4).isEmpty());
+        QCOMPARE(terrain::indexExpression(QStringLiteral("ndvi"), 3, 2, 1, 5), QStringLiteral("(B5-B3)/(B5+B3)"));
+        QVERIFY(!terrain::calculate(path, QStringLiteral("B9"), m_dir.filePath("out/b9.tif")).ok());
+    }
+
 private:
     QTemporaryDir m_dir;
 };

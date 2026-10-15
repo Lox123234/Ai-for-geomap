@@ -576,4 +576,336 @@ Volume volume(const QString &demPath, const QVector<QPointF> &polygon, const Crs
     return v;
 }
 
+// ------------------------------------------------------------------ cross sections
+
+QVector<Profile> crossSections(const QString &demPath, const QVector<QPointF> &line, const Crs &lineCrs, double spacing,
+                               double halfWidth, int samples, QVector<QVector<QPointF>> *sections)
+{
+    QVector<Profile> result;
+    if (line.size() < 2 || !(spacing > 0) || !(halfWidth > 0)) return result;
+    if (!lineCrs.isProjected()) {
+        Profile p;
+        p.error = QStringLiteral("Поперечные профили строятся в проекции с метрами (задайте проецированную CRS карты)");
+        result << p;
+        return result;
+    }
+    const double k = lineCrs.metersPerUnit();
+    double total = 0;
+    QVector<double> at{0};
+    for (int i = 1; i < line.size(); ++i) {
+        total += std::hypot(line[i].x() - line[i - 1].x(), line[i].y() - line[i - 1].y()) * k;
+        at << total;
+    }
+    for (double s = 0; s <= total + 1e-9; s += spacing) {
+        int seg = 1;
+        while (seg < line.size() - 1 && at[seg] < s) ++seg;
+        const QPointF a = line[seg - 1], b = line[seg];
+        const double len = qMax(1e-12, at[seg] - at[seg - 1]);
+        const double t = qBound(0.0, (s - at[seg - 1]) / len, 1.0);
+        const QPointF c = a + (b - a) * t;
+        const double dx = (b.x() - a.x()) * k / len, dy = (b.y() - a.y()) * k / len;   // unit direction
+        const QPointF left(c.x() - dy * halfWidth / k, c.y() + dx * halfWidth / k), right(c.x() + dy * halfWidth / k, c.y() - dx * halfWidth / k);
+        result << profile(demPath, {left, right}, lineCrs, samples);
+        if (sections) *sections << QVector<QPointF>{left, right};
+    }
+    return result;
+}
+
+// ------------------------------------------------------------------ viewshed
+
+Viewshed viewshed(const QString &demPath, const QPointF &observer, const Crs &observerCrs, double observerHeight,
+                  double targetHeight, double radius, const QString &out)
+{
+    Viewshed v;
+    v.path = out;
+    Dem dem(demPath);
+    if (!dem.error.isEmpty()) {
+        v.error = dem.error;
+        return v;
+    }
+    if (!dem.crs.isProjected()) {
+        v.error = QStringLiteral("Анализ видимости выполняется для модели высот в проекции с метрами");
+        return v;
+    }
+    QVector<QPointF> p{observer};
+    if (observerCrs.isValid() && !observerCrs.isSame(dem.crs) && !CoordinateTransform(observerCrs, dem.crs).transform(p)) {
+        v.error = QStringLiteral("Не удалось пересчитать точку наблюдения в систему координат модели");
+        return v;
+    }
+    v.observerZ = dem.sample(p[0].x(), p[0].y());
+    if (!std::isfinite(v.observerZ)) {
+        v.error = QStringLiteral("Точка наблюдения вне модели высот или на участке без данных");
+        return v;
+    }
+    const double k = dem.crs.metersPerUnit();
+    QDir().mkpath(QFileInfo(out).absolutePath());
+    const char *create[] = {"COMPRESS=DEFLATE", "TILED=YES", nullptr};
+    GisEnvironment::clearError();
+    GDALDatasetH ds = GDALViewshedGenerate(dem.band, "GTiff", nativePath(out).constData(), create, p[0].x(), p[0].y(),
+                                           observerHeight / k, targetHeight / k, 1, 0, 255, 255, 0.85714, GVM_Edge, radius / k,
+                                           nullptr, nullptr, GVOT_NORMAL, nullptr);
+    if (!ds) {
+        v.error = QStringLiteral("GDAL: %1").arg(GisEnvironment::lastError());
+        QFile::remove(out);
+        return v;
+    }
+    GDALRasterBandH band = GDALGetRasterBand(ds, 1);
+    GDALSetRasterNoDataValue(band, 255);
+    double gt[6];
+    GDALGetGeoTransform(ds, gt);
+    const int w = GDALGetRasterXSize(ds), h = GDALGetRasterYSize(ds);
+    const double cell = std::fabs(gt[1] * gt[5]) * k * k;
+    std::vector<uchar> row(w);
+    for (int y = 0; y < h; ++y) {
+        if (GDALRasterIO(band, GF_Read, 0, y, w, 1, row.data(), w, 1, GDT_Byte, 0, 0) != CE_None) break;
+        for (int x = 0; x < w; ++x) {
+            if (row[x] == 255) continue;
+            v.area += cell;
+            if (row[x] == 1) v.visibleArea += cell;
+        }
+    }
+    GDALClose(ds);
+    return v;
+}
+
+// ------------------------------------------------------------------ raster calculator
+
+namespace {
+// The expression compiled to a stack program.
+struct Program
+{
+    enum Op { Number, Band, Add, Sub, Mul, Div, Neg, Sqrt, Abs, Min, Max };
+    struct Step { Op op; double value = 0; int band = 0; };
+    QVector<Step> steps;
+    QSet<int> bands;
+    QString error;
+};
+
+class Parser
+{
+public:
+    Parser(const QString &text, int bands) : m_text(QString(text).remove(QLatin1Char(' ')).toUpper()), m_bands(bands) {}
+    Program parse()
+    {
+        if (m_text.isEmpty()) m_p.error = QStringLiteral("Пустое выражение");
+        else {
+            sum();
+            if (m_p.error.isEmpty() && m_pos < m_text.size()) fail(QStringLiteral("Лишний символ «%1»").arg(m_text[m_pos]));
+        }
+        return m_p;
+    }
+
+private:
+    void fail(const QString &e) { if (m_p.error.isEmpty()) m_p.error = e; }
+    bool eat(QChar c)
+    {
+        if (m_pos < m_text.size() && m_text[m_pos] == c) { ++m_pos; return true; }
+        return false;
+    }
+    void sum()
+    {
+        product();
+        while (m_p.error.isEmpty()) {
+            if (eat(QLatin1Char('+'))) { product(); m_p.steps << Program::Step{Program::Add}; }
+            else if (eat(QLatin1Char('-'))) { product(); m_p.steps << Program::Step{Program::Sub}; }
+            else break;
+        }
+    }
+    void product()
+    {
+        unary();
+        while (m_p.error.isEmpty()) {
+            if (eat(QLatin1Char('*'))) { unary(); m_p.steps << Program::Step{Program::Mul}; }
+            else if (eat(QLatin1Char('/'))) { unary(); m_p.steps << Program::Step{Program::Div}; }
+            else break;
+        }
+    }
+    void unary()
+    {
+        if (eat(QLatin1Char('-'))) { unary(); m_p.steps << Program::Step{Program::Neg}; return; }
+        eat(QLatin1Char('+'));
+        primary();
+    }
+    void primary()
+    {
+        if (m_pos >= m_text.size()) { fail(QStringLiteral("Выражение оборвано")); return; }
+        const QChar c = m_text[m_pos];
+        if (eat(QLatin1Char('('))) {
+            sum();
+            if (!eat(QLatin1Char(')'))) fail(QStringLiteral("Не хватает «)»"));
+            return;
+        }
+        if (c.isDigit() || c == QLatin1Char('.')) {
+            int end = m_pos;
+            while (end < m_text.size() && (m_text[end].isDigit() || m_text[end] == QLatin1Char('.'))) ++end;
+            bool ok = false;
+            const double v = m_text.mid(m_pos, end - m_pos).toDouble(&ok);
+            if (!ok) fail(QStringLiteral("Неверное число"));
+            m_pos = end;
+            m_p.steps << Program::Step{Program::Number, v};
+            return;
+        }
+        if (c == QLatin1Char('B') && m_pos + 1 < m_text.size() && m_text[m_pos + 1].isDigit()) {
+            int end = m_pos + 1;
+            while (end < m_text.size() && m_text[end].isDigit()) ++end;
+            const int band = m_text.mid(m_pos + 1, end - m_pos - 1).toInt();
+            m_pos = end;
+            if (band < 1 || band > m_bands || band > 63) fail(QStringLiteral("Канала B%1 нет: в растре каналов %2").arg(band).arg(m_bands));
+            m_p.steps << Program::Step{Program::Band, 0, band};
+            m_p.bands.insert(band);
+            return;
+        }
+        static const struct { const char *name; Program::Op op; int args; } functions[] = {
+            {"SQRT", Program::Sqrt, 1}, {"ABS", Program::Abs, 1}, {"MIN", Program::Min, 2}, {"MAX", Program::Max, 2}};
+        for (const auto &f : functions) {
+            const QString name = QString::fromLatin1(f.name);
+            if (!m_text.mid(m_pos).startsWith(name + QLatin1Char('('))) continue;
+            m_pos += int(name.size()) + 1;
+            sum();
+            if (f.args == 2) {
+                if (!eat(QLatin1Char(','))) { fail(QStringLiteral("%1(a, b): нужны два аргумента").arg(name.toLower())); return; }
+                sum();
+            }
+            if (!eat(QLatin1Char(')'))) fail(QStringLiteral("Не хватает «)»"));
+            m_p.steps << Program::Step{f.op};
+            return;
+        }
+        fail(QStringLiteral("Непонятно: «%1»").arg(m_text.mid(m_pos, 8)));
+    }
+    QString m_text;
+    int m_pos = 0, m_bands;
+    Program m_p;
+};
+
+inline double run(const Program &p, const double *bandValues, double *stack)
+{
+    int top = -1;
+    for (const Program::Step &s : p.steps) {
+        switch (s.op) {
+        case Program::Number: stack[++top] = s.value; break;
+        case Program::Band: stack[++top] = bandValues[s.band]; break;
+        case Program::Add: stack[top - 1] += stack[top]; --top; break;
+        case Program::Sub: stack[top - 1] -= stack[top]; --top; break;
+        case Program::Mul: stack[top - 1] *= stack[top]; --top; break;
+        case Program::Div: stack[top - 1] = stack[top] == 0 ? qQNaN() : stack[top - 1] / stack[top]; --top; break;
+        case Program::Neg: stack[top] = -stack[top]; break;
+        case Program::Sqrt: stack[top] = stack[top] < 0 ? qQNaN() : std::sqrt(stack[top]); break;
+        case Program::Abs: stack[top] = std::fabs(stack[top]); break;
+        case Program::Min: stack[top - 1] = qMin(stack[top - 1], stack[top]); --top; break;
+        case Program::Max: stack[top - 1] = qMax(stack[top - 1], stack[top]); --top; break;
+        }
+    }
+    return top == 0 ? stack[0] : qQNaN();
+}
+} // namespace
+
+QString checkExpression(const QString &expression, int bands)
+{
+    return Parser(expression, bands).parse().error;
+}
+
+QString indexExpression(const QString &index, int red, int green, int blue, int nir)
+{
+    const QString R = QStringLiteral("B%1").arg(red), G = QStringLiteral("B%1").arg(green), B = QStringLiteral("B%1").arg(blue),
+                  N = QStringLiteral("B%1").arg(nir);
+    if (index == QLatin1String("exg")) return QStringLiteral("(2*%2-%1-%3)/(%1+%2+%3)").arg(R, G, B);
+    if (index == QLatin1String("vari")) return QStringLiteral("(%2-%1)/(%2+%1-%3)").arg(R, G, B);
+    if (index == QLatin1String("gli")) return QStringLiteral("(2*%2-%1-%3)/(2*%2+%1+%3)").arg(R, G, B);
+    if (index == QLatin1String("ndvi")) return QStringLiteral("(%2-%1)/(%2+%1)").arg(R, N);
+    return {};
+}
+
+double indexThreshold(const QString &index)
+{
+    if (index == QLatin1String("ndvi")) return 0.3;
+    if (index == QLatin1String("exg") || index == QLatin1String("vari") || index == QLatin1String("gli")) return 0.05;
+    return qQNaN();
+}
+
+RasterResult calculate(const QString &rasterPath, const QString &expression, const QString &out, double threshold, double *above)
+{
+    RasterResult r;
+    r.path = out;
+    GisEnvironment::clearError();
+    GDALDatasetH src = GDALOpenEx(nativePath(rasterPath).constData(), GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr);
+    if (!src) {
+        r.error = QStringLiteral("Растр не открывается: %1").arg(GisEnvironment::lastError());
+        return r;
+    }
+    const int bands = GDALGetRasterCount(src), w = GDALGetRasterXSize(src), h = GDALGetRasterYSize(src);
+    const Program program = Parser(expression, bands).parse();
+    if (!program.error.isEmpty()) {
+        GDALClose(src);
+        r.error = program.error;
+        return r;
+    }
+    QDir().mkpath(QFileInfo(out).absolutePath());
+    const char *create[] = {"COMPRESS=DEFLATE", "TILED=YES", "BIGTIFF=IF_SAFER", "PREDICTOR=3", nullptr};
+    GDALDatasetH dst = GDALCreate(GDALGetDriverByName("GTiff"), nativePath(out).constData(), w, h, 1, GDT_Float32, const_cast<char **>(create));
+    if (!dst) {
+        GDALClose(src);
+        r.error = QStringLiteral("Не создать файл: %1").arg(GisEnvironment::lastError());
+        return r;
+    }
+    double gt[6];
+    if (GDALGetGeoTransform(src, gt) == CE_None) GDALSetGeoTransform(dst, gt);
+    GDALSetProjection(dst, GDALGetProjectionRef(src));
+    GDALRasterBandH outBand = GDALGetRasterBand(dst, 1);
+    const float NoData = -9999.0f;
+    GDALSetRasterNoDataValue(outBand, NoData);
+    const QList<int> used = program.bands.values();
+    const int rows = 256;
+    std::vector<std::vector<float>> data(bands + 1);
+    std::vector<std::vector<uchar>> mask(bands + 1);
+    std::vector<float> result;
+    double sum = 0, mn = 1e300, mx = -1e300;
+    qint64 count = 0, over = 0;
+    bool ok = true;
+    for (int y0 = 0; y0 < h && ok; y0 += rows) {
+        const int n = qMin(rows, h - y0);
+        for (int b : used) {
+            data[b].resize(size_t(w) * n);
+            mask[b].resize(size_t(w) * n);
+            GDALRasterBandH band = GDALGetRasterBand(src, b);
+            ok = ok && GDALRasterIO(band, GF_Read, 0, y0, w, n, data[b].data(), w, n, GDT_Float32, 0, 0) == CE_None;
+            // GDAL's mask of the band: nodata, alpha or "all valid".
+            ok = ok && GDALRasterIO(GDALGetMaskBand(band), GF_Read, 0, y0, w, n, mask[b].data(), w, n, GDT_Byte, 0, 0) == CE_None;
+        }
+        result.assign(size_t(w) * n, NoData);
+        double values[64] = {0}, stack[64];
+        for (size_t i = 0; i < result.size(); ++i) {
+            bool valid = true;
+            for (int b : used) {
+                if (!mask[b][i]) { valid = false; break; }
+                values[b] = data[b][i];
+            }
+            if (!valid) continue;
+            const double v = run(program, values, stack);
+            if (!std::isfinite(v)) continue;
+            result[i] = float(v);
+            sum += v;
+            mn = qMin(mn, v);
+            mx = qMax(mx, v);
+            ++count;
+            over += std::isfinite(threshold) && v > threshold;
+        }
+        ok = ok && GDALRasterIO(outBand, GF_Write, 0, y0, w, n, result.data(), w, n, GDT_Float32, 0, 0) == CE_None;
+    }
+    GDALClose(dst);
+    GDALClose(src);
+    if (!ok) {
+        QFile::remove(out);
+        r.error = QStringLiteral("Ошибка чтения или записи растра: %1").arg(GisEnvironment::lastError());
+        return r;
+    }
+    if (count) {
+        r.stats.min = mn;
+        r.stats.max = mx;
+        r.stats.mean = sum / count;
+        r.stats.valid = true;
+    }
+    if (above) *above = count ? double(over) / count : qQNaN();
+    return r;
+}
+
 } // namespace terrain

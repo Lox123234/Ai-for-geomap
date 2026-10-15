@@ -28,6 +28,12 @@
     folder (installer\GeoMapAI.nsi): per-user, no administrator rights, Start menu and desktop
     shortcuts, uninstall from "Apps". Needs NSIS 3 (makensis): <repo>\.tools\nsis-*, PATH or
     Program Files.
+.PARAMETER FetchAi
+    Prepare the local AI once: ONNX Runtime 1.30.0 (MIT, official release archive, 78.8 MB) into
+    <repo>\.deps and the weights named in models\<id>\model.json into <repo>\.deps\models\<id>
+    (MobileSAM 44 MB, LaMa 208 MB). Every file is accepted only with its pinned SHA-256.
+.PARAMETER NoAi
+    Build and deploy without ONNX Runtime and models: the AI tools say that this build has none.
 #>
 param(
     [string]$QtDir,
@@ -39,11 +45,44 @@ param(
     [switch]$FetchOdm,
     [string]$OdmInstaller,
     [switch]$NoOdm,
-    [switch]$Installer
+    [switch]$Installer,
+    [switch]$FetchAi,
+    [switch]$NoAi
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+
+# Local AI: ONNX Runtime pinned like in CMakeLists.txt; model weights pinned in their cards.
+$ortName = 'onnxruntime-win-x64-1.30.0'
+$ortUrl = "https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/$ortName.zip"
+$ortSha256 = 'c6ba983baf5681af108599675d2a89c2d145512d02de28aed0bff177cd0ba949'
+$ortDir = Join-Path $root ".deps\$ortName"
+$weightsDir = Join-Path $root '.deps\models'
+function Get-Verified([string]$url, [string]$file, [string]$sha) {
+    if (!(Test-Path $file)) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $file) | Out-Null
+        Write-Host "Downloading $url"
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $url -OutFile "$file.part" -UseBasicParsing
+        Move-Item "$file.part" $file -Force
+    }
+    $hash = (Get-FileHash -Algorithm SHA256 $file).Hash.ToLowerInvariant()
+    if ($hash -ne $sha) { throw "$file has SHA-256 $hash, expected $sha" }
+}
+if ($FetchAi -and !$NoAi) {
+    if (!(Test-Path (Join-Path $ortDir 'lib\onnxruntime.dll'))) {
+        $zip = Join-Path $root ".deps\$ortName.zip"
+        Get-Verified $ortUrl $zip $ortSha256
+        Expand-Archive -Path $zip -DestinationPath (Join-Path $root '.deps') -Force
+    }
+    foreach ($card in Get-ChildItem (Join-Path $root 'models\*\model.json')) {
+        $id = Split-Path (Split-Path $card) -Leaf
+        foreach ($f in (Get-Content $card -Raw -Encoding UTF8 | ConvertFrom-Json).files) {
+            Get-Verified $f.url (Join-Path $weightsDir "$id\$($f.name)") $f.sha256
+        }
+    }
+}
 
 # OpenDroneMap 3.6.2 for Windows, pinned like in src/processing/OdmEngine.h.
 $odmInstallerUrl = 'https://github.com/OpenDroneMap/ODM/releases/download/v3.6.2/ODM_Setup_3.6.2.exe'
@@ -139,7 +178,9 @@ Write-Host "vcpkg toolchain: $toolchain"
 
 Push-Location $root
 try {
-    cmake -S . -B build -G $Generator -A x64 "-DCMAKE_PREFIX_PATH=$QtDir" "-DCMAKE_TOOLCHAIN_FILE=$toolchain" "-DCMAKE_GENERATOR_INSTANCE=$vsPath"
+    # -NoAi points CMake at a folder without ONNX Runtime: the build has no local AI.
+    $ortArg = if ($NoAi) { "-DGEOMAP_ONNXRUNTIME_DIR=$root/.deps/no-onnxruntime" } else { "-DGEOMAP_ONNXRUNTIME_DIR=$ortDir" }
+    cmake -S . -B build -G $Generator -A x64 "-DCMAKE_PREFIX_PATH=$QtDir" "-DCMAKE_TOOLCHAIN_FILE=$toolchain" "-DCMAKE_GENERATOR_INSTANCE=$vsPath" $ortArg
     if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
     cmake --build build --config Release --parallel
     if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
@@ -187,6 +228,34 @@ try {
     Copy-Item (Join-Path $gis 'share\proj') (Join-Path $out 'share\proj') -Recurse -Force
     Copy-Item (Join-Path $gis 'share\gdal') (Join-Path $out 'share\gdal') -Recurse -Force
     Write-Host "GDAL/PROJ: $gis"
+
+    # Local AI: ONNX Runtime (MIT) with its notices, and every model folder (card, licence,
+    # weights) whose weights match the card's SHA-256. Without them the AI tools explain why.
+    if (!$NoAi) {
+        if (!(Test-Path (Join-Path $ortDir 'lib\onnxruntime.dll'))) {
+            throw "ONNX Runtime not found in $ortDir. Run with -FetchAi (78.8 MB download) or -NoAi."
+        }
+        Copy-Item (Join-Path $ortDir 'lib\onnxruntime*.dll') $out -Force
+        $ortLicenses = Join-Path $out 'licenses\onnxruntime'
+        New-Item -ItemType Directory -Force -Path $ortLicenses | Out-Null
+        foreach ($file in 'LICENSE', 'ThirdPartyNotices.txt', 'VERSION_NUMBER') {
+            if (Test-Path (Join-Path $ortDir $file)) { Copy-Item (Join-Path $ortDir $file) $ortLicenses -Force }
+        }
+        foreach ($card in Get-ChildItem (Join-Path $root 'models\*\model.json')) {
+            $id = Split-Path (Split-Path $card) -Leaf
+            $target = Join-Path $out "models\$id"
+            New-Item -ItemType Directory -Force -Path $target | Out-Null
+            Copy-Item (Join-Path (Split-Path $card) '*') $target -Force
+            foreach ($f in (Get-Content $card -Raw -Encoding UTF8 | ConvertFrom-Json).files) {
+                $weights = Join-Path $weightsDir "$id\$($f.name)"
+                if (!(Test-Path $weights)) { throw "Weights of model $id missing: $weights (run with -FetchAi)" }
+                $hash = (Get-FileHash -Algorithm SHA256 $weights).Hash.ToLowerInvariant()
+                if ($hash -ne $f.sha256) { throw "$weights has SHA-256 $hash, expected $($f.sha256)" }
+                Copy-Item $weights $target -Force
+            }
+            Write-Host "AI model: $id"
+        }
+    }
 
     # Documentation for "Справка": docs\*.md plus README, CHANGELOG and the license.
     $docs = Join-Path $out 'docs'

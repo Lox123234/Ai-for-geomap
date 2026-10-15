@@ -4,7 +4,7 @@ if(CMAKE_HOST_WIN32 AND NOT DEFINED VCPKG_TARGET_TRIPLET)
     set(VCPKG_TARGET_TRIPLET x64-windows-geomap CACHE STRING "vcpkg triplet")
     set(VCPKG_HOST_TRIPLET x64-windows-geomap CACHE STRING "vcpkg host triplet")
 endif()
-project(GeoMapAI VERSION 0.4.4 LANGUAGES CXX)
+project(GeoMapAI VERSION 0.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -74,6 +74,7 @@ qt_add_library(GeoMapCore STATIC
     app/MapTiles.cpp
     app/MapService.h
     app/MapService.cpp
+    app/MapServiceAnalysis.cpp
     src/ui/commands/CommandRegistry.h
     src/ui/commands/CommandRegistry.cpp
     src/ui/workspace/WorkspaceState.h
@@ -92,12 +93,73 @@ qt_add_library(GeoMapCore STATIC
     src/view3d/Camera3D.cpp
     src/view3d/Scene3DService.h
     src/view3d/Scene3DService.cpp
+    src/ai/ModelCard.h
+    src/ai/ModelCard.cpp
+    src/ai/SamSegmenter.h
+    src/ai/SamSegmenter.cpp
+    src/ai/MaskPolygons.h
+    src/ai/MaskPolygons.cpp
+    src/ai/AiService.h
+    src/ai/AiService.cpp
+    src/ai/OrtCommon.h
+    src/ai/Inpainter.h
+    src/ai/Inpainter.cpp
+    src/gis/RasterEdit.h
+    src/gis/RasterEdit.cpp
+    src/processing/TrueOrthophoto.h
+    src/processing/TrueOrthophoto.cpp
 )
-target_include_directories(GeoMapCore PUBLIC app src/core src/import src/processing src/gis src/ui/commands src/ui/workspace src/view3d)
+target_include_directories(GeoMapCore PUBLIC app src/core src/import src/processing src/gis src/ui/commands src/ui/workspace src/view3d src/ai)
 target_link_libraries(GeoMapCore PUBLIC Qt6::Core Qt6::Gui Qt6::Network GDAL::GDAL PROJ::proj)
 target_compile_definitions(GeoMapCore PRIVATE
     GEOMAP_PROJ_DATA="${GEOMAP_GIS_SHARE}/proj" GEOMAP_GDAL_DATA="${GEOMAP_GIS_SHARE}/gdal"
     GEOMAP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")   # documentation of developer builds
+
+# Local AI: ONNX Runtime (MIT) from the official release archive, unpacked into
+# GEOMAP_ONNXRUNTIME_DIR (see docs/BUILD.md). Without it the program builds and the AI tools
+# say that this build has no AI runtime.
+set(GEOMAP_ONNXRUNTIME_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.deps/onnxruntime-win-x64-1.30.0" CACHE PATH "ONNX Runtime release folder (include/, lib/)")
+if(NOT "${GEOMAP_ONNXRUNTIME_DIR}" STREQUAL "${GEOMAP_ORT_SEARCHED_DIR}")   # another folder: search again
+    unset(GEOMAP_ORT_INCLUDE CACHE)
+    unset(GEOMAP_ORT_LIBRARY CACHE)
+    set(GEOMAP_ORT_SEARCHED_DIR "${GEOMAP_ONNXRUNTIME_DIR}" CACHE INTERNAL "")
+endif()
+find_path(GEOMAP_ORT_INCLUDE onnxruntime_cxx_api.h PATHS "${GEOMAP_ONNXRUNTIME_DIR}/include" NO_DEFAULT_PATH)
+find_library(GEOMAP_ORT_LIBRARY onnxruntime PATHS "${GEOMAP_ONNXRUNTIME_DIR}/lib" NO_DEFAULT_PATH)
+if(GEOMAP_ORT_INCLUDE AND GEOMAP_ORT_LIBRARY)
+    message(STATUS "ONNX Runtime: ${GEOMAP_ONNXRUNTIME_DIR}")
+    target_include_directories(GeoMapCore PRIVATE "${GEOMAP_ORT_INCLUDE}")
+    target_link_libraries(GeoMapCore PRIVATE "${GEOMAP_ORT_LIBRARY}")
+    target_compile_definitions(GeoMapCore PRIVATE GEOMAP_HAS_ONNXRUNTIME)
+    file(GLOB GEOMAP_ORT_RUNTIME "${GEOMAP_ONNXRUNTIME_DIR}/lib/*${CMAKE_SHARED_LIBRARY_SUFFIX}")
+else()
+    message(STATUS "ONNX Runtime not found in ${GEOMAP_ONNXRUNTIME_DIR}: building without local AI")
+    set(GEOMAP_ORT_RUNTIME "")
+endif()
+# Model cards (models/<id>/model.json, licence) from the sources; the weights from
+# GEOMAP_MODEL_WEIGHTS_DIR/<id> (downloaded by scripts/build-windows.ps1 -FetchAi, SHA-256 checked).
+set(GEOMAP_MODEL_WEIGHTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.deps/models" CACHE PATH "Folder with <model id>/<weights> of the bundled AI models")
+# The ONNX Runtime DLLs and the models go next to the executables (the app and the tests,
+# which all import onnxruntime through GeoMapCore), before anything links.
+get_property(geomap_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(geomap_multi_config)
+    set(geomap_runtime_dir "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")
+else()
+    set(geomap_runtime_dir "${CMAKE_CURRENT_BINARY_DIR}")
+endif()
+set(geomap_ai_commands COMMAND ${CMAKE_COMMAND} -E make_directory "${geomap_runtime_dir}")
+foreach(dll IN LISTS GEOMAP_ORT_RUNTIME)
+    list(APPEND geomap_ai_commands COMMAND ${CMAKE_COMMAND} -E copy_if_different "${dll}" "${geomap_runtime_dir}/")
+endforeach()
+file(GLOB geomap_cards RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/models" CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/models/*/model.json")
+foreach(card IN LISTS geomap_cards)
+    get_filename_component(id "${card}" DIRECTORY)
+    file(GLOB files CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/models/${id}/*" "${GEOMAP_MODEL_WEIGHTS_DIR}/${id}/*.onnx")
+    list(APPEND geomap_ai_commands COMMAND ${CMAKE_COMMAND} -E make_directory "${geomap_runtime_dir}/models/${id}"
+                                   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${files} "${geomap_runtime_dir}/models/${id}/")
+endforeach()
+add_custom_target(geomap_ai_files ${geomap_ai_commands} COMMENT "ONNX Runtime and AI models next to the executables" VERBATIM)
+add_dependencies(GeoMapCore geomap_ai_files)
 # Menus, toolbar and shortcuts: one list of commands (docs/UI_COMMANDS.md is generated from it).
 qt_add_resources(GeoMapCore "geomap_commands" PREFIX "/geomap" BASE src/ui/commands FILES src/ui/commands/commands.json)
 
@@ -107,7 +169,8 @@ set(GEOMAP_QML_FILES
     qml/Main.qml qml/Theme.qml qml/FlatButton.qml qml/SectionTitle.qml qml/ToolIconButton.qml
     qml/CommandMenuItem.qml qml/MainToolBar.qml qml/ProjectTreePanel.qml qml/PhotoListPanel.qml
     qml/PhotoInspector.qml qml/BottomPanel.qml qml/MapController.qml qml/MapLayersPanel.qml
-    qml/MapLayerProperties.qml qml/MapCanvas.qml qml/ShortcutsDialog.qml qml/View3DWorkspace.qml qml/View3DPanel.qml qml/TerrainDialog.qml qml/MeasurementsPanel.qml qml/ExportDialog.qml)
+    qml/MapLayerProperties.qml qml/MapCanvas.qml qml/ShortcutsDialog.qml qml/View3DWorkspace.qml qml/View3DPanel.qml qml/TerrainDialog.qml qml/MeasurementsPanel.qml qml/ExportDialog.qml
+    qml/RasterCalcDialog.qml qml/AiModelsDialog.qml)
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 foreach(file IN LISTS GEOMAP_QML_FILES)
     get_filename_component(name ${file} NAME)
@@ -201,6 +264,17 @@ if(BUILD_TESTING)
         qt_add_executable(GeoMapAIExportTests tests/test_export.cpp tests/MockEngine.h)
         target_link_libraries(GeoMapAIExportTests PRIVATE GeoMapCore Qt6::Test)
         add_test(NAME GeoMapAIExportTests COMMAND GeoMapAIExportTests)
+        # Local AI: model cards, masks to polygons, MobileSAM on a synthetic scene and the map
+        # tool (the model parts are skipped when the build has no ONNX Runtime or no weights).
+        qt_add_executable(GeoMapAIAiTests tests/test_ai.cpp)
+        target_link_libraries(GeoMapAIAiTests PRIVATE GeoMapCore Qt6::Test)
+        target_compile_definitions(GeoMapAIAiTests PRIVATE GEOMAP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        add_test(NAME GeoMapAIAiTests COMMAND GeoMapAIAiTests)
+        # True orthophoto: a synthetic scene with a known answer (GEOMAP_ORTHO_JOB=<ODM job> also
+        # builds one from real results into GEOMAP_TEST_OUTPUT).
+        qt_add_executable(GeoMapAIOrthophotoTests tests/test_orthophoto.cpp)
+        target_link_libraries(GeoMapAIOrthophotoTests PRIVATE GeoMapCore Qt6::Test)
+        add_test(NAME GeoMapAIOrthophotoTests COMMAND GeoMapAIOrthophotoTests)
 
         qt_add_executable(GeoMapAIWorkspaceTests tests/test_workspace.cpp tests/MockEngine.h)
         target_link_libraries(GeoMapAIWorkspaceTests PRIVATE GeoMapCore Qt6::Test)
@@ -224,7 +298,7 @@ if(BUILD_TESTING)
         target_link_libraries(GeoMapAIView3DRenderTest PRIVATE GeoMapUi GeoMapUiplugin Qt6::Test Qt6::Quick Qt6::GuiPrivate)
         add_test(NAME GeoMapAIView3DRenderTest COMMAND GeoMapAIView3DRenderTest)
         set(geomap_tests GeoMapAITests GeoMapAIProjectTests GeoMapAIImportTests GeoMapAIProcessingTests GeoMapAIGisTests GeoMapAITerrainTests GeoMapAIExportTests
-            GeoMapAIWorkspaceTests GeoMapAIUiTests GeoMapAIView3DTests GeoMapAIView3DRenderTest)
+            GeoMapAIAiTests GeoMapAIOrthophotoTests GeoMapAIWorkspaceTests GeoMapAIUiTests GeoMapAIView3DTests GeoMapAIView3DRenderTest)
 
         # Real reconstruction with the built-in OpenDroneMap and a check of all its results;
         # minutes to an hour, so only when configured with -DGEOMAP_ODM_DATASET=<folder with

@@ -97,4 +97,37 @@ struct Volume
 Volume volume(const QString &dem, const QVector<QPointF> &polygon, const Crs &polygonCrs, Base base,
               double level = 0, const QString &baseSurface = {});
 
+// Profiles across a polyline (given in `lineCrs`, a projected CRS): one every `spacing` metres
+// along it, `halfWidth` metres to each side, left to right looking along the line. `sections`
+// receives their end points (in `lineCrs`) when not null.
+QVector<Profile> crossSections(const QString &dem, const QVector<QPointF> &line, const Crs &lineCrs, double spacing,
+                               double halfWidth, int samples = 160, QVector<QVector<QPointF>> *sections = nullptr);
+
+struct Viewshed
+{
+    QString path, error;
+    double visibleArea = 0;    // m² seen within the radius
+    double area = 0;           // m² of the DEM within the radius
+    double observerZ = std::numeric_limits<double>::quiet_NaN();   // ground under the observer
+    bool ok() const { return error.isEmpty(); }
+};
+// What an observer `observerHeight` metres above the surface at `observer` (in `observerCrs`)
+// sees of points `targetHeight` above it within `radius` metres (GDAL viewshed, curvature and
+// refraction of the Earth included): Byte GeoTIFF, 1 = visible, 0 = hidden, 255 = out of range.
+Viewshed viewshed(const QString &dem, const QPointF &observer, const Crs &observerCrs, double observerHeight,
+                  double targetHeight, double radius, const QString &out);
+
+// Raster calculator: an expression over the bands of one raster (B1, B2, …), numbers, + − * /,
+// parentheses and sqrt(), abs(), min(a, b), max(a, b). Float32 GeoTIFF; nodata (−9999) where an
+// input pixel is masked (nodata or alpha) or the result is not a number. `above` gets the share of
+// valid pixels whose value is greater than `threshold` when it is a number.
+RasterResult calculate(const QString &raster, const QString &expression, const QString &out,
+                       double threshold = std::numeric_limits<double>::quiet_NaN(), double *above = nullptr);
+// "" when the expression is valid for a raster with `bands` bands, else the reason.
+QString checkExpression(const QString &expression, int bands);
+// Vegetation indices as expressions: exg (2g − r − b of chromatic coordinates), vari, gli (RGB)
+// and ndvi (needs a near-infrared band). The bands are 1-based.
+QString indexExpression(const QString &index, int red = 1, int green = 2, int blue = 3, int nir = 4);
+double indexThreshold(const QString &index);   // value above which a pixel counts as vegetation
+
 } // namespace terrain
