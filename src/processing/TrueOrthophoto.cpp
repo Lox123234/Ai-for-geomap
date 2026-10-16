@@ -854,6 +854,9 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
     // smoothed at 2.5 m: there the reconstruction cannot tell crowns apart, and a smooth surface
     // makes every piece a gentle warp of its photo, so neighbouring photos meet without steps.
     std::vector<float> crowns, rough(dsm.v.size(), 0.0f), canopy, canopyWeight(dsm.v.size(), 0.0f);
+    // Low vegetation below objectHeight (0 smooth ground … 1 bushes scattered by the reconstruction):
+    // there the photo is chosen by how vertically it looks, not by the noisy normal (see below).
+    std::vector<float> bushy(dsm.v.size(), 0.0f);
     {
         std::vector<qint64> componentCells(res.objects, 0);
         for (int o : object)
@@ -890,6 +893,8 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
                                                                                  * qMin(1.0f, (toObject[i] - foot) / foot);
             dsm.v[i] = dsm.v[i] * (1 - t) + lowCoarse[i] * t;
         }
+        for (size_t i = 0; i < bushy.size(); ++i)
+            if (low[i]) bushy[i] = qBound(0.0f, (lowRough[i] - 0.06f) / 0.09f, 1.0f);
         for (size_t i = 0; i < crowns.size(); ++i)
             if (!high[i]) crowns[i] = dsm.v[i];
     }
@@ -1114,6 +1119,12 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
             res.notes << QStringLiteral("Не создан файл поверхности для 3D: %1").arg(QString::fromUtf8(CPLGetLastErrorMsg()));
         }
     }
+    // A blanket over everything (the projection surface smoothed at 1.5 m across crowns, roofs and
+    // ground): what is seen by no photo — ground behind bushes on the side the photos look from —
+    // is taken over it, as a classic orthophoto would. Over its exact height every photo shows the
+    // flank of the bush in front of it there, a narrow strip stretched into streaks along the view.
+    Grid blanket = dsm;
+    maskedSmooth(blanket.v, valid, dsm.w, dsm.h, qMax(1, int(std::lround(1.5 / cell))));
     if (!progress(0.08)) { res.error = QStringLiteral("Отменено"); CPLFree(srsWkt); return res; }
 
     // --- Z-buffers in every photo (reduced): of the projection surface (for objects) and of the
@@ -1239,6 +1250,30 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
         *slant = std::acos(qBound(-1.0, (dx * nrm[0] + dy * nrm[1] + dz * nrm[2]) / len, 1.0));
         return true;
     };
+
+    // --- Where the photo used sees the surface at a grazing angle — a slope facing away from all
+    // the cameras, mostly a bank under trees whose crowns the reconstruction missed (sparse points
+    // at the edge of a survey) — one photo pixel covers a long strip of the surface: streaks along
+    // the view. What the photo shows there is what overhangs the slope, so it is sampled over the
+    // upper envelope of the surface instead (highest point within 2 m, smoothed at 1 m): from 55°
+    // between the view and the normal, fully from 70°. A slope seen almost edge-on by every photo
+    // (a bank facing away from all of them) has no detail in any photo; there it stays stretched.
+    Grid envelope = dsm;
+    runningFilter(envelope.v, dsm.w, dsm.h, qMax(1, int(std::lround(2.0 / cell))), false);
+    maskedSmooth(envelope.v, valid, dsm.w, dsm.h, qMax(1, int(std::lround(1.0 / cell))));
+    std::vector<uchar> nearOutline(dsm.v.size(), 0);
+    {
+        const std::vector<float> fromInside = distanceInside(high, dsm.w, dsm.h);
+        std::vector<uchar> lowCells(high.size());
+        for (size_t i = 0; i < lowCells.size(); ++i) lowCells[i] = !high[i];
+        const std::vector<float> fromOutside = distanceInside(lowCells, dsm.w, dsm.h);
+        const float band = float(0.6 / cell), apron = float(2.5 / cell);
+        // Inside objects: canopies only (single crowns keep their domes, whose flanks are real);
+        // outside: not within the reach of the envelope from an object (it would lay the crown
+        // over the ground next to it).
+        for (size_t i = 0; i < nearOutline.size(); ++i)
+            nearOutline[i] = high[i] ? fromInside[i] <= band || canopyWeight[i] < 0.5f : fromOutside[i] <= apron;
+    }
 
     // --- Ground sample distance and the output grid.
     {
@@ -1503,12 +1538,16 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
                 } else if (nearObject[cellIndex] >= 0 && objectShot[nearObject[cellIndex]] >= 0)
                     done = fromRanked(objectShots[nearObject[cellIndex]], P, cellIndex, false, rgb, &used);
                 if (!done) {
-                    // The photo that looks at the surface most squarely (on flat ground: the most vertical).
+                    // The photo that looks at the surface most squarely (on flat ground: the most
+                    // vertical). On low vegetation the normals are as noisy as the reconstruction of
+                    // it: there the most vertical photo, a choice that holds over whole areas.
+                    const double b = bushy[cellIndex];
                     int s1 = -1, s2 = -1;
                     double a1 = 1e9, a2 = 1e9, u1 = 0, w1 = 0, u2 = 0, w2 = 0;
                     for (int s : candidates) {
                         double u, w, vertical, a;
                         if (!see(s, P, cellIndex, &u, &w, &vertical, &a)) continue;
+                        a = a * (1 - b) + vertical * b;
                         if (a < a1) { s2 = s1; a2 = a1; u2 = u1; w2 = w1; s1 = s; a1 = a; u1 = u; w1 = w; }
                         else if (a < a2) { s2 = s; a2 = a; u2 = u; w2 = w; }
                     }
@@ -1523,6 +1562,7 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
                         const int near = isObject ? o : underObject[cellIndex];
                         const int own = near >= 0 ? objectShot[near] : -1;
                         double best = 1e300;
+                        bool seenThere = false;   // the chosen photo sees the point (else: over the blanket)
                         for (int s : candidates) {
                             double u, w, d;
                             const Shot &shot = scene.shots[s];
@@ -1533,9 +1573,19 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
                             const double dx = shot.centre[0] - P[0], dy = shot.centre[1] - P[1], dz = shot.centre[2] - P[2];
                             const double vertical = std::acos(qBound(-1.0, dz / std::sqrt(dx * dx + dy * dy + dz * dz), 1.0));   // 0…π/2
                             const double score = visible ? vertical : s == own ? 10 : 20 + vertical;
-                            if (score < best) { best = score; s1 = s; u1 = u; w1 = w; }
+                            if (score < best) { best = score; s1 = s; u1 = u; w1 = w; seenThere = visible; }
                         }
                         s2 = -1;
+                        if (s1 >= 0 && !seenThere) {
+                            const double Q[3] = {P[0], P[1], blanket.surface(gx, gy, 1)};
+                            double u, w, d;
+                            const Shot &shot = scene.shots[s1];
+                            if (!std::isnan(Q[2]) && shot.project(Q, &u, &w, &d) && u >= 1 && w >= 1 && u <= shot.camera.width - 2
+                                && w <= shot.camera.height - 2) {
+                                u1 = u;
+                                w1 = w;
+                            }
+                        }
                     }
                     if (s1 < 0) continue;
                     used = s1;
@@ -1549,6 +1599,24 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
                             double c2[3];
                             colourOf(s2, u2, w2, c2);
                             for (int ch = 0; ch < 3; ++ch) rgb[ch] = rgb[ch] * (1 - k) + c2[ch] * k;
+                        }
+                    }
+                }
+                // Grazing view of the photo used: over the upper envelope (see above).
+                if (used >= 0 && !nearOutline[cellIndex]) {
+                    const Shot &shot = scene.shots[used];
+                    const double dx = shot.centre[0] - P[0], dy = shot.centre[1] - P[1], dz = shot.centre[2] - P[2];
+                    const float *nrm = &normals[cellIndex * 3];
+                    const double slant = std::acos(qBound(-1.0, (dx * nrm[0] + dy * nrm[1] + dz * nrm[2]) / std::sqrt(dx * dx + dy * dy + dz * dz), 1.0));
+                    const double g = qBound(0.0, (slant - 55 * Pi / 180) / (15 * Pi / 180), 1.0);
+                    const float ze = envelope.surface(gx, gy, 1);
+                    if (g > 0 && !std::isnan(ze) && ze > z) {
+                        const double Q[3] = {P[0], P[1], z + (ze - z) * g};
+                        double u, w, d, c[3];
+                        if (shot.project(Q, &u, &w, &d) && u >= 1 && w >= 1 && u <= shot.camera.width - 2 && w <= shot.camera.height - 2) {
+                            colourOf(used, u, w, c);
+                            const double h = qMin(1.0, 3 * g);
+                            for (int ch = 0; ch < 3; ++ch) rgb[ch] = rgb[ch] * (1 - h) + c[ch] * h;
                         }
                     }
                 }
