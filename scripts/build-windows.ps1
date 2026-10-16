@@ -229,6 +229,27 @@ try {
     Copy-Item (Join-Path $gis 'share\gdal') (Join-Path $out 'share\gdal') -Recurse -Force
     Write-Host "GDAL/PROJ: $gis"
 
+    # Licences of what is distributed (docs\DEPENDENCIES.md, "Обязанности при публикации"):
+    # LGPL-3.0 and GPL-3.0 for Qt, the SBOM of the Qt build (its third-party components), the
+    # copyright files of GDAL, PROJ and their libraries, and the notices of the whole delivery.
+    $licenses = Join-Path $out 'licenses'
+    New-Item -ItemType Directory -Force -Path $licenses | Out-Null
+    Copy-Item (Join-Path $root 'installer\licenses\*.txt') $licenses -Force
+    Copy-Item (Join-Path $root 'installer\THIRD_PARTY_NOTICES.txt') $out -Force
+    $qtSbom = Join-Path $QtDir 'sbom'
+    if (Test-Path $qtSbom) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $licenses 'qt') | Out-Null
+        Copy-Item (Join-Path $qtSbom '*.spdx.json') (Join-Path $licenses 'qt') -Force
+    } else {
+        Write-Warning "Qt SBOM not found in ${qtSbom}: licenses\qt stays empty."
+    }
+    foreach ($package in 'gdal', 'proj', 'libgeotiff', 'tiff', 'libjpeg-turbo', 'libpng', 'zlib', 'liblzma', 'sqlite3', 'expat', 'json-c') {
+        $copyright = Join-Path $gis "share\$package\copyright"
+        if (!(Test-Path $copyright)) { throw "Licence of $package missing: $copyright" }
+        New-Item -ItemType Directory -Force -Path (Join-Path $licenses $package) | Out-Null
+        Copy-Item $copyright (Join-Path $licenses $package) -Force
+    }
+
     # Local AI: ONNX Runtime (MIT) with its notices, and every model folder (card, licence,
     # weights) whose weights match the card's SHA-256. Without them the AI tools explain why.
     if (!$NoAi) {
@@ -288,6 +309,7 @@ try {
             "OpenDroneMap $odmVersion - official Windows build, unmodified (ODM_Setup_$odmVersion.exe).",
             'License: GNU Affero General Public License v3.0, see LICENSE and licenses\ in this folder.',
             "Source code of this version: https://github.com/OpenDroneMap/ODM/tree/v$odmVersion",
+            "A copy of the source archive is published with every GeoMap AI release: https://github.com/Lox123234/Ai-for-geomap/releases (ODM-$odmVersion-source.zip).",
             'OpenDroneMap is a separate program that GeoMap AI runs as an external process.')
         Write-Host "OpenDroneMap $odmVersion bundled: $target"
     }

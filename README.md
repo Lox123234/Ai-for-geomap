@@ -2,26 +2,21 @@
 
 **Open-source desktop workspace for UAV photography and geospatial projects.**
 
-`v0.4.0` — Qt 6/QML desktop application written in **C++17**, with no Python runtime, embedded website, accounts or subscription. Photos and projects stay on your computer.
+`v0.5.4` — Qt 6/QML desktop application written in **C++17**, with no Python runtime, embedded website, accounts or subscription. Photos and projects stay on your computer.
 
-> Reconstruction (orthophoto, point cloud, elevation models, textured model) is done by **OpenDroneMap built into GeoMap AI**: its official Windows build ships inside the program folder (`engines\odm`) and runs as part of the application — no Docker, no WSL, nothing to install separately, no administrator rights. Projects, import, browsing and the map work even without it. The **map** (GDAL/PROJ, bundled) shows results and other geodata in a real coordinate system, offline, and the **3D view** shows point clouds, textured models and terrain on the GPU; machine learning is a milestone for later versions (see [docs/ROADMAP.md](docs/ROADMAP.md)). A background basemap can be added from a local file (MBTiles, GeoPackage, GeoTIFF); no map tiles are downloaded.
+> Reconstruction (orthophoto, point cloud, elevation models, textured model) is done by **OpenDroneMap built into GeoMap AI**: its official Windows build ships unmodified inside the program folder (`engines\odm`, AGPL-3.0) and runs as a separate process — no Docker, no WSL, nothing to install separately, no administrator rights. The **map** (GDAL/PROJ, bundled) shows results and other geodata in a real coordinate system, the **3D view** shows point clouds, textured models and terrain on the GPU, and **local AI** (ONNX Runtime, in the program's own process) selects and removes objects. GeoMap AI is not a replacement for Agisoft Metashape Professional; what it covers is listed in [docs/METASHAPE_FEATURE_PARITY.md](docs/METASHAPE_FEATURE_PARITY.md).
 
-## Available in v0.4.0
+## Available in v0.5.4
 
-- Professional workspace (Russian interface): main menu (File, Edit, Project, Processing, View, Tools, Analysis, Help) and a grouped icon toolbar built from one list of 144 commands — features that are not implemented yet are shown disabled with the stage that brings them ([docs/UI_COMMANDS.md](docs/UI_COMMANDS.md)); project tree with results, layers and jobs; photo, map, 3D and processing views; properties panel; jobs and operations journal; resizable panels with saved layout; configurable shortcuts
-- Create, open, save and close **local projects**; recent projects
-- Portable projects: imported photos are **copied** into the project, paths are relative, the manifest `geomap.json` is written atomically
-- Import JPEG, PNG and TIFF files or whole folders (recursively) **in the background**: per-file progress, cancel, photos appear while importing, a report of skipped files with reasons, free-space check
-- EXIF camera, date and GPS from JPEG APP1 and TIFF IFD, without Python
-- Thumbnail cache for fast browsing of hundreds of photos; preview with zoom
-- GPS overview: a quick schematic scatter plot of photo positions (non-geographic)
-- **Map** (GDAL 3.12.4, PROJ 9.8.1): orthophotos, DSM/DTM and other GeoTIFF/COG rasters with tiles and background pyramids (tested with a 19944×19624 raster), GeoJSON/KML/GeoPackage vectors, photo positions; layer order, visibility, opacity, styles (RGB, single band with colour ramps and hillshade), legend, state saved in the project; one map CRS with on-the-fly reprojection, and **no guessing for files without a CRS** (the user assigns one); cursor coordinates (map CRS and WGS 84) and raster values; scale; **geodesic** length and area; drawing and editing points, lines and polygons with undo/redo; export of the map to PNG/PDF (legend, CRS, scale, sources) and of drawings to GeoJSON/GeoPackage/KML
-- **3D view** (GPU through Qt RHI: Direct3D/Vulkan/Metal/OpenGL): point clouds (PLY, uncompressed LAS; ODM clouds), OBJ models with MTL textures and PLY meshes, DSM/DTM as terrain draped with the orthophoto or coloured by height; orbit/pan/zoom, top/south/west/isometric views, perspective or orthographic, axes, vertical exaggeration; point coordinates and distance/height difference/slope measurements (metres only for georeferenced data)
-- Remove a project copy of an image without touching the original file
-- A project open in one window is locked against writes from a second window
-- Keyboard shortcuts: `Ctrl+N`, `Ctrl+O`, `Ctrl+S`, `Ctrl+I`, `Ctrl+W`
-- **Processing** with OpenDroneMap 3.6.2: built into the program (no Docker/WSL, no installation, no admin rights); four profiles including alignment-only for stepwise work, ~30 stage settings with validation (SIFT on NVIDIA GPUs), pre-flight check, job queue, real engine stages and live log, cancel and resume, job history kept in the project, verified results (GeoTIFF CRS and pixel size, LAS point count, report) and a quality report from ODM's statistics (aligned images, reprojection error, GPS RMSE/CE90/LE90, GSD)
-
+- Professional workspace (Russian interface): main menu and toolbar built from one list of 147 commands ([docs/UI_COMMANDS.md](docs/UI_COMMANDS.md)); project tree with chunks, results, layers and jobs; photo, map, 3D, split map + 3D and processing views; journal; saved layout
+- Local, portable **projects**: photos copied into the project, relative paths, atomic manifest, background import of files and folders, EXIF/XMP (camera, time, GPS, DJI altitude and attitude), thumbnail cache, photo masks
+- **Processing** with the built-in OpenDroneMap 3.6.2: profiles from fast orthophoto to high quality (DSM, DTM, point cloud, textured model, report), pre-flight check, job queue, live stages and log, cancel, resume and automatic retry of a crashed stage, batch processing, overlap check, quality report; works in folders with spaces and non-Latin names
+- **Chunks** as in Metashape: split a large survey by a grid over the photo positions or by flights, process the parts separately, merge their orthophotos, DSM or DTM into one seamless mosaic
+- **True orthophoto** of GeoMap AI built from the original photos and the dense point cloud: trees and roofs without smearing or "ghosts" (tested on a synthetic forest with a known answer)
+- **Survey control**: ground control and check points marked on the photos, accuracy report (RMSE), camera calibrations, scale bars, markers
+- **Map** (GDAL 3.12.4, PROJ 9.8.1): rasters and vectors in one map CRS with on-the-fly reprojection, styles, legend, grid, drawing and editing, measurements (geodesic length and area, profiles, volumes, slope, viewshed), terrain analysis (slope, aspect, contours, differences), vegetation indices and a raster calculator, DEM editor, export of the map and of results; **basemaps**: local MBTiles/GeoPackage/GeoTIFF or online servers (OpenStreetMap, Esri World Imagery, Sentinel-2 cloudless, OpenTopoMap, your own XYZ) — off by default, used only after you accept the server's terms, with its attribution shown
+- **3D view** (Qt RHI: Direct3D/Vulkan/Metal/OpenGL): point clouds (PLY, LAS with classes and intensity), OBJ/PLY models, DSM/DTM terrain; the map's basemap under the scene and the job's photos at their camera positions; measurements, point cloud editing and classification
+- **Local AI** (ONNX Runtime 1.30.0, CPU): MobileSAM object selection by a click and LaMa object removal on orthophotos (both Apache-2.0); every model has a card with its license and checksums
 ## Requirements
 
 - Windows 10/11 x64 (verified) or Linux x64 (built and tested in CI on Ubuntu 24.04; not yet tried on a desktop)
@@ -31,7 +26,7 @@ No Python interpreter or local web server is needed to build or run the desktop 
 
 ## Install on Windows
 
-Run `GeoMapAI-<version>-win64-setup.exe`: a Russian wizard installs GeoMap AI with the built-in OpenDroneMap for the current user (no administrator rights) into `%LOCALAPPDATA%\Programs\GeoMapAI`, with Start menu and optional desktop shortcuts; uninstall it from Settings → Apps (projects are kept). The installer is built with `scripts\build-windows.ps1 -Installer` (NSIS).
+Download `GeoMapAI-<version>-win64-setup.exe` from [Releases](https://github.com/Lox123234/Ai-for-geomap/releases) and run it (the installer is not code-signed yet, so Windows SmartScreen asks for confirmation): a Russian wizard installs GeoMap AI with the built-in OpenDroneMap for the current user (no administrator rights) into `%LOCALAPPDATA%\Programs\GeoMapAI`, with Start menu and optional desktop shortcuts; uninstall it from Settings → Apps (projects are kept). The installer is built with `scripts\build-windows.ps1 -Installer` (NSIS).
 
 ## Build and run on Windows
 

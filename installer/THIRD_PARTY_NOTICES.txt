@@ -1,0 +1,56 @@
+GeoMap AI — third-party notices / уведомления о сторонних компонентах
+======================================================================
+
+GeoMap AI itself is distributed under the MIT License (LICENSE). This installation also
+contains third-party software under its own licenses, listed below; the combined
+distribution is therefore not "MIT only". Full list with versions: docs\DEPENDENCIES.md.
+
+Собственный код GeoMap AI — под лицензией MIT (LICENSE). В установку входят сторонние
+программы и библиотеки со своими лицензиями (ниже); поставка в целом не является «только MIT».
+Полный перечень с версиями — docs\DEPENDENCIES.md.
+
+
+1. Qt 6.8.3 (The Qt Company Ltd. and contributors)
+   License: GNU Lesser General Public License v3.0 — licenses\LGPL-3.0.txt, which
+   supplements the GNU General Public License v3.0 — licenses\GPL-3.0.txt.
+   Qt is linked dynamically: the Qt DLLs next to GeoMapAI.exe may be replaced by your own
+   build of Qt 6.8.3 with the same configuration.
+   Source code of Qt 6.8.3: https://download.qt.io/archive/qt/6.8/6.8.3/single/
+   (qt-everywhere-src-6.8.3). Components inside the Qt modules (libjpeg-turbo, libpng, zlib,
+   FreeType, HarfBuzz, PCRE2, double-conversion, tinycbor, md4c, Unicode data, libtiff,
+   libwebp, libpsl and others) and their licenses: licenses\qt\*.spdx.json (SBOM of the
+   Qt build used).
+
+2. GDAL 3.12.4, PROJ 9.8.1, libgeotiff 1.7.4, libtiff 4.7.2, libjpeg-turbo 3.2.0,
+   libpng 1.6.58, zlib 1.3.2, XZ Utils (liblzma) 5.8.3, SQLite 3.53.4, Expat 2.8.2, json-c 0.19
+   Licenses: MIT and compatible permissive licenses (public domain for SQLite); the
+   copyright and license texts: licenses\<component>\copyright.
+   The PROJ database (share\proj\proj.db) includes data from the EPSG Geodetic Parameter
+   Dataset of the International Association of Oil & Gas Producers (IOGP), distributed
+   unmodified. Terms of use: https://epsg.org/terms-of-use.html
+
+3. OpenDroneMap 3.6.2 (engines\odm)
+   A separate program under the GNU Affero General Public License v3.0
+   (engines\odm\LICENSE; licenses of its components: engines\odm\licenses). It is
+   distributed unmodified and run by GeoMap AI as an external process; GeoMap AI does not
+   contain or link its code.
+   Source code of this version: https://github.com/OpenDroneMap/ODM/tree/v3.6.2
+   A copy of that source archive is published with every GeoMap AI release on
+   https://github.com/Lox123234/Ai-for-geomap/releases (ODM-3.6.2-source.zip).
+   Отдельная программа под лицензией AGPL-3.0, без изменений; исходный код — по ссылкам выше.
+
+4. ONNX Runtime 1.30.0 (Microsoft) — MIT; license and third-party notices: licenses\onnxruntime.
+
+5. AI models (models\<id>, each with model.json and LICENSE):
+   - MobileSAM (Chaoning Zhang et al.; mask decoder from Segment Anything, Meta AI) —
+     Apache-2.0; ONNX export: Acly/MobileSAM.
+   - LaMa (Samsung AI Center) — Apache-2.0; ONNX export: Carve/LaMa-ONNX.
+
+6. Microsoft Visual C++ runtime (vcruntime140*.dll, msvcp140*.dll, concrt140.dll,
+   vccorlib140.dll) and D3Dcompiler_47.dll — Microsoft redistributable components.
+
+7. Online basemaps are not part of the program. Their tiles are downloaded only at the
+   user's request, after the user has accepted the provider's terms in "Подложка", with the
+   provider's attribution shown: OpenStreetMap (© OpenStreetMap contributors, ODbL; OSMF Tile
+   Usage Policy), Esri World Imagery (Esri terms), Sentinel-2 cloudless by EOX (CC BY 4.0),
+   OpenTopoMap (CC-BY-SA).
