@@ -184,6 +184,8 @@ ApplicationWindow {
         case "file.saveAs": return has && idle
         case "project.settings": case "project.check": case "project.markers": case "view.markers": case "tool.cloudEditor": case "tool.classify": return has
         case "project.gcp": case "project.cameras": case "project.calibrations": case "project.scaleBars": return has
+        case "project.chunkNew": case "project.chunkDuplicate": case "project.chunkSplit": return has
+        case "project.chunkMerge": return has && chunks.count > 1
         case "project.gcpTag": return has && projects.photoCount > 0 && survey.points.length > 0
         case "edit.selectAll": case "edit.invertSelection": return window.activeView === 3 && gis.drawingCount > 0
         case "edit.copy": return window.activeView === 3 && gis.hasSelection
@@ -508,6 +510,18 @@ ApplicationWindow {
             window.activeView = 3
             window.flash("Считается перекрытие снимков — карта появится слоем «overlap»")
         },
+        "project.chunkNew": function() {
+            chunks.create("")
+            flash("Создан «" + chunks.activeName + "» — он активный: импортируйте в него снимки")
+            chunksDialog.openFor("list")
+        },
+        "project.chunkDuplicate": function() {
+            chunks.duplicate(chunks.active)
+            flash("Создан «" + chunks.activeName + "» с теми же " + chunks.activePhotoCount + " фото")
+            chunksDialog.openFor("list")
+        },
+        "project.chunkSplit": function() { chunksDialog.openFor("split") },
+        "project.chunkMerge": function() { chunksDialog.openFor("merge") },
         "project.gcp": function() { surveyDialog.openTab(0) },
         "project.cameras": function() { surveyDialog.openTab(2) },
         "project.calibrations": function() { surveyDialog.openTab(2) },
@@ -573,6 +587,8 @@ ApplicationWindow {
     function openTreeItem(item) {
         switch (item.kind) {
         case "project": case "photos": window.activeView = 0; return
+        case "chunk": chunksDialog.openFor("list"); return
+        case "chunkEntry": chunks.setActive(item.payload); flash("Активный блок: " + chunks.activeName); return
         case "orthophoto": case "dsm": case "dtm": if (item.available) window.showResultOnMap(item.payload); return
         case "pointcloud": case "mesh": if (item.available) window.open3D(item.kind, item.payload); return
         case "report": if (item.available) processing.openOutput(item.jobId, item.file); return
@@ -739,6 +755,17 @@ ApplicationWindow {
     SurveyDialog { id: surveyDialog; host: window }
     BasemapDialog { id: basemapDialog; host: window }
     BatchDialog { id: batchDialog; host: window }
+    ChunksDialog { id: chunksDialog; host: window }
+    // A mosaic of the chunks' results goes onto the map.
+    Connections {
+        target: chunks
+        function onMergeFinished(ok, path, message) {
+            if (!ok) { window.showError(message); return }
+            var e = gis.addLayerFile(path)
+            if (e.length > 0) window.showError(e)
+            window.flash(message)
+        }
+    }
     // Batch processing: jobs of the batch and where their results go (exported one at a time,
     // after the true orthophoto when one is being built).
     property var batchJobs: []
@@ -2158,6 +2185,7 @@ ApplicationWindow {
                                         required property string jobState
                                         required property string stateText
                                         required property string profileTitle
+                                        required property string chunkId
                                         required property var createdAt
                                         required property string stageTitle
                                         required property int stageIndex
@@ -2187,6 +2215,7 @@ ApplicationWindow {
                                                 spacing: 3
                                                 Label {
                                                     text: jobRow.profileTitle + " · " + Qt.formatDateTime(jobRow.createdAt, "dd.MM.yyyy hh:mm") + " · " + jobRow.jobId
+                                                          + (chunks.count > 1 ? " · " + chunks.nameOf(jobRow.chunkId) : "")
                                                     color: window.white; font.pixelSize: 11; font.bold: true
                                                     Layout.fillWidth: true; elide: Text.ElideRight
                                                 }
@@ -2519,20 +2548,20 @@ ApplicationWindow {
                         orientation: ListView.Horizontal
                         spacing: 10
                         clip: true
-                        model: projects.photoModel
+                        model: chunks.photoModel   // the photos of the active chunk
                         delegate: Rectangle {
-                            required property int index
+                            required property int photoRow   // the project's row (selection)
                             required property url photoThumb
                             width: 132; height: 90
                             radius: 7; color: "#202b37"; clip: true
-                            border.color: index === projects.selectedIndex ? "#6ac9ff" : "#3a4554"
-                            border.width: index === projects.selectedIndex ? 2 : 1
+                            border.color: photoRow === projects.selectedIndex ? "#6ac9ff" : "#3a4554"
+                            border.width: photoRow === projects.selectedIndex ? 2 : 1
                             Image {
                                 anchors.fill: parent; anchors.margins: 3
                                 source: photoThumb; sourceSize.width: 264; sourceSize.height: 180
                                 fillMode: Image.PreserveAspectCrop; asynchronous: true
                             }
-                            MouseArea { anchors.fill: parent; onClicked: projects.selectPhoto(index) }
+                            MouseArea { anchors.fill: parent; onClicked: projects.selectPhoto(photoRow) }
                         }
                     }
                 }

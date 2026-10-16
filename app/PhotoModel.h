@@ -30,7 +30,8 @@ public:
     enum Roles {
         NameRole = Qt::UserRole + 1, UrlRole, WidthRole, HeightRole,
         HasGpsRole, LatitudeRole, LongitudeRole, CameraRole, TakenAtRole, IdRole,
-        ThumbRole      // image://thumbs/<file>, served from the project's thumbnail cache
+        ThumbRole,     // image://thumbs/<file>, served from the project's thumbnail cache
+        RowRole        // the row in this model (through the chunk filter: the project's row of the photo)
     };
     explicit PhotoModel(QObject *parent = nullptr);
     int rowCount(const QModelIndex &parent = {}) const override;

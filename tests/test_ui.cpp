@@ -17,6 +17,7 @@
 #include "AppLog.h"
 #include "CommandRegistry.h"
 #include "GisEnvironment.h"
+#include "ChunkService.h"
 #include "Journal.h"
 #include "MapService.h"
 #include "MapView.h"
@@ -45,6 +46,7 @@ struct Session
     std::shared_ptr<MockEngine::Record> record = std::make_shared<MockEngine::Record>();
     ProjectManager projects;
     ProcessingService processing{new MockEngine(record)};
+    ChunkService chunks{&projects, &processing};
     ai::AiService aiModels;
     MapService map;
     PhotoMasks photoMasks{&aiModels};
@@ -70,6 +72,7 @@ struct Session
         QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &scene3d, &Scene3DService::clear);
         treeView.setSourceModel(&tree);
         tree.setSurvey(&survey);
+        tree.setChunks(&chunks);
         map.setAi(&aiModels);
         QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &photoMasks, &PhotoMasks::setProject);
         QObject::connect(&projects, &ProjectManager::projectChanged, &survey,
@@ -90,6 +93,7 @@ struct Session
         c->setContextProperty("aiModels", &aiModels);
         c->setContextProperty("photoMasks", &photoMasks);
         c->setContextProperty("survey", &survey);
+        c->setContextProperty("chunks", &chunks);
         c->setContextProperty("commands", &commands);
         c->setContextProperty("workspace", &workspace);
         c->setContextProperty("appLog", &log);
@@ -701,6 +705,40 @@ private slots:
         QTRY_VERIFY(basemap->property("visible").toBool());
         QVERIFY(basemap->property("providers").toList().size() >= 4);
         QMetaObject::invokeMethod(basemap, "close");
+
+        // Chunks: a new chunk is active and empty (the photo panel shows its photos, the tree its
+        // name and the other chunk as a row that activates it); split and merge open their pages.
+        QVERIFY(!s->enabled(QStringLiteral("project.chunkMerge")));   // one chunk
+        QVERIFY(s->run(QStringLiteral("project.chunkNew")));
+        QCOMPARE(s->chunks.count(), 2);
+        QCOMPARE(s->chunks.photoModel()->rowCount(), 0);
+        QObject *chunksDialog = s->window->findChild<QObject *>(QStringLiteral("chunksDialog"));
+        QVERIFY(chunksDialog);
+        QTRY_VERIFY(chunksDialog->property("visible").toBool());
+        QCOMPARE(chunksDialog->property("tab").toInt(), 0);
+        s->shot(QStringLiteral("ui-chunks-list.png"));
+        QMetaObject::invokeMethod(chunksDialog, "close");
+        QTRY_VERIFY(s->tree.section(QStringLiteral("chunk")) && s->tree.section(QStringLiteral("chunk"))->text() == QStringLiteral("Блок 2"));
+        QStandardItem *other = s->tree.section(QStringLiteral("chunkEntry"));
+        QVERIFY(other);
+        QCOMPARE(other->text(), QStringLiteral("Блок 1"));
+        s->call("openTreeItem", QVariantMap{{"kind", "chunkEntry"}, {"payload", other->data(ProjectTreeModel::PayloadRole)}, {"available", true}});
+        QCOMPARE(s->chunks.activeName(), QStringLiteral("Блок 1"));
+        QCOMPARE(s->chunks.photoModel()->rowCount(), 1);
+        QTRY_VERIFY(s->enabled(QStringLiteral("project.chunkMerge")));
+        QVERIFY(s->run(QStringLiteral("project.chunkSplit")));
+        QTRY_VERIFY(chunksDialog->property("visible").toBool());
+        QCOMPARE(chunksDialog->property("tab").toInt(), 1);
+        QMetaObject::invokeMethod(chunksDialog, "close");
+        QVERIFY(s->run(QStringLiteral("project.chunkMerge")));
+        QTRY_VERIFY(chunksDialog->property("visible").toBool());
+        QCOMPARE(chunksDialog->property("tab").toInt(), 2);
+        QMetaObject::invokeMethod(chunksDialog, "close");
+        QVERIFY(s->run(QStringLiteral("project.chunkDuplicate")));
+        QCOMPARE(s->chunks.count(), 3);
+        QCOMPARE(s->chunks.activeName(), QStringLiteral("Блок 1 (копия)"));
+        QCOMPARE(s->chunks.photoModel()->rowCount(), 1);
+        QMetaObject::invokeMethod(chunksDialog, "close");
     }
 
     // The 3D view: commands, tools without a map CRS, and an ODM point cloud opened from the

@@ -27,6 +27,7 @@ QVariant PhotoModel::data(const QModelIndex &index, int role) const
     case TakenAtRole: return p.takenAt;
     case IdRole: return p.id;
     case ThumbRole: return QUrl(QStringLiteral("image://thumbs/") + QFileInfo(p.file).fileName());
+    case RowRole: return index.row();
     default: return {};
     }
 }
@@ -39,7 +40,7 @@ QHash<int, QByteArray> PhotoModel::roleNames() const
         {HasGpsRole, "photoHasGps"}, {LatitudeRole, "photoLatitude"},
         {LongitudeRole, "photoLongitude"}, {CameraRole, "photoCamera"},
         {TakenAtRole, "photoTakenAt"}, {IdRole, "photoId"},
-        {ThumbRole, "photoThumb"}
+        {ThumbRole, "photoThumb"}, {RowRole, "photoRow"}
     };
 }
 

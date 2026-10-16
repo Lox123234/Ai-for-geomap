@@ -152,6 +152,7 @@ QVariant JobListModel::data(const QModelIndex &index, int role) const
     const ProcessingJob &j = m_jobs[index.row()];
     switch (role) {
     case IdRole: return j.id;
+    case ChunkRole: return j.chunk;
     case StateRole: return jobStateId(j.state);
     case StateTextRole: return jobStateText(j.state);
     case ActiveRole: return isActive(j.state);
@@ -177,7 +178,7 @@ QHash<int, QByteArray> JobListModel::roleNames() const
             {ProfileRole, "profileTitle"}, {CreatedRole, "createdAt"}, {StageRole, "stage"},
             {StageTitleRole, "stageTitle"}, {StageIndexRole, "stageIndex"}, {StageCountRole, "stageCount"},
             {MessageRole, "message"}, {ImageCountRole, "imageCount"}, {OutputCountRole, "outputCount"},
-            {StartedAtRole, "startedAt"}, {FinishedAtRole, "finishedAt"}};
+            {StartedAtRole, "startedAt"}, {FinishedAtRole, "finishedAt"}, {ChunkRole, "chunkId"}};
 }
 
 void JobListModel::setJobs(const QVector<ProcessingJob> &jobs)
@@ -269,9 +270,43 @@ void ProcessingService::setProject(const QString &directory, const PhotoModel *p
     if (m_orthoCancel) *m_orthoCancel = true;   // its finish is ignored for another project
     stopAll(QStringLiteral("Обработка остановлена: проект закрыт во время выполнения."));
     m_project = dir;
+    m_chunk.clear();
+    m_chunkPhotos.clear();
+    m_firstChunk = true;
     loadJobs();
     m_model.setJobs(m_jobs);
     emit jobsChanged();
+}
+
+void ProcessingService::setChunk(const QString &id, const QStringList &photoIds, bool firstChunk)
+{
+    m_chunk = id;
+    m_chunkPhotos = QSet<QString>(photoIds.cbegin(), photoIds.cend());
+    m_firstChunk = firstChunk;
+}
+
+bool ProcessingService::jobInChunk(const ProcessingJob &job, const QString &chunk, bool firstChunk)
+{
+    return chunk.isEmpty() || job.chunk == chunk || (job.chunk.isEmpty() && firstChunk);
+}
+
+bool ProcessingService::jobInChunk(const ProcessingJob &job) const
+{
+    return jobInChunk(job, m_chunk, m_firstChunk);
+}
+
+void ProcessingService::adoptJobs(const QString &chunk)
+{
+    if (chunk.isEmpty()) return;
+    bool any = false;
+    for (ProcessingJob &j : m_jobs)
+        if (j.chunk.isEmpty()) {
+            j.chunk = chunk;
+            saveJob(j);
+            m_model.update(j);
+            any = true;
+        }
+    if (any) emit jobsChanged();
 }
 
 void ProcessingService::stopAll(const QString &reason)
@@ -385,6 +420,7 @@ ProcessingService::Check ProcessingService::runPreflight(const QString &profileI
     const QDir project(m_project);
     QStringList missing, unsupported;
     for (const Photo &photo : m_photos->photos()) {
+        if (!m_chunk.isEmpty() && !m_chunkPhotos.contains(photo.id)) continue;   // another chunk's photo
         const QFileInfo info(project.filePath(photo.file));
         if (!info.isFile() || info.size() == 0) {
             missing << photo.name;
@@ -405,8 +441,9 @@ ProcessingService::Check ProcessingService::runPreflight(const QString &profileI
         c.warnings << QStringLiteral("Формат не поддерживается движком, снимки не войдут в задание (%1): %2.")
                           .arg(unsupported.size()).arg(sample(unsupported));
     if (count < caps.minimumImages)
-        c.errors << QStringLiteral("Для реконструкции нужно не меньше %1 снимков с перекрытием; подходящих в проекте: %2.")
-                        .arg(caps.minimumImages).arg(count);
+        c.errors << QStringLiteral("Для реконструкции нужно не меньше %1 снимков с перекрытием; подходящих %2: %3.")
+                        .arg(caps.minimumImages).arg(m_chunk.isEmpty() ? QStringLiteral("в проекте") : QStringLiteral("в активном блоке"))
+                        .arg(count);
     else if (found)
         c.warnings << m_engine->resourceWarnings(count, p, m_env);
     if (count > 0 && c.withGps == 0)
@@ -469,6 +506,7 @@ QString ProcessingService::startJob(const QString &profileId, const QString &ext
     job.id = newJobId();
     job.profile = profileId;
     job.images = c.images;
+    job.chunk = m_chunk;
     job.createdAt = QDateTime::currentDateTime();
     QString error;
     if (!m_engine->createJob(job, c.request, m_env, &error)) {
@@ -748,8 +786,8 @@ QString ProcessingService::buildTrueOrthophoto(const QString &requested)
     QString id = requested;
     const QString dsmFile = QStringLiteral("odm_dem/dsm.tif");
     if (id.isEmpty())
-        for (const ProcessingJob &j : std::as_const(m_jobs))   // newest first
-            if (j.state == JobState::Completed && QFileInfo::exists(QDir(jobDirectory(j.id)).filePath(dsmFile))) {
+        for (const ProcessingJob &j : std::as_const(m_jobs))   // newest first, of the active chunk
+            if (jobInChunk(j) && j.state == JobState::Completed && QFileInfo::exists(QDir(jobDirectory(j.id)).filePath(dsmFile))) {
                 id = j.id;
                 break;
             }

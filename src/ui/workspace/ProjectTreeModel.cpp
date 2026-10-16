@@ -1,6 +1,8 @@
 #include "ProjectTreeModel.h"
 
+#include "ChunkService.h"
 #include "MapService.h"
+#include "PhotoModel.h"
 #include "ProcessingService.h"
 #include "ProcessingTypes.h"
 #include "ProjectManager.h"
@@ -66,6 +68,13 @@ void ProjectTreeModel::setSurvey(SurveyControl *survey)
 {
     m_survey = survey;
     if (m_survey) connect(m_survey, &SurveyControl::changed, this, &ProjectTreeModel::scheduleRefresh);
+    scheduleRefresh();
+}
+
+void ProjectTreeModel::setChunks(ChunkService *chunks)
+{
+    m_chunks = chunks;
+    if (m_chunks) connect(m_chunks, &ChunkService::changed, this, &ProjectTreeModel::scheduleRefresh);
     scheduleRefresh();
 }
 
@@ -146,9 +155,59 @@ void ProjectTreeModel::refresh()
         project->setText(m_projects->projectName());
     }
     setStatus(project, QStringLiteral("%1 фото").arg(m_projects->photoCount()), true);
-    setStatus(section(QStringLiteral("chunk")), QStringLiteral("активный"), true);
-    setStatus(section(QStringLiteral("photos")),
-              QStringLiteral("%1 · с GPS %2").arg(m_projects->photoCount()).arg(m_projects->gpsCount()), m_projects->photoCount() > 0);
+    // The active chunk with its photos and results; the other chunks as rows that activate them.
+    const QVector<ProcessingJob> jobs = m_processing ? m_processing->jobs() : QVector<ProcessingJob>();
+    int photoCount = m_projects->photoCount(), gpsCount = m_projects->gpsCount();
+    if (m_chunks && m_chunks->count() > 0) {
+        if (const ChunkService::Chunk *active = m_chunks->chunk(m_chunks->active())) {
+            QSet<QString> ids(active->photos.cbegin(), active->photos.cend());
+            photoCount = int(ids.size());
+            gpsCount = 0;
+            for (const Photo &p : m_projects->photoModel()->photos()) gpsCount += p.hasGps && ids.contains(p.id) ? 1 : 0;
+            if (QStandardItem *chunk = section(QStringLiteral("chunk")); chunk && chunk->data(TitleRole).toString() != active->name) {
+                chunk->setData(active->name, TitleRole);
+                chunk->setText(active->name);
+            }
+        }
+        QList<QStringList> rows;   // id, name, status
+        for (const ChunkService::Chunk &c : m_chunks->chunkList()) {
+            if (c.id == m_chunks->active()) continue;
+            int jobCount = 0;
+            for (const ProcessingJob &j : jobs) jobCount += m_chunks->jobInChunk(j, c.id) ? 1 : 0;
+            rows << QStringList{c.id, c.name, QStringLiteral("%1 фото · заданий %2").arg(c.photos.size()).arg(jobCount)};
+        }
+        QList<int> entries;
+        for (int i = 0; i < project->rowCount(); ++i)
+            if (project->child(i)->data(KindRole).toString() == QLatin1String("chunkEntry")) entries << i;
+        bool same = entries.size() == rows.size();
+        for (int i = 0; same && i < rows.size(); ++i) same = project->child(entries[i])->data(PayloadRole).toString() == rows[i][0];
+        if (!same) {
+            for (int i = int(entries.size()) - 1; i >= 0; --i) project->removeRow(entries[i]);
+            entries.clear();
+            for (int i = 0; i < rows.size(); ++i) {
+                auto *item = new QStandardItem(rows[i][1]);
+                item->setEditable(false);
+                item->setData(rows[i][1], TitleRole);
+                item->setData(QStringLiteral("chunkEntry"), KindRole);
+                item->setData(QStringLiteral("chunk"), IconRole);
+                item->setData(true, AvailableRole);
+                item->setData(rows[i][0], PayloadRole);
+                project->insertRow(1 + i, item);   // after the active chunk
+                entries << 1 + i;
+            }
+        }
+        for (int i = 0; i < rows.size(); ++i) {
+            QStandardItem *item = project->child(entries[i]);
+            if (item->data(TitleRole).toString() != rows[i][1]) {
+                item->setData(rows[i][1], TitleRole);
+                item->setText(rows[i][1]);
+            }
+            setStatus(item, rows[i][2], true);
+        }
+    }
+    setStatus(section(QStringLiteral("chunk")),
+              m_chunks && m_chunks->count() > 1 ? QStringLiteral("активный · %1 фото").arg(photoCount) : QStringLiteral("активный"), true);
+    setStatus(section(QStringLiteral("photos")), QStringLiteral("%1 · с GPS %2").arg(photoCount).arg(gpsCount), photoCount > 0);
     // Survey control: the calibration the next jobs start from, the points and the markers.
     const QString calibration = m_survey ? m_survey->calibration() : QString();
     setStatus(section(QStringLiteral("calibrations")),
@@ -161,14 +220,14 @@ void ProjectTreeModel::refresh()
                        : QStringLiteral("маркеров %1").arg(markers),
               true);
 
-    // Results: the newest completed artifact of each kind.
-    const QVector<ProcessingJob> jobs = m_processing ? m_processing->jobs() : QVector<ProcessingJob>();
+    // Results: the newest completed artifact of each kind, of the active chunk.
     for (const ResultKind &r : Results) {
         QStandardItem *item = section(QString::fromLatin1(r.kind));
         if (!item) continue;
         const ProcessingJob *found = nullptr;
         const Artifact *artifact = nullptr;
         for (const ProcessingJob &j : jobs) {   // newest first
+            if (!m_processing->jobInChunk(j)) continue;
             for (const Artifact &a : j.outputs)
                 if (a.kind == QLatin1String(r.kind)) {
                     found = &j;
@@ -242,8 +301,9 @@ void ProjectTreeModel::refresh()
         for (int i = 0; i < jobs.size(); ++i) {
             const ProcessingJob &j = jobs[i];
             QStandardItem *item = jobsItem->child(i);
-            const QString title = QStringLiteral("%1 · %2").arg(profileTitles.value(j.profile, j.profile),
-                                                               ru.toString(j.createdAt.toLocalTime(), QStringLiteral("dd.MM HH:mm")));
+            QString title = QStringLiteral("%1 · %2").arg(profileTitles.value(j.profile, j.profile),
+                                                         ru.toString(j.createdAt.toLocalTime(), QStringLiteral("dd.MM HH:mm")));
+            if (m_chunks && m_chunks->count() > 1) title += QStringLiteral(" · ") + m_chunks->nameOf(j.chunk);
             if (item->data(TitleRole).toString() != title) {
                 item->setData(title, TitleRole);
                 item->setText(title);

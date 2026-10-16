@@ -80,6 +80,7 @@ Rectangle {
                     required property string jobState
                     required property string stateText
                     required property string profileTitle
+                    required property string chunkId
                     required property int stageIndex
                     required property int stageCount
                     required property string stageTitle
@@ -91,7 +92,7 @@ Rectangle {
                         anchors.leftMargin: 10; anchors.rightMargin: 8
                         spacing: 8
                         Rectangle { implicitWidth: 7; implicitHeight: 7; radius: 4; color: panel.stateColor(jobRow.jobState) }
-                        Label { text: jobRow.profileTitle; color: Theme.text; font.pixelSize: 11 }
+                        Label { text: jobRow.profileTitle + (chunks.count > 1 ? " · " + chunks.nameOf(jobRow.chunkId) : ""); color: Theme.text; font.pixelSize: 11 }
                         Label { text: jobRow.jobId; color: Theme.faint; font.pixelSize: 10 }
                         Item { Layout.fillWidth: true }
                         Label {

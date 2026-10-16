@@ -4,7 +4,7 @@ if(CMAKE_HOST_WIN32 AND NOT DEFINED VCPKG_TARGET_TRIPLET)
     set(VCPKG_TARGET_TRIPLET x64-windows-geomap CACHE STRING "vcpkg triplet")
     set(VCPKG_HOST_TRIPLET x64-windows-geomap CACHE STRING "vcpkg host triplet")
 endif()
-project(GeoMapAI VERSION 0.5.3 LANGUAGES CXX)
+project(GeoMapAI VERSION 0.5.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,6 +43,8 @@ qt_add_library(GeoMapCore STATIC
     app/PhotoMasks.cpp
     app/SurveyControl.h
     app/SurveyControl.cpp
+    app/ChunkService.h
+    app/ChunkService.cpp
     app/ExifReader.h
     app/ExifReader.cpp
     src/processing/ProcessingTypes.h
@@ -120,6 +122,8 @@ qt_add_library(GeoMapCore STATIC
     src/processing/TrueOrthophoto.cpp
     src/processing/Overlap.h
     src/processing/Overlap.cpp
+    src/processing/Mosaic.h
+    src/processing/Mosaic.cpp
 )
 target_include_directories(GeoMapCore PUBLIC app src/core src/import src/processing src/gis src/ui/commands src/ui/workspace src/view3d src/ai)
 target_link_libraries(GeoMapCore PUBLIC Qt6::Core Qt6::Gui Qt6::Network GDAL::GDAL PROJ::proj)
@@ -183,7 +187,7 @@ set(GEOMAP_QML_FILES
     qml/PhotoInspector.qml qml/BottomPanel.qml qml/MapController.qml qml/MapLayersPanel.qml
     qml/MapLayerProperties.qml qml/MapCanvas.qml qml/ShortcutsDialog.qml qml/View3DWorkspace.qml qml/View3DPanel.qml qml/TerrainDialog.qml qml/MeasurementsPanel.qml qml/ExportDialog.qml
     qml/RasterCalcDialog.qml qml/AiModelsDialog.qml qml/MarkersDialog.qml qml/DemEditorDialog.qml qml/CloudEditorDialog.qml
-    qml/ProjectSettingsDialog.qml qml/SaveAsDialog.qml qml/ProjectCheckDialog.qml qml/SurveyDialog.qml qml/BasemapDialog.qml qml/BatchDialog.qml)
+    qml/ProjectSettingsDialog.qml qml/SaveAsDialog.qml qml/ProjectCheckDialog.qml qml/SurveyDialog.qml qml/BasemapDialog.qml qml/BatchDialog.qml qml/ChunksDialog.qml)
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 foreach(file IN LISTS GEOMAP_QML_FILES)
     get_filename_component(name ${file} NAME)
@@ -290,6 +294,9 @@ if(BUILD_TESTING)
         add_test(NAME GeoMapAIOrthophotoTests COMMAND GeoMapAIOrthophotoTests)
         # Trees on the orthophoto: a synthetic forest photographed and reconstructed the way
         # photogrammetry does it, scored against its known texture (crowns, ground next to them).
+        qt_add_executable(GeoMapAIChunkTests tests/test_chunks.cpp tests/MockEngine.h)
+        target_link_libraries(GeoMapAIChunkTests PRIVATE GeoMapCore Qt6::Test)
+        add_test(NAME GeoMapAIChunkTests COMMAND GeoMapAIChunkTests)
         qt_add_executable(GeoMapAITreeTests tests/test_trees.cpp)
         target_link_libraries(GeoMapAITreeTests PRIVATE GeoMapCore Qt6::Test)
         add_test(NAME GeoMapAITreeTests COMMAND GeoMapAITreeTests)
@@ -316,7 +323,7 @@ if(BUILD_TESTING)
         target_link_libraries(GeoMapAIView3DRenderTest PRIVATE GeoMapUi GeoMapUiplugin Qt6::Test Qt6::Quick Qt6::GuiPrivate)
         add_test(NAME GeoMapAIView3DRenderTest COMMAND GeoMapAIView3DRenderTest)
         set(geomap_tests GeoMapAITests GeoMapAIProjectTests GeoMapAIImportTests GeoMapAIProcessingTests GeoMapAIGisTests GeoMapAITerrainTests GeoMapAIExportTests
-            GeoMapAIAiTests GeoMapAIOrthophotoTests GeoMapAITreeTests GeoMapAIWorkspaceTests GeoMapAIUiTests GeoMapAIView3DTests GeoMapAIView3DRenderTest)
+            GeoMapAIAiTests GeoMapAIOrthophotoTests GeoMapAIChunkTests GeoMapAITreeTests GeoMapAIWorkspaceTests GeoMapAIUiTests GeoMapAIView3DTests GeoMapAIView3DRenderTest)
 
         # Real reconstruction with the built-in OpenDroneMap and a check of all its results;
         # minutes to an hour, so only when configured with -DGEOMAP_ODM_DATASET=<folder with

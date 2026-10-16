@@ -19,6 +19,7 @@
 #include <cmath>
 #include <gdal.h>
 #include <memory>
+#include "ChunkService.h"
 #include "GisEnvironment.h"
 #include "MapService.h"
 #include "OdmEngine.h"
@@ -387,6 +388,67 @@ private slots:
         QVERIFY2(o.ok(), qUtf8Printable(o.error));
         qInfo("Overlap: median %.0f photos, >= 3: %.1f %%, >= 5: %.1f %%, >= 9: %.1f %%", o.median, o.share3 * 100, o.share5 * 100, o.share9 * 100);
         QVERIFY(o.median >= 3);
+    }
+
+    // Chunks on real photos: the survey split in two overlapping halves by the photo positions,
+    // each half processed on its own (fast profile), the two orthophotos merged into one mosaic
+    // that covers more than either half.
+    void chunksSplitProcessAndMerge()
+    {
+        ChunkService chunks(m_projects.get(), m_service.get());
+        QCOMPARE(chunks.count(), 1);
+        const QVariantMap split = chunks.split(chunks.active(), {{"mode", "grid"}, {"rows", 1}, {"cols", 2}, {"overlap", 30}, {"minPhotos", 5}});
+        QVERIFY2(split.value("ok").toBool(), qUtf8Printable(split.value("error").toString()));
+        const QStringList parts = split.value("created").toStringList();
+        QCOMPARE(parts.size(), 2);
+        qInfo("Split: %s; %s", qUtf8Printable(chunks.chunk(parts[0])->name + QStringLiteral(" %1 photos, ").arg(chunks.chunk(parts[0])->photos.size())
+                                              + chunks.chunk(parts[1])->name + QStringLiteral(" %1 photos").arg(chunks.chunk(parts[1])->photos.size())),
+              qUtf8Printable(split.value("notes").toStringList().join(QStringLiteral("; "))));
+        QStringList stages;
+        QVector<double> coverage;
+        for (const QString &part : parts) {
+            QVERIFY(chunks.setActive(part));
+            const QString id = runToEnd(QStringLiteral("fast"), {}, 2, &stages);
+            QVERIFY(!id.isEmpty());
+            const ProcessingJob job = m_service->job(id);
+            QVERIFY2(job.state == JobState::Completed, qUtf8Printable(job.message));
+            QCOMPARE(job.chunk, part);
+            QCOMPARE(job.images.size(), chunks.chunk(part)->photos.size());
+        }
+        QSignalSpy finished(&chunks, &ChunkService::mergeFinished);
+        QCOMPARE(chunks.mergeResults(parts, QStringLiteral("orthophoto")), QString());
+        QVERIFY(finished.wait(900000));
+        QVERIFY2(finished.first().at(0).toBool(), qUtf8Printable(finished.first().at(2).toString()));
+        const QString mosaicPath = finished.first().at(1).toString();
+        qInfo("%s", qUtf8Printable(finished.first().at(2).toString()));
+        // Area with data (alpha > 0), m²: the mosaic covers the union of the halves.
+        auto area = [](const QString &path) {
+            GDALDatasetH ds = GDALOpen(QDir::toNativeSeparators(path).toUtf8().constData(), GA_ReadOnly);
+            if (!ds) return 0.0;
+            double gt[6];
+            GDALGetGeoTransform(ds, gt);
+            const int w = GDALGetRasterXSize(ds), h = GDALGetRasterYSize(ds), step = 4;
+            std::vector<unsigned char> line(static_cast<size_t>(w));
+            qint64 count = 0;
+            GDALRasterBandH alpha = GDALGetRasterBand(ds, GDALGetRasterCount(ds));
+            for (int y = 0; y < h; y += step) {
+                GDALRasterIO(alpha, GF_Read, 0, y, w, 1, line.data(), w, 1, GDT_Byte, 0, 0);
+                for (int x = 0; x < w; x += step) count += line[size_t(x)] > 0 ? 1 : 0;
+            }
+            GDALClose(ds);
+            return double(count) * step * step * std::fabs(gt[1] * gt[5]);
+        };
+        double largest = 0;
+        for (const QVariant &v : chunks.resultsOf(parts, QStringLiteral("orthophoto"))) {
+            const double a = area(v.toMap().value("path").toString());
+            qInfo("  %s: %.0f m² with data", qUtf8Printable(v.toMap().value("name").toString()), a);
+            largest = std::max(largest, a);
+        }
+        const double merged = area(mosaicPath);
+        qInfo("  mosaic: %.0f m² with data", merged);
+        QVERIFY(merged > largest * 1.05);
+        const QString keep = qEnvironmentVariable("GEOMAP_TEST_OUTPUT");
+        if (!keep.isEmpty()) QFile::copy(mosaicPath, QDir(keep).filePath(QStringLiteral("chunks-mosaic.tif")));
     }
 };
 

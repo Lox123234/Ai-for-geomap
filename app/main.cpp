@@ -13,6 +13,7 @@
 #include "AiService.h"
 #include "AppInfo.h"
 #include "AppLog.h"
+#include "ChunkService.h"
 #include "CommandRegistry.h"
 #include "GisEnvironment.h"
 #include "Journal.h"
@@ -75,6 +76,8 @@ int main(int argc, char *argv[])
                      [&processing, &projects](const QString &directory) {
                          processing.setProject(directory, projects.photoModel());
                      });
+    // Chunks: sets of the project's photos processed by their own jobs (chunks.json).
+    ChunkService chunks(&projects, &processing);
     // GDAL/OGR and PROJ; data folders next to the executable in deployed builds.
     GisEnvironment::initialize(QCoreApplication::applicationDirPath());
     // Tiles of online basemaps, shared by all projects.
@@ -116,9 +119,12 @@ int main(int argc, char *argv[])
     AppInfo appInfo(appLog.logDirectory());
     ProjectTreeModel projectTree(&projects, &processing, &map);
     projectTree.setSurvey(&survey);
+    projectTree.setChunks(&chunks);
     ProjectTreeFilter projectTreeView;
     projectTreeView.setSourceModel(&projectTree);
     connectJournal(&appLog, &projects, &processing, &map);
+    QObject::connect(&chunks, &ChunkService::errorOccurred, &appLog,
+                     [&appLog](const QString &message) { appLog.add(AppLog::Error, QStringLiteral("Блоки"), message); });
     QObject::connect(&scene3d, &Scene3DService::errorOccurred, &appLog,
                      [&appLog](const QString &message) { appLog.add(AppLog::Error, QStringLiteral("3D"), message); });
     appLog.add(AppLog::Info, QStringLiteral("Программа"),
@@ -137,6 +143,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("aiModels", &aiModels);
     engine.rootContext()->setContextProperty("photoMasks", &photoMasks);
     engine.rootContext()->setContextProperty("survey", &survey);
+    engine.rootContext()->setContextProperty("chunks", &chunks);
     engine.rootContext()->setContextProperty("commands", &commands);
     engine.rootContext()->setContextProperty("workspace", &workspace);
     engine.rootContext()->setContextProperty("appLog", &appLog);

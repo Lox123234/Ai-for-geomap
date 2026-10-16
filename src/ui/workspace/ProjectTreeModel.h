@@ -4,6 +4,7 @@
 #include <QStandardItemModel>
 #include <QTimer>
 
+class ChunkService;
 class MapService;
 class ProcessingService;
 class ProjectManager;
@@ -22,7 +23,7 @@ class ProjectTreeModel : public QStandardItemModel
 public:
     enum Roles {
         TitleRole = Qt::UserRole + 1,
-        KindRole,        // project, chunk, photos, calibrations, gcp, orthophoto, dsm, dtm, pointcloud, mesh, report, layers, layer, jobs, job
+        KindRole,        // project, chunk (the active one), chunkEntry (another), photos, calibrations, gcp, orthophoto, dsm, dtm, pointcloud, mesh, report, layers, layer, jobs, job
         StatusRole,      // short state text
         IconRole,        // icon file name (qml/icons)
         AvailableRole,   // false for sections that are not implemented or have no data
@@ -35,6 +36,7 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     void setSurvey(SurveyControl *survey);   // ground control and calibration (optional)
+    void setChunks(ChunkService *chunks);    // chunks of the project (optional: one chunk with every photo)
     Q_INVOKABLE void rebuild();   // new project (or none)
     Q_INVOKABLE void refresh();   // counts, results, layers, jobs
     QStandardItem *section(const QString &kind) const;
@@ -54,6 +56,7 @@ private:
     ProcessingService *m_processing;
     MapService *m_map;
     SurveyControl *m_survey = nullptr;
+    ChunkService *m_chunks = nullptr;
     QTimer m_refreshTimer;
     int m_revision = 0;
 };

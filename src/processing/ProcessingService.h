@@ -5,6 +5,7 @@
 #include <QAbstractListModel>
 #include <QFile>
 #include <QHash>
+#include <QSet>
 #include <QPointer>
 #include <QTimer>
 #include <QVariantMap>
@@ -23,7 +24,7 @@ public:
     enum Roles {
         IdRole = Qt::UserRole + 1, StateRole, StateTextRole, ActiveRole, ProfileRole, CreatedRole,
         StageRole, StageTitleRole, StageIndexRole, StageCountRole, MessageRole, ImageCountRole,
-        OutputCountRole, StartedAtRole, FinishedAtRole
+        OutputCountRole, StartedAtRole, FinishedAtRole, ChunkRole
     };
     explicit JobListModel(const IProcessingEngine *engine, QObject *parent = nullptr);
     int rowCount(const QModelIndex &parent = {}) const override;
@@ -86,6 +87,14 @@ public:
     // Work of the previous project is stopped and recorded as interrupted.
     void setProject(const QString &directory, const PhotoModel *photos);
     QString projectDirectory() const { return m_project; }
+    // The chunk new jobs process (ChunkService): its id and photo ids; jobs written before
+    // chunks existed (no chunk) belong to the first chunk. An empty id: all photos.
+    void setChunk(const QString &id, const QStringList &photoIds, bool firstChunk);
+    QString chunk() const { return m_chunk; }
+    bool jobInChunk(const ProcessingJob &job) const;
+    static bool jobInChunk(const ProcessingJob &job, const QString &chunk, bool firstChunk);
+    // Jobs written before chunks (no chunk) join this one; their job.json is updated.
+    void adoptJobs(const QString &chunk);
     QVector<ProcessingJob> jobs() const { return m_jobs; }
     ProcessingJob job(const QString &id) const;
     QString jobDirectory(const QString &id) const;
@@ -194,6 +203,9 @@ private:
     IProcessingEngine *m_engine;
     QString m_project;
     const PhotoModel *m_photos = nullptr;
+    QString m_chunk;                  // "" = every photo of the project
+    QSet<QString> m_chunkPhotos;
+    bool m_firstChunk = true;
     QVector<ProcessingJob> m_jobs;    // newest first
     QStringList m_queue;              // ids waiting to run, oldest first
     QString m_current;                // preparing, running or cancelling

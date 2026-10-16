@@ -66,7 +66,7 @@ QJsonObject ProcessingJob::toJson() const
 {
     QJsonArray outputArray;
     for (const Artifact &a : outputs) outputArray.append(a.toJson());
-    return {
+    QJsonObject o{
         {"schemaVersion", 1}, {"id", id}, {"engine", engine}, {"engineVersion", engineVersion},
         {"backend", backend}, {"profile", profile}, {"arguments", QJsonArray::fromStringList(arguments)},
         {"notes", QJsonArray::fromStringList(notes)}, {"runs", runs},
@@ -76,6 +76,8 @@ QJsonObject ProcessingJob::toJson() const
         {"finishedAt", dateToJson(finishedAt)}, {"images", QJsonArray::fromStringList(images)},
         {"exitCode", exitCode}, {"outputs", outputArray}
     };
+    if (!chunk.isEmpty()) o.insert("chunk", chunk);
+    return o;
 }
 
 ProcessingJob ProcessingJob::fromJson(const QJsonObject &o, bool *ok)
@@ -100,6 +102,7 @@ ProcessingJob ProcessingJob::fromJson(const QJsonObject &o, bool *ok)
     job.startedAt = dateFromJson(o.value("startedAt"));
     job.finishedAt = dateFromJson(o.value("finishedAt"));
     for (const QJsonValue &v : o.value("images").toArray()) job.images << v.toString();
+    job.chunk = o.value("chunk").toString();
     job.exitCode = o.value("exitCode").toInt();
     for (const QJsonValue &v : o.value("outputs").toArray()) job.outputs << Artifact::fromJson(v.toObject());
     if (ok) *ok = stateOk && o.value("schemaVersion").toInt() == 1 && !job.id.isEmpty();
