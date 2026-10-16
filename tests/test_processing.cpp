@@ -31,6 +31,9 @@
 #include <gdal.h>
 #include <QUrl>
 #include <cmath>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 namespace {
 bool writeFile(const QString &path, const QByteArray &bytes)
@@ -607,6 +610,62 @@ private slots:
         QVERIFY2(m.contains(QStringLiteral("место")), qUtf8Printable(m));
         m = OdmEngine::explainFailure({QStringLiteral("something")}, {}, QString(), 3);
         QVERIFY2(m.contains(QStringLiteral("код 3")) && m.contains(QStringLiteral("Журнал")), qUtf8Printable(m));
+        // The point classification could not put its result in place (seen through a folder link
+        // with Malwarebytes): the cause is named, and repeating would not help.
+        const QStringList renamed = {
+            QStringLiteral("Wrote C:\\w\\odm_georeferencing\\odm_georeferenced_model.classified.laz"),
+            QStringLiteral("[WARNING] Cannot classify using OpenPointClass: [WinError 3] Системе не удается найти указанный путь: "
+                           "'C:\\\\w\\\\odm_georeferencing\\\\odm_georeferenced_model.classified.laz' -> 'C:\\\\w\\\\odm_georeferencing\\\\odm_georeferenced_model.laz'"),
+            QStringLiteral("[INFO]    Creating LAS file"),
+            QStringLiteral("[INFO]    running pdal translate -i \"C:\\w\\odm_georeferencing\\odm_georeferenced_model.laz\" -o \"x.las\""),
+            QStringLiteral("PDAL: Unable to open stream for 'C:\\w\\odm_georeferencing/odm_georeferenced_model.laz' with error 'No such file or directory'"),
+            QStringLiteral("[ERROR]   Uh oh! Processing stopped because of strange values in the reconstruction."),
+        };
+        m = OdmEngine::explainFailure(renamed, {renamed.last()}, QStringLiteral("Геопривязка"), 1);
+        QVERIFY2(m.contains(QStringLiteral("антивирус")) && m.contains(QStringLiteral("переименовать")), qUtf8Printable(m));
+        OdmEngine odm;
+        QVERIFY(!odm.retryable(1, m));
+        QVERIFY(odm.retryable(1, OdmEngine::explainFailure(recent, {recent.last()}, QStringLiteral("Геопривязка"), 1)));
+    }
+
+    // A crashed stage is computed again automatically: first itself, then — failing on it again —
+    // from the stage before it; at most twice. "Продолжить" then redoes the stage that failed.
+    void crashedStageIsRetried()
+    {
+        Fixture f;
+        QVERIFY(f.init(2));
+        QVERIFY(f.checkEnvironment());
+        f.engine->retry = true;
+        const QString id = f.service->startJob(QStringLiteral("fast"));
+        QTRY_COMPARE(f.record->started.size(), 1);
+        auto from = [&] {
+            const QStringList a = f.service->job(id).arguments;
+            const int i = int(a.indexOf(QStringLiteral("--from")));
+            return i >= 0 && i + 1 < a.size() ? a[i + 1] : QString();
+        };
+        f.engine->stage(QStringLiteral("b"), 2);
+        f.engine->finish(JobOutcome::Failed, 1, QStringLiteral("crash"));
+        QTRY_COMPARE(f.record->started.size(), 2);   // the same stage again
+        QCOMPARE(from(), QStringLiteral("b"));
+        f.engine->stage(QStringLiteral("b"), 2);
+        f.engine->finish(JobOutcome::Failed, 1, QStringLiteral("crash"));
+        QTRY_COMPARE(f.record->started.size(), 3);   // the stage before it
+        QCOMPARE(from(), QStringLiteral("a"));
+        f.engine->stage(QStringLiteral("c"), 3);
+        f.engine->finish(JobOutcome::Failed, 1, QStringLiteral("crash"));
+        QTRY_COMPARE(f.state(id), JobState::Failed);   // no third retry
+        QTest::qWait(50);
+        QCOMPARE(f.record->started.size(), 3);
+        QVERIFY(QString::fromUtf8(readFile(f.jobFile(id, QStringLiteral("log.txt")))).contains(QStringLiteral("автоматически (попытка 2 из 2)")));
+        QVERIFY(f.service->resumeJob(id));
+        QTRY_COMPARE(f.record->started.size(), 4);
+        QCOMPARE(from(), QStringLiteral("c"));
+        // Without the engine's consent (memory, disk) nothing is repeated.
+        f.engine->retry = false;
+        f.engine->stage(QStringLiteral("c"), 3);
+        f.engine->finish(JobOutcome::Failed, 1, QStringLiteral("out of memory"));
+        QTRY_COMPARE(f.state(id), JobState::Failed);
+        QCOMPARE(f.record->started.size(), 4);
     }
 
     void failureKeepsEngineMessage()
@@ -997,6 +1056,16 @@ private slots:
         QCOMPARE(odm.resumeArguments({QStringLiteral("--dsm"), QStringLiteral("--end-with"), QStringLiteral("opensfm"),
                                       QStringLiteral("--rerun-from"), QStringLiteral("odm_dem"), QStringLiteral("--rerun-all")}),
                  QStringList{QStringLiteral("--dsm")});
+        // After a failure the stage is computed again; the one before it is known; crashes are
+        // retried, running out of memory or space is not.
+        QCOMPARE(odm.resumeArguments({QStringLiteral("--dsm"), QStringLiteral("--rerun-from"), QStringLiteral("opensfm")}, QStringLiteral("odm_georeferencing")),
+                 (QStringList{QStringLiteral("--dsm"), QStringLiteral("--rerun-from"), QStringLiteral("odm_georeferencing")}));
+        QCOMPARE(odm.resumeArguments({QStringLiteral("--dsm")}, QStringLiteral("unknown")), QStringList{QStringLiteral("--dsm")});
+        QCOMPARE(odm.previousStage(QStringLiteral("odm_dem")), QStringLiteral("odm_georeferencing"));
+        QVERIFY(odm.previousStage(QStringLiteral("dataset")).isEmpty());
+        QVERIFY(odm.retryable(1, QStringLiteral("Сбой на этапе «Геопривязка»: PDAL при классификации точек земли (нужна для DTM) завершилась аварийно.")));
+        QVERIFY(!odm.retryable(137, QStringLiteral("OpenDroneMap остановлен из-за нехватки памяти.")));
+        QVERIFY(!odm.retryable(1, QStringLiteral("Обработка остановлена: на диске кончилось место.")));
     }
 
     void odmQualityReportFollowsStatsJson()
@@ -1109,6 +1178,24 @@ private slots:
         QVERIFY(writeFile(link + QStringLiteral("/out.tmp"), "result"));
         QVERIFY(QFile::rename(link + QStringLiteral("/out.tmp"), link + QStringLiteral("/out.tif")));
         QCOMPARE(readFile(target + QStringLiteral("/out.tif")), QByteArray("result"));
+#ifdef Q_OS_WIN
+        // As ODM's point classification does (Python os.remove, then os.rename = MoveFileExW
+        // without flags) in a subfolder: the georeferencing stage of the high-quality profile.
+        {
+            QVERIFY(writeFile(link + QStringLiteral("/odm_georeferencing/model.laz"), "old"));
+            QVERIFY(writeFile(link + QStringLiteral("/odm_georeferencing/model.classified.laz"), "new"));
+            const std::wstring from = QDir::toNativeSeparators(link + QStringLiteral("/odm_georeferencing/model.classified.laz")).toStdWString();
+            const std::wstring to = QDir::toNativeSeparators(link + QStringLiteral("/odm_georeferencing/model.laz")).toStdWString();
+            QVERIFY(DeleteFileW(to.c_str()));
+            const BOOL moved = MoveFileExW(from.c_str(), to.c_str(), 0);
+            const DWORD code = GetLastError();
+            QProcess fsutil;
+            fsutil.start(QStringLiteral("fsutil"), {QStringLiteral("reparsepoint"), QStringLiteral("query"), QDir::toNativeSeparators(link)});
+            fsutil.waitForFinished(10000);
+            QVERIFY2(moved, qPrintable(QStringLiteral("MoveFileExW: %1\n%2").arg(code).arg(QString::fromLocal8Bit(fsutil.readAllStandardOutput()))));
+            QCOMPARE(readFile(target + QStringLiteral("/odm_georeferencing/model.laz")), QByteArray("new"));
+        }
+#endif
 
         QVERIFY(!Platform::removeDirectoryLink(target));   // not a link: refused
         QVERIFY(Platform::removeDirectoryLink(link));

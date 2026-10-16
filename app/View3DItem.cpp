@@ -91,8 +91,22 @@ public:
             radius = qMax(1.0f, b.radius());
         }
         const float dist = (cam.eye() - (b.valid ? b.center() : cam.target)).length();
-        const float farPlane = dist + radius * 3.0f + 10.0f;
-        const float nearPlane = qMax(farPlane * 1e-5f, qMax(0.01f, dist - radius * 3.0f));
+        float farPlane = dist + radius * 3.0f + 10.0f;
+        float nearPlane = qMax(0.01f, dist - radius * 3.0f);
+        if (m_snapshot.extent.valid) {
+            // Around everything drawn: the basemap reaches far beyond the data, the cameras are
+            // above it. Near just before the box (depth precision for the ground under the data).
+            Bounds e = m_snapshot.extent;
+            e.min.setZ(e.min.z() * vs);
+            e.max.setZ(e.max.z() * vs);
+            const QVector3D eye = cam.eye();
+            const float dx = qMax(qMax(e.min.x() - eye.x(), 0.0f), eye.x() - e.max.x());
+            const float dy = qMax(qMax(e.min.y() - eye.y(), 0.0f), eye.y() - e.max.y());
+            const float dz = qMax(qMax(e.min.z() - eye.z(), 0.0f), eye.z() - e.max.z());
+            farPlane = qMax(farPlane, (eye - e.center()).length() + e.radius() + 10.0f);
+            nearPlane = qMax(0.01f, 0.9f * std::sqrt(dx * dx + dy * dy + dz * dz));
+        }
+        nearPlane = qMax(nearPlane, farPlane * 5e-5f);
         QMatrix4x4 model;
         model.scale(1.0f, 1.0f, vs);
         const QMatrix4x4 mvp = m_rhi->clipSpaceCorrMatrix() * cam.projection(aspect, cam.orthographic ? -farPlane : nearPlane, farPlane)
@@ -133,7 +147,8 @@ public:
                     mu.flags[0] = part.textured ? 1.0f : 0.0f;
                     // Textured photogrammetry already carries its light; shade colours and terrain.
                     mu.flags[1] = m_snapshot.lighting && (!part.textured || g.terrain) ? 1.0f : 0.0f;
-                    mu.flags[2] = m_snapshot.colorMode == 1 ? 1.0f : 0.0f;   // classes/intensity are point attributes
+                    // Classes/intensity are point attributes; the basemap and the photos keep their images.
+                    mu.flags[2] = m_snapshot.colorMode == 1 && !layer.overlay ? 1.0f : 0.0f;
                     mu.flags[3] = g.hasColor ? 1.0f : 0.0f;
                     mu.heights[0] = zMin; mu.heights[1] = zMax;
                     const float az = qDegreesToRadians(315.0f), el = qDegreesToRadians(45.0f);

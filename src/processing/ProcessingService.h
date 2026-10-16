@@ -209,6 +209,8 @@ private:
 
     QVector<ProcessingProfile> m_profiles;   // the engine's profiles, kept for JobRequest pointers
     QStringList m_resumed;                   // jobs whose next start continues an earlier run
+    QHash<QString, QString> m_failedStage;   // stage of a job's last failure (resumes and automatic retries)
+    QHash<QString, int> m_autoRetries;       // automatic retries since the user last started the job
     QString m_installStatus;
     qint64 m_diskReserve = 512LL * 1024 * 1024;
     JobListModel m_model;

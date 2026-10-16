@@ -309,8 +309,16 @@ QImage WebRasterSource::renderRegion(const QRectF &mapRect, const QSize &size) c
     return render(mapRect, size.width(), size.height(), true);
 }
 
-QImage WebRasterSource::render(const QRectF &rect, int width, int height, bool fetch) const
+QImage WebRasterSource::renderRegion(const QRectF &mapRect, const QSize &size, bool *complete) const
 {
+    if (complete) *complete = false;
+    if (!m_valid || size.isEmpty()) return {};
+    return render(mapRect, size.width(), size.height(), true, complete);
+}
+
+QImage WebRasterSource::render(const QRectF &rect, int width, int height, bool fetch, bool *complete) const
+{
+    if (complete) *complete = false;
     QImage out(width, height, QImage::Format_ARGB32_Premultiplied);
     out.fill(Qt::transparent);
     // Web Mercator metres of a coarse grid over the image (reprojection is smooth at this scale).
@@ -375,6 +383,11 @@ QImage WebRasterSource::render(const QRectF &rect, int width, int height, bool f
             auto mix = [&](int (*ch)(QRgb)) { return int((ch(a) * (1 - bx) + ch(b) * bx) * (1 - by) + (ch(c) * (1 - bx) + ch(d) * bx) * by + 0.5); };
             line[px] = qRgba(mix(qRed), mix(qGreen), mix(qBlue), mix(qAlpha));
         }
+    }
+    if (complete) {
+        *complete = true;
+        for (const Tile &t : std::as_const(tiles))
+            if (t.z != z) *complete = false;   // missing, or a coarser tile in its place
     }
     return out;
 }

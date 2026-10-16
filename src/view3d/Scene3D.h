@@ -39,6 +39,7 @@ struct PointCloud
     Origin origin;
     bool georeferenced = false;     // coordinates in a known CRS (ODM coords.txt, LAS CRS record)
     QString crs;                    // its description, when known
+    QString crsWkt;                 // its definition, when known (the basemap under the scene)
     QString source;
     QString error;
     bool isValid() const { return error.isEmpty() && !positions.isEmpty(); }
@@ -62,6 +63,7 @@ struct Mesh
     Origin origin;
     bool georeferenced = false;     // ODM model (coords.txt) or a DEM with a CRS
     QString crs;
+    QString crsWkt;                 // definition of the CRS, when known
     QString source;
     QString error;
     QString note;                   // e.g. textures that were scaled down

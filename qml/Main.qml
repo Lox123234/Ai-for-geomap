@@ -62,6 +62,10 @@ ApplicationWindow {
     onMaskModeChanged: if (maskMode) gcpMode = false
     // Photo view: clicks place the selected ground control point (survey, gcp.json).
     property bool gcpMode: false
+    // Map and 3D scene side by side (persisted); shown while one of them is the active view.
+    property bool splitView: workspace.value("splitView", false) === true || workspace.value("splitView", false) === "true"
+    onSplitViewChanged: workspace.setValue("splitView", splitView)
+    readonly property bool splitShown: splitView && projects.hasProject && (activeView === 3 || activeView === 4)
     property string gcpPoint: ""
     property var gcpMarks: []
     onGcpModeChanged: {
@@ -204,6 +208,8 @@ ApplicationWindow {
         case "view.photo": case "view.map": case "view.processing": case "view.gps": case "view.reset":
         case "view.cameras": case "view.dem": return has
         case "view.basemap": return has
+        case "view.split": return has
+        case "proc.batch": return has && projects.photoCount > 0 && processing.engineAvailable
         case "view.hillshade": return window.activeView === 3 && mapController.details.type === "raster"
                                       && mapController.details.style !== undefined && mapController.details.style.mode === "single"
         case "file.exit": case "edit.preferences": case "view.panelProject": case "view.panelProperties": case "view.panelLog":
@@ -249,8 +255,9 @@ ApplicationWindow {
         case "view.panelProject": return window.showLeft
         case "view.panelProperties": return window.showRight
         case "view.panelLog": return window.showBottom
-        case "view.cameras": return window.photosShown
+        case "view.cameras": return window.activeView === 4 ? scene3d.showCameras : window.photosShown
         case "view.basemap": return gis.hasBasemap && gis.basemapVisible
+        case "view.split": return window.splitView
         case "view.hillshade": return mapController.details.style !== undefined && mapController.details.style.hillshade === true
         }
         return false
@@ -437,8 +444,16 @@ ApplicationWindow {
         "tool.scale": function() { window.set3DTool("zoom") },
         "view.dem": function() { window.showDem() },
         "view.hillshade": function() { gis.setLayerStyle(mapController.details.id, { hillshade: !(mapController.details.style.hillshade === true) }) },
-        "view.cameras": function() { gis.setLayerVisible("photos", !window.photosShown) },
+        "view.cameras": function() {   // the photos on the map, or the cameras in the 3D scene
+            if (window.activeView === 4) scene3d.showCameras = !scene3d.showCameras
+            else gis.setLayerVisible("photos", !window.photosShown)
+        },
         "view.basemap": function() { basemapDialog.openFor("") },
+        "proc.batch": function() { batchDialog.open() },
+        "view.split": function() {
+            window.splitView = !window.splitView
+            if (window.splitView && window.activeView !== 3 && window.activeView !== 4) window.activeView = 3
+        },
         "view.reset": function() { if (window.activeView === 3) gis.zoomToAll(); else if (window.activeView === 4) scene3d.fitAll(); else window.imageZoom = 1.0 },
         "view.panelProject": function() { window.showLeft = !window.showLeft },
         "view.panelProperties": function() { window.showRight = !window.showRight },
@@ -723,6 +738,47 @@ ApplicationWindow {
     MarkersDialog { id: markersDialog; host: window }
     SurveyDialog { id: surveyDialog; host: window }
     BasemapDialog { id: basemapDialog; host: window }
+    BatchDialog { id: batchDialog; host: window }
+    // Batch processing: jobs of the batch and where their results go (exported one at a time,
+    // after the true orthophoto when one is being built).
+    property var batchJobs: []
+    property url batchFolder: ""
+    property var batchExports: []
+    function startBatch(ids, folder) {
+        batchJobs = ids
+        batchFolder = folder
+        batchExports = []
+    }
+    function exportNextBatch() {
+        if (exporter.busy || batchExports.length === 0 || batchFolder.toString().length === 0) return
+        var list = batchExports.slice()
+        var id = list.shift()
+        batchExports = list
+        var files = exporter.results(id).map(function(r) { return r.file })
+        var e = exporter.start(id, files, batchFolder, {})
+        if (e.length > 0) { window.showError("Пакет: результаты задания " + id + " не сохранены: " + e); exportNextBatch() }
+    }
+    // One basemap for the map and the 3D scene: the scene lies on the map's online basemap.
+    Binding { target: scene3d; property: "basemap"; value: gis.onlineBasemap }
+    Connections {
+        target: processing
+        function onJobFinished(id) {
+            if (window.batchJobs.indexOf(id) < 0 || window.batchFolder.toString().length === 0) return
+            if (processing.jobDetails(id).state !== "completed") return
+            if (processing.trueOrthoBusy) return   // exported when the true orthophoto is ready
+            window.batchExports = window.batchExports.concat([id])
+            window.exportNextBatch()
+        }
+        function onTrueOrthoFinished(id, ok, message) {
+            if (window.batchJobs.indexOf(id) < 0 || window.batchFolder.toString().length === 0) return
+            window.batchExports = window.batchExports.concat([id])
+            window.exportNextBatch()
+        }
+    }
+    Connections {
+        target: exporter
+        function onFinished(ok, message, files) { window.exportNextBatch() }
+    }
     Connections {
         target: survey
         function onChanged() { window.refreshGcpMarks() }
@@ -1696,18 +1752,32 @@ ApplicationWindow {
                         }
                     }
                     // GIS map (MapCanvas.qml); layers and properties are in the right panel.
+                    // With the split view (Вид → Разделить рабочую область) the map and the 3D scene
+                    // are side by side; a click makes a half the active view (its panels on the right).
                     MapCanvas {
-                        anchors.fill: parent
-                        visible: projects.hasProject && window.activeView === 3
+                        objectName: "mapPane"
+                        anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
+                        width: window.splitShown ? Math.round(parent.width / 2) - 1 : parent.width
+                        visible: projects.hasProject && (window.activeView === 3 || window.splitShown)
                         host: window
                         controller: mapController
+                        PointHandler { onActiveChanged: if (active && window.splitShown) window.activeView = 3 }
+                    }
+                    Rectangle {
+                        visible: window.splitShown
+                        x: Math.round(parent.width / 2) - 1; width: 2; height: parent.height
+                        color: Theme.line
                     }
                     // 3D scene (View3DWorkspace.qml); its layers and settings are in the right panel.
                     View3DWorkspace {
-                        anchors.fill: parent
-                        visible: projects.hasProject && window.activeView === 4
+                        objectName: "scenePane"
+                        anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
+                        width: window.splitShown ? Math.round(parent.width / 2) - 1 : parent.width
+                        visible: projects.hasProject && (window.activeView === 4 || window.splitShown)
                         host: window
+                        PointHandler { onActiveChanged: if (active && window.splitShown) window.activeView = 4 }
                     }
+
                     // Processing: environment, new job, job history and details. Everything shown
                     // comes from the engine (stages, log, files); there is no estimated percentage.
                     Item {

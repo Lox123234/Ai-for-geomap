@@ -440,12 +440,33 @@ bool OdmEngine::createJob(ProcessingJob &job, const JobRequest &request, const E
     return true;
 }
 
-QStringList OdmEngine::resumeArguments(const QStringList &arguments) const
+QStringList OdmEngine::resumeArguments(const QStringList &arguments, const QString &fromStage) const
 {
     QStringList args = removeOption(arguments, QStringLiteral("--end-with"), true);
     args = removeOption(args, QStringLiteral("--rerun-from"), true);
     args = removeOption(args, QStringLiteral("--rerun"), true);
-    return removeOption(args, QStringLiteral("--rerun-all"), false);
+    args = removeOption(args, QStringLiteral("--rerun-all"), false);
+    // ODM skips a stage whose outputs exist; after a crash they may be half written, so the
+    // stage that failed (or the one given) is computed again with everything after it.
+    if (stageIds().contains(fromStage)) args << QStringLiteral("--rerun-from") << fromStage;
+    return args;
+}
+
+QString OdmEngine::previousStage(const QString &stage) const
+{
+    const QStringList ids = stageIds();
+    const int i = int(ids.indexOf(stage));
+    return i > 0 ? ids[i - 1] : QString();
+}
+
+bool OdmEngine::retryable(int exitCode, const QString &message) const
+{
+    // A crash of one of ODM's programs (PDAL, OpenMVS, …) is often not repeated; running out of
+    // memory or disk space, or too few photos, is — the user has to change something first.
+    for (const QString &cause : {QStringLiteral("памят"), QStringLiteral("место"), QStringLiteral("Снимков недостаточно"), QStringLiteral("антивирус")})
+        if (message.contains(cause)) return false;
+    if (exitCode == 0) return false;
+    return true;
 }
 
 // ------------------------------------------------------------ native runtime
@@ -994,15 +1015,28 @@ bool OdmEngine::start(const ProcessingJob &job, const QString &jobDirectory, QSt
         if (root.isEmpty()) return fail(rootError);
         // Parts of ODM (OpenSfM, PDAL, OpenMVS) open files through narrow C runtime calls and
         // fail on spaces or non-Latin characters: give them an ASCII path to the job folder.
+        // First the short (8.3) names of the same folders; a directory link only when there are
+        // none: through a link, antivirus file filters (seen with Malwarebytes) make ODM's
+        // renames fail ("path not found"), and the point classification of the high-quality
+        // profile loses its point cloud.
         const QString dir = QDir(jobDirectory).absolutePath();
         QString projectPath = QFileInfo(dir).absolutePath();
         if (!Platform::isToolSafePath(QDir::toNativeSeparators(dir))) {
-            const QString link = workLinkFor(job.id);
-            QString linkError;
-            if (link.isEmpty() || !Platform::createDirectoryLink(link, dir, &linkError))
-                return fail(QStringLiteral("Не удалось подготовить путь к папке задания для ODM: %1").arg(linkError));
-            m_workLink = link;
-            projectPath = QFileInfo(link).absolutePath();
+            const QString shortParent = Platform::shortPath(projectPath);
+            if (Platform::isToolSafePath(QDir::toNativeSeparators(shortParent)) && Platform::isToolSafePath(job.id)) {
+                projectPath = shortParent;
+                emit logLine(job.id, QStringLiteral("[GeoMap] В пути к заданию есть пробелы или не латинские буквы: ODM работает с ним "
+                                                    "через короткие имена папок %1").arg(QDir::toNativeSeparators(shortParent)));
+            } else {
+                const QString link = workLinkFor(job.id);
+                QString linkError;
+                if (link.isEmpty() || !Platform::createDirectoryLink(link, dir, &linkError))
+                    return fail(QStringLiteral("Не удалось подготовить путь к папке задания для ODM: %1").arg(linkError));
+                m_workLink = link;
+                projectPath = QFileInfo(link).absolutePath();
+                emit logLine(job.id, QStringLiteral("[GeoMap] В пути к заданию есть пробелы или не латинские буквы, а коротких имён "
+                                                    "папок нет: ODM работает через ссылку %1").arg(QDir::toNativeSeparators(link)));
+            }
         }
         program = nativeProgram(root);
         arguments = nativeArguments(job, root, projectPath);
@@ -1083,6 +1117,14 @@ QString OdmEngine::explainFailure(const QStringList &recent, const QStringList &
         return QStringLiteral("Обработка остановлена%1: на диске кончилось место. Освободите место и нажмите «Продолжить».").arg(where);
     if (all.contains(QLatin1String("Not enough")) && all.contains(QLatin1String("images"), Qt::CaseInsensitive))
         return QStringLiteral("Снимков недостаточно для реконструкции%1: нужно больше снимков с перекрытием 70–80 %.").arg(where);
+    // ODM replaces a file by renaming another one ("[WinError 3] … 'a' -> 'b'"); when Windows or
+    // an antivirus filter refuses, the file is gone and the next program cannot open it.
+    const QString wide = (errors + recent).join(QLatin1Char('\n'));
+    static const QRegularExpression renameFailed(QStringLiteral("\\[WinError (2|3|5|32)\\][^\\n]*' -> '"));
+    if (wide.contains(renameFailed))
+        return QStringLiteral("Сбой%1: Windows или антивирус (например, Malwarebytes) не дали OpenDroneMap переименовать файл "
+                              "в папке задания, и он пропал. Добавьте папку проекта в исключения антивируса или храните проект "
+                              "в папке с латинскими буквами в пути без пробелов, затем нажмите «Продолжить».").arg(where);
     QString what;
     if (tool == QLatin1String("pdal")) {
         what = command.contains(QLatin1String("smrf")) || command.contains(QLatin1String("classify"))
@@ -1105,7 +1147,7 @@ QString OdmEngine::explainFailure(const QStringList &recent, const QStringList &
                                   : QStringLiteral("Сбой%1: %2%3.").arg(where, what, crash ? QStringLiteral(" завершилась аварийно") : QString());
     if (what.contains(QLatin1String("DTM")))
         text += QStringLiteral(" Нажмите «Продолжить» — повтор с этого этапа обычно проходит; если ошибка повторится, запустите обработку без DTM.");
-    else if (what.contains(QLatin1String("памят")))
+    else if (what.contains(QStringLiteral("памят")))
         text += QStringLiteral(" Уменьшите качество облака или число потоков и нажмите «Продолжить».");
     else
         text += QStringLiteral(" Нажмите «Продолжить», чтобы повторить с этого этапа; подробности — во вкладке «Журнал».");

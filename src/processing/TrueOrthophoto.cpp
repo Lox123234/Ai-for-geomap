@@ -569,7 +569,7 @@ void Shot::ray(double px, double py, double dir[3]) const
     for (int k = 0; k < 3; ++k) dir[k] /= len;
 }
 
-bool readOdmJob(const QString &job, Scene *scene, QString *error, const QString &photoFolder)
+bool readOdmJob(const QString &job, Scene *scene, QString *error, const QString &photoFolder, bool requirePhotos)
 {
     auto fail = [error](const QString &text) {
         if (error) *error = text;
@@ -626,7 +626,7 @@ bool readOdmJob(const QString &job, Scene *scene, QString *error, const QString 
         Shot s;
         s.camera = cam->second;
         s.image = QDir(photos).filePath(it.key());
-        if (!QFileInfo::exists(s.image)) return fail(QStringLiteral("Нет снимка %1").arg(QDir::toNativeSeparators(s.image)));
+        if (requirePhotos && !QFileInfo::exists(s.image)) return fail(QStringLiteral("Нет снимка %1").arg(QDir::toNativeSeparators(s.image)));
         const QJsonArray r = o.value(QStringLiteral("rotation")).toArray(), t = o.value(QStringLiteral("translation")).toArray();
         const double rv[3] = {r.at(0).toDouble(), r.at(1).toDouble(), r.at(2).toDouble()};
         rodrigues(rv, s.R);

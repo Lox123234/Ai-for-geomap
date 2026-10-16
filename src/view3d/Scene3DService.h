@@ -4,15 +4,19 @@
 #include "Scene3D.h"
 
 #include <QObject>
+#include <QRectF>
 #include <QSizeF>
 #include <QThreadPool>
+#include <QTimer>
 #include <QUrl>
 #include <QVariantList>
 #include <memory>
 
 // The 3D scene of the project: point clouds, models and terrains (DEM meshes) loaded in the
 // background, a common origin (double precision), the camera, picking and 3D measurements.
-// The QML view (View3DItem) draws a snapshot of it; everything here works without a GPU.
+// Under georeferenced data the map's online basemap lies as a ground plane in the scene's CRS,
+// and the photos of the job are shown at their reconstructed positions (cameras with
+// thumbnails). The QML view (View3DItem) draws a snapshot of it; everything here works without a GPU.
 class Scene3DService : public QObject
 {
     Q_OBJECT
@@ -32,16 +36,22 @@ class Scene3DService : public QObject
     Q_PROPERTY(QString tool READ tool WRITE setTool NOTIFY toolChanged)                             // orbit | pan | zoom | measure
     Q_PROPERTY(QString pickText READ pickText NOTIFY pickChanged)
     Q_PROPERTY(QString measureText READ measureText NOTIFY pickChanged)
+    // Online basemap under the scene (the map's: provider id, "" none) and its attribution.
+    Q_PROPERTY(QString basemap READ basemap WRITE setBasemap NOTIFY basemapChanged)
+    Q_PROPERTY(QString basemapAttribution READ basemapAttribution NOTIFY basemapChanged)
+    Q_PROPERTY(bool showCameras READ showCameras WRITE setShowCameras NOTIFY settingsChanged)
 
 public:
     struct Layer
     {
         QString id;
         QString name;
-        QString kind;          // pointcloud | mesh | terrain
+        QString kind;          // pointcloud | mesh | terrain; overlays: basemap | cameras
         QString source;
         QString drape;         // terrain texture source (orthophoto), if any
         QString loaded;        // the file actually read, when it differs from `source`
+        QString job;           // ODM job folder the file belongs to, if any (its cameras)
+        bool overlay = false;  // basemap, cameras: context, not data (not fitted, picked or measured)
         bool visible = true;
         bool loading = true;
         QString info;
@@ -50,11 +60,19 @@ public:
         std::shared_ptr<const view3d::PointCloud> cloud;
         std::shared_ptr<const view3d::Mesh> mesh;
     };
+    // A photo of the job at its reconstructed pose (scene coordinates).
+    struct CameraMark
+    {
+        QString name;
+        QVector3D centre;
+        QVector3D corners[4];  // its rectangle in front of the camera: top-left, top-right, bottom-right, bottom-left
+    };
     struct Snapshot
     {
         QVector<Layer> layers;
         view3d::Origin origin;
-        view3d::Bounds bounds;      // scene coordinates, vertical scale not applied
+        view3d::Bounds bounds;      // data, scene coordinates, vertical scale not applied
+        view3d::Bounds extent;      // everything drawn, overlays included (clipping planes)
         view3d::Camera camera;
         float pointSize = 2.0f;
         int colorMode = 0;          // 0 source colours, 1 height, 2 point classes, 3 intensity
@@ -121,7 +139,16 @@ public:
     QString pickText() const { return m_pickText; }
     QString measureText() const { return m_measureText; }
 
+    QString basemap() const { return m_basemap; }
+    // A built-in provider is used only after its terms were accepted (as on the map).
+    void setBasemap(const QString &providerId);
+    QString basemapAttribution() const;
+    bool showCameras() const { return m_showCameras; }
+    void setShowCameras(bool on);
+    const QVector<CameraMark> &cameras() const { return m_cameras; }
+
 signals:
+    void basemapChanged();
     void layersChanged();
     void settingsChanged();
     void viewChanged();
@@ -139,6 +166,15 @@ private:
     // multiplied by the vertical exaggeration as drawn.
     view3d::Bounds drawnBounds(QVector<QVector3D> *samples) const;
     void applyPreset(view3d::Camera::Preset preset);
+    // Overlays follow the data: cameras of the job, the basemap around the data and cameras.
+    void dataChanged();
+    Layer *overlay(const QString &id);
+    void setOverlay(Layer layer);   // adds or replaces by id
+    void removeOverlays();
+    void loadCameras(const QString &job);
+    QString sceneCrsWkt() const;
+    void scheduleBasemap(bool force);
+    void buildBasemap();
 
     QVector<Layer> m_layers;
     view3d::Origin m_origin;
@@ -158,6 +194,17 @@ private:
     QVector<QVector3D> m_measure;
     QString m_pickText;
     QString m_measureText;
+    QString m_basemap;
+    QTimer m_basemapTimer;
+    bool m_basemapForce = false;     // redraw even if the area is the same (new tiles)
+    bool m_basemapBusy = false;
+    bool m_basemapAgain = false;     // asked again while drawing
+    bool m_basemapComplete = false;  // every tile of the drawn area was there
+    int m_basemapGeneration = 0;
+    QString m_basemapKey;            // provider and area of the basemap drawn
+    bool m_showCameras = true;
+    QString m_camerasJob;            // job whose cameras are loaded or loading
+    QVector<CameraMark> m_cameras;
     std::shared_ptr<bool> m_alive = std::make_shared<bool>(true);
     QThreadPool m_pool;   // loaders; the destructor waits for them (they post to this object)
 };

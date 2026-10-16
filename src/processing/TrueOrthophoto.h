@@ -38,8 +38,10 @@ struct Scene
 };
 
 // The photos and their poses from an ODM job folder: opensfm/reconstruction.json (+ the offset
-// from odm_georeferencing/coords.txt), photos from images/ (or `photoFolder`).
-bool readOdmJob(const QString &jobDirectory, Scene *scene, QString *error, const QString &photoFolder = {});
+// from odm_georeferencing/coords.txt), photos from images/ (or `photoFolder`). Without
+// `requirePhotos` the poses are read even when photos are missing (the 3D view of the cameras).
+bool readOdmJob(const QString &jobDirectory, Scene *scene, QString *error, const QString &photoFolder = {},
+                bool requirePhotos = true);
 // WKT of the CRS the job's results and its shifted reconstruction are in (from its DSM or
 // orthophoto, else the "WGS84 UTM 32N" line of coords.txt); "" if unknown.
 QString resultCrsWkt(const QString &jobDirectory);

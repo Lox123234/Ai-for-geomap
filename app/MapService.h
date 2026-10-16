@@ -117,6 +117,8 @@ class MapService final : public QObject
     Q_PROPERTY(bool hasBasemap READ hasBasemap NOTIFY layersChanged)
     Q_PROPERTY(bool basemapVisible READ basemapVisible NOTIFY layersChanged)
     Q_PROPERTY(QString basemapAttribution READ basemapAttribution NOTIFY layersChanged)
+    // Provider of the online basemap while it is shown ("" otherwise): the 3D view lies on the same one.
+    Q_PROPERTY(QString onlineBasemap READ onlineBasemap NOTIFY layersChanged)
     Q_PROPERTY(QString shownMeasurement READ shownMeasurement NOTIFY measurementsChanged)
     // Selection by click with a local AI model (tool "aiSelect"): the contour of the object under
     // the click on the top RGB raster, shown as a candidate until it is added to the drawings.
@@ -277,6 +279,7 @@ public:
     Q_INVOKABLE void acceptBasemapTerms(const QString &providerId);
     Q_INVOKABLE QString setOnlineBasemap(const QString &providerId);   // "" or the reason
     QString basemapAttribution() const;
+    QString onlineBasemap() const;
     void webTilesArrived();
     bool hasBasemap() const;
     bool basemapVisible() const;

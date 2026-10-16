@@ -22,6 +22,7 @@
 #include "GisEnvironment.h"
 #include "MapService.h"
 #include "OdmEngine.h"
+#include "Overlap.h"
 #include "PhotoModel.h"
 #include "ProcessingService.h"
 #include "ProjectManager.h"
@@ -353,6 +354,39 @@ private slots:
         QVERIFY2(painted > 0.2 * (image.width() / 10) * (image.height() / 10), qPrintable(QString::number(painted)));
         const QString keep = qEnvironmentVariable("GEOMAP_TEST_OUTPUT");
         if (!keep.isEmpty() && QDir().mkpath(keep)) image.save(QDir(keep).filePath(QStringLiteral("odm-results-on-map.png")));
+    }
+
+    // The "Высокое качество" profile as the user starts it (ultra features, high point cloud, DSM,
+    // DTM, 2 cm orthophoto), to the end — with the automatic repeat of a crashed stage if one
+    // happens — then the true orthophoto with its surface and the overlap map of the job.
+    void highQualityProfileCompletes()
+    {
+        if (qEnvironmentVariable("GEOMAP_ODM_FULL") == QLatin1String("0")) QSKIP("GEOMAP_ODM_FULL=0");
+        QStringList stages;
+        const QString id = runToEnd(QStringLiteral("high"), {}, 8, &stages);
+        QVERIFY(!id.isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(!isActive(m_service->job(id).state), 8 * 3600 * 1000);   // after automatic repeats
+        const ProcessingJob job = m_service->job(id);
+        const QString log = QString::fromUtf8([&] {
+            QFile f(QDir(m_service->jobDirectory(id)).filePath(QStringLiteral("log.txt")));
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        }());
+        qInfo("High quality: %s; automatic repeats in the log: %d", qUtf8Printable(job.message),
+              int(log.count(QStringLiteral("автоматически (попытка"))));
+        QVERIFY2(job.state == JobState::Completed, qUtf8Printable(job.message));
+        for (const char *kind : {"orthophoto", "dsm", "dtm", "pointcloud", "mesh", "report"})
+            QVERIFY2(!output(id, QString::fromLatin1(kind)).isEmpty(), kind);
+        // The true orthophoto starts by itself after a job with a DSM.
+        QTRY_VERIFY_WITH_TIMEOUT(!m_service->trueOrthoBusy() && QFileInfo::exists(QDir(m_service->jobDirectory(id)).filePath(QStringLiteral("geomap/true_orthophoto.tif"))), 1800000);
+        const QString dir = m_service->jobDirectory(id);
+        QVERIFY(QFileInfo::exists(QDir(dir).filePath(QStringLiteral("geomap/true_surface.tif"))));
+        const RasterInfo trueOrtho = RasterInfo::read(QDir(dir).filePath(QStringLiteral("geomap/true_orthophoto.tif")));
+        QVERIFY2(trueOrtho.valid && trueOrtho.bands == 4 && trueOrtho.crs.isProjected(), qUtf8Printable(trueOrtho.error));
+        qInfo("True orthophoto: %s; status: %s", qUtf8Printable(trueOrtho.summary()), qUtf8Printable(m_service->trueOrthoStatus()));
+        const overlap::Result o = overlap::fromJob(dir, QDir(m_tmp.path()).filePath(QStringLiteral("overlap.tif")));
+        QVERIFY2(o.ok(), qUtf8Printable(o.error));
+        qInfo("Overlap: median %.0f photos, >= 3: %.1f %%, >= 5: %.1f %%, >= 9: %.1f %%", o.median, o.share3 * 100, o.share5 * 100, o.share9 * 100);
+        QVERIFY(o.median >= 3);
     }
 };
 

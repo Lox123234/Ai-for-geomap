@@ -3239,6 +3239,13 @@ QString MapService::basemapAttribution() const
     return {};
 }
 
+QString MapService::onlineBasemap() const
+{
+    for (const MapLayer &l : m_layers)
+        if (l.basemap && l.visible && l.source.startsWith(QLatin1String("web:"))) return l.source.mid(4);
+    return {};
+}
+
 void MapService::webTilesArrived()
 {
     // New tiles of an online basemap: its map tiles are drawn again (from the tile cache, cheap).

@@ -45,8 +45,26 @@ public:
     // with an error for options it cannot accept; automatic adjustments go to job.notes.
     virtual bool createJob(ProcessingJob &job, const JobRequest &request, const EnvironmentReport &env,
                            QString *error) = 0;
-    // Arguments to continue a stopped or partial job in its directory.
-    virtual QStringList resumeArguments(const QStringList &arguments) const { return arguments; }
+    // Arguments to continue a stopped or partial job in its directory; with romStage that stage
+    // and the following ones are computed again (their outputs of a failed run are not trusted).
+    virtual QStringList resumeArguments(const QStringList &arguments, const QString &fromStage = {}) const
+    {
+        Q_UNUSED(fromStage)
+        return arguments;
+    }
+    // Stage before stage in the engine's order; empty for the first or an unknown one.
+    virtual QString previousStage(const QString &stage) const
+    {
+        Q_UNUSED(stage)
+        return {};
+    }
+    // Whether a failed run is worth repeating automatically (a crash of a program of the engine),
+    // not a failure the user has to fix first (memory, disk space, too few photos).
+    virtual bool retryable(int exitCode, const QString &message) const
+    {
+        Q_UNUSED(exitCode) Q_UNUSED(message)
+        return false;
+    }
 
     // Starts the job prepared in jobDirectory (input images in jobDirectory/images).
     virtual bool start(const ProcessingJob &job, const QString &jobDirectory, QString *error) = 0;

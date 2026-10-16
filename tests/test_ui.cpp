@@ -673,6 +673,34 @@ private slots:
         QTRY_COMPARE(s->survey.controlPoints().first().observations.size(), 0);
         QVERIFY(s->run(QStringLiteral("project.gcpTag")));
         QVERIFY(!s->prop("gcpMode").toBool());
+
+        // Split view: the map and the 3D scene side by side, each half of the width.
+        QVERIFY(s->run(QStringLiteral("view.split")));
+        QVERIFY(s->checked(QStringLiteral("view.split")));
+        QCOMPARE(s->prop("activeView").toInt(), 3);
+        auto *mapPane = s->window->findChild<QQuickItem *>(QStringLiteral("mapPane"));
+        auto *scenePane = s->window->findChild<QQuickItem *>(QStringLiteral("scenePane"));
+        QVERIFY(mapPane && scenePane);
+        QTRY_VERIFY(mapPane->isVisible() && scenePane->isVisible());
+        QVERIFY(qAbs(mapPane->width() - scenePane->width()) <= 2);
+        QVERIFY(mapPane->x() + mapPane->width() <= scenePane->x() + 2);
+        s->shot(QStringLiteral("ui-split-view.png"));
+        QVERIFY(s->run(QStringLiteral("view.split")));
+        QTRY_VERIFY(!scenePane->isVisible());
+        // Batch processing (needs the engine) and the basemap open their windows.
+        s->processing.checkEnvironment();
+        QTRY_VERIFY(s->processing.engineAvailable());
+        QVERIFY(s->run(QStringLiteral("proc.batch")));
+        QObject *batch = s->window->findChild<QObject *>(QStringLiteral("batchDialog"));
+        QVERIFY(batch);
+        QTRY_VERIFY(batch->property("visible").toBool());
+        QMetaObject::invokeMethod(batch, "close");
+        QVERIFY(s->run(QStringLiteral("view.basemap")));
+        QObject *basemap = s->window->findChild<QObject *>(QStringLiteral("basemapDialog"));
+        QVERIFY(basemap);
+        QTRY_VERIFY(basemap->property("visible").toBool());
+        QVERIFY(basemap->property("providers").toList().size() >= 4);
+        QMetaObject::invokeMethod(basemap, "close");
     }
 
     // The 3D view: commands, tools without a map CRS, and an ODM point cloud opened from the

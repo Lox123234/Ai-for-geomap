@@ -605,8 +605,13 @@ bool ProcessingService::resumeJob(const QString &id, const QString &profileId, c
         if (!QFileInfo::exists(QDir(m_project).filePath(file)) && !QFileInfo::exists(QDir(jobDirectory(id)).filePath(
                                                                        QStringLiteral("images/") + QFileInfo(file).fileName())))
             return fail(QStringLiteral("Снимок %1 больше не найден ни в проекте, ни в папке задания.").arg(QFileInfo(file).fileName()));
+    // A run that failed or was stopped resumes by computing its last stage again: what that stage
+    // left on disk may be half written (ODM would skip it and fail on the next one).
+    const bool redo = job->state == JobState::Failed || job->state == JobState::Cancelled || job->state == JobState::Interrupted;
+    m_failedStage[id] = redo ? job->stage : QString();
+    m_autoRetries[id] = 0;
     if (profileId.isEmpty()) {
-        job->arguments = m_engine->resumeArguments(job->arguments);
+        job->arguments = m_engine->resumeArguments(job->arguments, redo ? job->stage : QString());
     } else {
         const ProcessingProfile *p = profilePointer(profileId);
         if (!p) return fail(QStringLiteral("Неизвестный профиль обработки «%1».").arg(profileId));
@@ -689,6 +694,29 @@ void ProcessingService::onFinished(const QString &id, JobOutcome outcome, int ex
                                                [](const Artifact &a) { return a.kind == QLatin1String("orthophoto"); });
                 if (!ortho) text += QStringLiteral(" Ортофотоплан не создан — см. журнал.");
             }
+        }
+        // A crash of one of the engine's programs: the stage is computed again automatically (up to
+        // twice); failing again on the same stage, from the stage before it, whose outputs may be
+        // what made it fail (a half-written point cloud after a crash, for example).
+        if (state == JobState::Failed && outcome == JobOutcome::Failed && !job->stage.isEmpty() && m_autoRetries.value(id) < 2
+            && m_engine->retryable(exitCode, text)) {
+            QString from = job->stage;
+            if (m_failedStage.value(id) == job->stage && !m_engine->previousStage(job->stage).isEmpty())
+                from = m_engine->previousStage(job->stage);
+            m_failedStage[id] = job->stage;
+            const int attempt = ++m_autoRetries[id];
+            job->arguments = m_engine->resumeArguments(job->arguments, from);
+            const QString note = QStringLiteral("%1 Повтор с этапа «%2» автоматически (попытка %3 из 2).")
+                                     .arg(text, m_engine->stageTitle(from)).arg(attempt);
+            closeLog(note);
+            job->exitCode = 0;
+            job->finishedAt = {};
+            m_resumed << id;
+            m_queue.prepend(id);
+            setState(*job, JobState::Queued, note);
+            emit jobsChanged();
+            runNext();
+            return;
         }
         setState(*job, state, text);
         closeLog(QStringLiteral("%1 (код %2)").arg(text).arg(exitCode));

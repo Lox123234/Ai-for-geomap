@@ -93,6 +93,51 @@ Item {
                         ToolTip.text: "Вертикальное преувеличение рельефа (только отображение; координаты и измерения — истинные)"
                     }
                     BarCommand { commandId: "view.axes"; label: "Оси" }
+                    BarSeparator {}
+                    // The map's basemap, under the scene as a ground plane (one choice for both views).
+                    ComboBox {
+                        id: basemap3d
+                        objectName: "basemap3d"
+                        implicitWidth: 190; implicitHeight: 26
+                        font.pixelSize: 11
+                        enabled: gis.crsDefined
+                        textRole: "title"; valueRole: "id"
+                        property var providers: gis.layerCount >= 0 ? gis.basemapProviders() : []
+                        model: [{ id: "", title: "Подложка: нет" }].concat(providers.map(function(p) { return { id: p.id, title: p.title } }))
+                        currentIndex: {
+                            if (gis.onlineBasemap.length === 0) return 0
+                            for (var i = 0; i < providers.length; ++i) if (providers[i].id === gis.onlineBasemap) return i + 1
+                            return 0
+                        }
+                        onActivated: function(index) {
+                            var id = currentValue
+                            if (id === "") { gis.setBasemapVisible(false); return }
+                            var p = providers[index - 1]
+                            if (p.current) { gis.setBasemapVisible(true); return }
+                            if (!p.accepted) { workspace.host.openBasemap(id); return }   // terms first
+                            var e = gis.setOnlineBasemap(id)
+                            if (e.length > 0) workspace.host.showError(e)
+                        }
+                        ToolTip.visible: hovered; ToolTip.delay: 500
+                        ToolTip.text: "Подложка карты под 3D-сценой, на уровне земли и в той же системе координат"
+                    }
+                    ToolButton {
+                        id: camerasButton
+                        objectName: "cameras3d"
+                        text: "Снимки"
+                        font.pixelSize: 11
+                        implicitHeight: 28
+                        leftPadding: 8; rightPadding: 8
+                        focusPolicy: Qt.NoFocus
+                        checkable: true
+                        checked: scene3d.showCameras
+                        onToggled: scene3d.showCameras = checked
+                        palette.buttonText: checked ? "#FFFFFF" : Theme.text
+                        HoverHandler { id: camerasHover }
+                        ToolTip.visible: camerasHover.hovered; ToolTip.delay: 500
+                        ToolTip.text: "Снимки задания на местах съёмки: положение и наклон камер из реконструкции"
+                        background: Rectangle { radius: 4; color: camerasButton.checked ? Theme.accent : camerasHover.hovered ? Theme.hover : "transparent" }
+                    }
                     Item { implicitWidth: 8 }
                 }
             }
@@ -255,6 +300,17 @@ Item {
                         color: Theme.faint; font.pixelSize: 10
                     }
                 }
+            }
+
+            // The basemap provider's attribution, always visible with its map.
+            Label {
+                objectName: "basemapAttribution3d"
+                anchors.right: axes.visible ? axes.left : parent.right; anchors.bottom: parent.bottom; anchors.margins: 8
+                visible: scene3d.basemapAttribution.length > 0
+                text: scene3d.basemapAttribution
+                color: "#E6E9EF"; font.pixelSize: 10
+                padding: 3
+                background: Rectangle { color: "#B3171B22"; radius: 3 }
             }
 
             // Axes of the view: X east (red), Y north (green), Z up (blue)

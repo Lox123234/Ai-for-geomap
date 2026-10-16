@@ -82,11 +82,13 @@ public:
     WebRasterSource(const Provider &provider, const Crs &mapCrs, const QPointF &centre, double extentMetres = 100000);
     QImage renderTile(int level, int tx, int ty) const override;
     QImage renderRegion(const QRectF &mapRect, const QSize &size) const override;
+    // `complete`: every pixel came from a tile of the right zoom (none missing, none coarser).
+    QImage renderRegion(const QRectF &mapRect, const QSize &size, bool *complete) const;
     double valueAt(const QPointF &, int) const override;
     const Provider &provider() const { return m_provider; }
 
 private:
-    QImage render(const QRectF &mapRect, int width, int height, bool fetch) const;
+    QImage render(const QRectF &mapRect, int width, int height, bool fetch, bool *complete = nullptr) const;
     Provider m_provider;
 };
 

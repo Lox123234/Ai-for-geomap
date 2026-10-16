@@ -44,7 +44,9 @@ public:
     void installRuntime() override;
     void cancelInstall() override;
     bool createJob(ProcessingJob &job, const JobRequest &request, const EnvironmentReport &env, QString *error) override;
-    QStringList resumeArguments(const QStringList &arguments) const override;
+    QStringList resumeArguments(const QStringList &arguments, const QString &fromStage = {}) const override;
+    QString previousStage(const QString &stage) const override;
+    bool retryable(int exitCode, const QString &message) const override;
     bool start(const ProcessingJob &job, const QString &jobDirectory, QString *error) override;
     void cancel(const QString &jobId) override;
     void abort(const QString &jobId) override;

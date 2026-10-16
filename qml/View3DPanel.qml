@@ -76,7 +76,8 @@ Item {
                             focusPolicy: Qt.NoFocus
                             hoverEnabled: false
                             enabled: false
-                            icon.source: Theme.icon(row.modelData.kind === "pointcloud" ? "cloud" : row.modelData.kind === "terrain" ? "dem" : "cube")
+                            icon.source: Theme.icon(row.modelData.kind === "pointcloud" ? "cloud" : row.modelData.kind === "terrain" ? "dem"
+                                                    : row.modelData.kind === "basemap" ? "map" : row.modelData.kind === "cameras" ? "camera" : "cube")
                             icon.width: 14; icon.height: 14; icon.color: Theme.muted
                             background: null
                         }
@@ -87,6 +88,7 @@ Item {
                             color: Theme.text; font.pixelSize: 12; font.bold: true
                         }
                         ToolButton {
+                            visible: !row.modelData.overlay   // the basemap and the photos are hidden with the checkbox
                             implicitWidth: 20; implicitHeight: 20; padding: 0
                             display: AbstractButton.IconOnly
                             icon.source: Theme.icon("close"); icon.width: 12; icon.height: 12; icon.color: Theme.muted

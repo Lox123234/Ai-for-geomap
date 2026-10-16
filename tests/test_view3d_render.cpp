@@ -15,14 +15,17 @@
 #include <QQuickWindow>
 #include <QTemporaryDir>
 #include <QtEndian>
+#include <QUrl>
 #include <QtQml/qqmlextensionplugin.h>
 #include <rhi/qrhi.h>
 #include <memory>
 #include "CommandRegistry.h"
 #include "GisEnvironment.h"
+#include "MapService.h"
 #include "ProjectTreeModel.h"
 #include "Scene3DService.h"
 #include "View3DItem.h"
+#include "WebTiles.h"
 
 Q_IMPORT_QML_PLUGIN(GeoMapAIPlugin)
 
@@ -396,7 +399,9 @@ private slots:
         CommandRegistry commands;
         ProjectTreeModel tree(nullptr, nullptr, nullptr);
         Scene3DService scene;
+        MapService gis;   // the basemap choice of the 3D bar is the map's
         engine.rootContext()->setContextProperty("scene3d", &scene);
+        engine.rootContext()->setContextProperty("gis", &gis);
         engine.rootContext()->setContextProperty("commands", &commands);
         engine.rootContext()->setContextProperty("projectTree", &tree);
         // The window's command functions, reduced to what the 3D workspace asks.
@@ -412,6 +417,8 @@ Rectangle {
         function commandEnabled(id) { return true }
         function runCommand(id) { return false }
         function open3D(kind, path) {}
+        function openBasemap(id) {}
+        function showError(text) {}
     }
     RowLayout {
         anchors.fill: parent
@@ -430,15 +437,61 @@ Rectangle {
         QVERIFY(waitLoaded(scene));
         QVERIFY(scene.addTerrain(job + QStringLiteral("/odm_dem/dsm.tif"), job + QStringLiteral("/odm_orthophoto/odm_orthophoto.tif")).isEmpty());
         QVERIFY(waitLoaded(scene));
-        scene.setLayerVisible(scene.layers().last().id, false);
+        auto layerOf = [&scene](const QString &kind) {
+            for (const Scene3DService::Layer &l : scene.layers()) if (l.kind == kind) return l.id;
+            return QString();
+        };
+        // The photos of the job over the point cloud, where they were taken.
+        QTRY_VERIFY_WITH_TIMEOUT(!scene.cameras().isEmpty(), 60000);
+        scene.setLayerVisible(layerOf(QStringLiteral("terrain")), false);
+        scene.setPreset(QStringLiteral("iso"));
+        scene.zoom(-2);
+        QImage image = view.render();
+        keep(image, QStringLiteral("brighton-workspace-cameras.png"));
+        QVERIFY(coverage(image) > 0.2);
+        // GEOMAP_3D_TILES=<XYZ tiles folder, e.g. the job's orthophoto cut by gdal2tiles --xyz>:
+        // a basemap of the same place under the scene; the points must lie on their own image.
+        const QString tiles = qEnvironmentVariable("GEOMAP_3D_TILES");
+        if (!tiles.isEmpty()) {
+            scene.setBasemap(QStringLiteral("custom:") + QUrl::fromLocalFile(tiles).toString() + QStringLiteral("/{z}/{x}/{y}.png"));
+            QTRY_VERIFY_WITH_TIMEOUT([&] {
+                for (const Scene3DService::Layer &l : scene.layers())
+                    if (l.kind == QLatin1String("basemap") && l.mesh && !l.mesh->parts.isEmpty() && !l.mesh->parts[0].texture.isNull())
+                        return webtiles::TileStore::instance()->pending() == 0 && !scene.basemapAttribution().isEmpty();
+                return false;
+            }(), 60000);
+            QTest::qWait(1500);   // the last redraw after the last tiles
+            for (const Scene3DService::Layer &l : scene.layers())
+                if (l.kind == QLatin1String("basemap") && l.mesh) {
+                    const QImage &d = l.mesh->parts[0].texture;
+                    int opaque = 0;
+                    for (int y = 0; y < d.height(); y += 4)
+                        for (int x = 0; x < d.width(); x += 4) opaque += d.pixelColor(x, y).alpha() > 0;
+                    keep(d, QStringLiteral("brighton-basemap-detail.png"));
+                    qInfo("basemap detail %dx%d, %.1f %% drawn; plane z %.1f..%.1f, x %.1f..%.1f; data z %.1f; positions %d",
+                          d.width(), d.height(), 100.0 * opaque / qMax(1, (d.width() / 4) * (d.height() / 4)), l.mesh->bounds.min.z(),
+                          l.mesh->bounds.max.z(), l.mesh->bounds.min.x(), l.mesh->bounds.max.x(), scene.bounds().min.z(),
+                          int(l.mesh->positions.size()));
+                }
+            image = view.render();
+            keep(image, QStringLiteral("brighton-workspace-basemap.png"));
+            scene.setLayerVisible(layerOf(QStringLiteral("pointcloud")), false);
+            scene.setShowCameras(false);
+            image = view.render();
+            keep(image, QStringLiteral("brighton-workspace-basemap-only.png"));
+            scene.setLayerVisible(layerOf(QStringLiteral("pointcloud")), true);
+            scene.setShowCameras(true);
+            scene.setBasemap(QString());
+        }
+        scene.setShowCameras(false);
         scene.setPreset(QStringLiteral("iso"));
         scene.orbit(-60, 20);
         QVERIFY(scene.pickAt(520, 400, 1040, 722));
-        QImage image = view.render();
+        image = view.render();
         keep(image, QStringLiteral("brighton-workspace-cloud.png"));
         QVERIFY(coverage(image) > 0.3);
-        scene.setLayerVisible(scene.layers().first().id, false);
-        scene.setLayerVisible(scene.layers().last().id, true);
+        scene.setLayerVisible(layerOf(QStringLiteral("pointcloud")), false);
+        scene.setLayerVisible(layerOf(QStringLiteral("terrain")), true);
         scene.setTool(QStringLiteral("measure"));
         QVERIFY(scene.pickAt(400, 420, 1040, 722));
         QVERIFY(scene.pickAt(700, 360, 1040, 722));

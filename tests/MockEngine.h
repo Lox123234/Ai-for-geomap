@@ -79,14 +79,24 @@ public:
         lastDataset = request.dataset;
         return true;
     }
-    QStringList resumeArguments(const QStringList &arguments) const override
+    QStringList resumeArguments(const QStringList &arguments, const QString &fromStage = {}) const override
     {
         QStringList args = arguments;
         args.removeAll(QStringLiteral("--partial"));
-        const int i = args.indexOf(QStringLiteral("--end-with"));
+        int i = args.indexOf(QStringLiteral("--end-with"));
         if (i >= 0) args.remove(i, qMin(2, int(args.size()) - i));
+        i = args.indexOf(QStringLiteral("--from"));
+        if (i >= 0) args.remove(i, qMin(2, int(args.size()) - i));
+        if (!fromStage.isEmpty()) args << QStringLiteral("--from") << fromStage;
         return args;
     }
+    // Stages a, b, c; failures are retried when etry is set.
+    QString previousStage(const QString &stage) const override
+    {
+        return stage == QLatin1String("b") ? QStringLiteral("a") : stage == QLatin1String("c") ? QStringLiteral("b") : QString();
+    }
+    bool retryable(int, const QString &) const override { return retry; }
+    bool retry = false;
     QVariantMap qualityReport(const QString &jobDirectory) const override
     {
         return QFileInfo::exists(jobDirectory + QStringLiteral("/stats.json")) ? QVariantMap{{"alignedImages", 2}, {"totalImages", 2}}

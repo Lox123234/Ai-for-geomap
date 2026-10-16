@@ -3,8 +3,13 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QPainter>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QUrl>
 #include <QtEndian>
 #include <cmath>
 #include <functional>
@@ -16,6 +21,7 @@
 #include "LasEdit.h"
 #include "Scene3D.h"
 #include "Scene3DService.h"
+#include "WebTiles.h"
 
 using namespace view3d;
 
@@ -671,6 +677,203 @@ private slots:
     }
 
     // GEOMAP_3D_JOB=<ODM job folder>: the results of a real reconstruction in the 3D scene.
+    // The map's basemap under the scene and the photos of the job at their poses. A fake ODM job
+    // (coords.txt, reconstruction.json with a nadir and a tilted shot, photos, point cloud) and a
+    // tile server of local files whose pixels say where they are: red = tile x, green = tile y,
+    // blue = the column inside the tile. Checked pixels of the basemap in the scene must come
+    // from the tile and the column of their own geographic position.
+    void basemapAndCamerasInTheScene()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        const double pi = 3.14159265358979323846;
+        const double E = 500000, N = 5600000;   // UTM 32N
+        const QString job = tmp.filePath(QStringLiteral("Проект/jobs/j1"));
+        QVERIFY(writeFile(job + QStringLiteral("/odm_georeferencing/coords.txt"), "WGS84 UTM 32N\n500000 5600000\n"));
+        QVector<QVector3D> points;
+        QVector<QColor> colours;
+        for (int i = 0; i < 2000; ++i) {   // a field of 100 × 80 m at 200–203 m, local to coords.txt
+            points << QVector3D(-50 + (i % 50) * 2.0f, -40 + (i / 50) * 2.0f, 200 + (i % 7) * 0.5f);
+            colours << QColor(60, 160, 60);
+        }
+        QVERIFY(writeFile(job + QStringLiteral("/odm_filterpoints/point_cloud.ply"), binaryPly(points, colours)));
+        // Photos 400 × 300: the top-left quarter yellow, the rest red (IMG_1) or blue (IMG_2).
+        QVERIFY(QDir().mkpath(job + QStringLiteral("/images")));
+        for (int k = 1; k <= 2; ++k) {
+            QImage photo(400, 300, QImage::Format_RGB32);
+            photo.fill(k == 1 ? QColor(220, 30, 30) : QColor(30, 30, 220));
+            QPainter(&photo).fillRect(0, 0, 200, 150, QColor(240, 220, 20));
+            QVERIFY(photo.save(job + QStringLiteral("/images/IMG_%1.JPG").arg(k), "JPG", 95));
+        }
+        // IMG_1 looks straight down from (-20, 0, 300) with the top of the image to the north,
+        // IMG_2 from (20, 0, 300) tilted 30° to the north. OpenSfM: X_camera = R·X + t, R as an
+        // axis-angle vector (here a rotation about x).
+        auto shot = [](double angle, double cx, double cy, double cz) {
+            const double ca = std::cos(angle), sa = std::sin(angle);
+            const double rc[3] = {cx, ca * cy - sa * cz, sa * cy + ca * cz};
+            return QJsonObject{{"camera", "cam"}, {"rotation", QJsonArray{angle, 0.0, 0.0}},
+                               {"translation", QJsonArray{-rc[0], -rc[1], -rc[2]}}};
+        };
+        const QJsonObject shots{{"IMG_1.JPG", shot(pi, -20, 0, 300)}, {"IMG_2.JPG", shot(pi - pi / 6, 20, 0, 300)}};
+        const QJsonObject cameras{{"cam", QJsonObject{{"projection_type", "perspective"}, {"width", 400}, {"height", 300},
+                                                      {"focal", 0.9}, {"k1", 0.0}, {"k2", 0.0}}}};
+        QVERIFY(writeFile(job + QStringLiteral("/opensfm/reconstruction.json"),
+                          QJsonDocument(QJsonArray{QJsonObject{{"cameras", cameras}, {"shots", shots}}}).toJson()));
+
+        Scene3DService scene;
+        scene.setViewAspect(800.0f / 600.0f);
+        QVERIFY(scene.addPointCloud(job + QStringLiteral("/odm_filterpoints/point_cloud.ply")).isEmpty());
+        QVERIFY(waitLoaded(scene));
+        QTRY_COMPARE_WITH_TIMEOUT(scene.cameras().size(), 2, 30000);
+        QCOMPARE(scene.origin().x, E);
+        QCOMPARE(scene.layerCount(), 2);   // the cloud and the photos
+        const Scene3DService::CameraMark *nadir = nullptr, *tilted = nullptr;
+        for (const Scene3DService::CameraMark &c : scene.cameras()) (c.name == QLatin1String("IMG_1.JPG") ? nadir : tilted) = &c;
+        QVERIFY(nadir && tilted);
+        QVERIFY((nadir->centre - QVector3D(-20, 0, 300)).length() < 0.01f);
+        QVERIFY((tilted->centre - QVector3D(20, 0, 300)).length() < 0.01f);
+        // The nadir photo lies flat under its camera, its top-left corner (pixel 0, 0) to the north-west.
+        const QVector3D middle = (nadir->corners[0] + nadir->corners[1] + nadir->corners[2] + nadir->corners[3]) / 4;
+        QVERIFY(std::abs(middle.x() - nadir->centre.x()) < 0.01f && std::abs(middle.y() - nadir->centre.y()) < 0.01f);
+        QVERIFY(middle.z() < nadir->centre.z() - 1);
+        for (int k = 0; k < 4; ++k) QVERIFY(std::abs(nadir->corners[k].z() - middle.z()) < 0.01f);
+        QVERIFY(nadir->corners[0].x() < middle.x() && nadir->corners[0].y() > middle.y());
+        QVERIFY(nadir->corners[2].x() > middle.x() && nadir->corners[2].y() < middle.y());
+        // Sized by the spacing of the cameras (40 m): neighbours do not cover each other.
+        const float width = (nadir->corners[1] - nadir->corners[0]).length();
+        QVERIFY2(width > 20 && width < 40, qPrintable(QString::number(width)));
+        QVERIFY(std::abs(width / (nadir->corners[3] - nadir->corners[0]).length() - 4.0f / 3.0f) < 0.01f);   // the photo's shape
+        // The tilted photo is ahead of its camera, to the north and down.
+        const QVector3D ahead = (tilted->corners[0] + tilted->corners[1] + tilted->corners[2] + tilted->corners[3]) / 4 - tilted->centre;
+        QVERIFY(ahead.y() > 0.4f * ahead.length() && ahead.z() < -0.7f * ahead.length());
+        // The thumbnail on its rectangle as the camera saw it: yellow towards the top-left corner.
+        const Scene3DService::Layer *photos = nullptr;
+        for (const Scene3DService::Layer &l : scene.layers()) if (l.kind == QLatin1String("cameras")) photos = &l;
+        QVERIFY(photos && photos->overlay && photos->mesh);
+        const Mesh &cm = *photos->mesh;
+        QVERIFY(!cm.parts.isEmpty() && !cm.parts[0].texture.isNull());
+        int tl = -1, br = -1;
+        for (int i = 0; i < cm.positions.size(); ++i) {
+            if (tl < 0 && (cm.positions[i] - nadir->corners[0]).length() < 1e-3f) tl = i;
+            if (br < 0 && (cm.positions[i] - nadir->corners[2]).length() < 1e-3f) br = i;
+        }
+        QVERIFY(tl >= 0 && br >= 0);
+        const QImage &atlas = cm.parts[0].texture;
+        auto texel = [&](float t) {
+            const QVector2D uv = cm.uvs[tl] * (1 - t) + cm.uvs[br] * t;
+            return atlas.pixelColor(qBound(0, int(uv.x() * atlas.width()), atlas.width() - 1), qBound(0, int(uv.y() * atlas.height()), atlas.height() - 1));
+        };
+        const QColor yellow = texel(0.25f), red = texel(0.75f);
+        QVERIFY2(yellow.red() > 180 && yellow.green() > 160 && yellow.blue() < 100, qPrintable(yellow.name()));
+        QVERIFY2(red.red() > 170 && red.green() < 100 && red.blue() < 100, qPrintable(red.name()));
+        // A click on the photo names it; with the photos hidden the click reaches the ground.
+        scene.setPreset(QStringLiteral("top"));
+        const QPointF at = project(scene.camera(), middle, QSizeF(800, 600));
+        QVERIFY(scene.pickAt(float(at.x()), float(at.y()), 800, 600));
+        QVERIFY2(scene.pickText().startsWith(QStringLiteral("Снимок IMG_1.JPG")), qPrintable(scene.pickText()));
+        // The ground right under the photo: covered by it, reached with the photos hidden.
+        const QPointF below = project(scene.camera(), QVector3D(-20, 0, 200), QSizeF(800, 600));
+        QVERIFY(scene.pickAt(float(below.x()), float(below.y()), 800, 600));
+        QVERIFY2(scene.pickText().startsWith(QStringLiteral("Снимок IMG_1.JPG")), qPrintable(scene.pickText()));
+        scene.setShowCameras(false);
+        QVERIFY(!scene.showCameras());
+        QVERIFY(scene.pickAt(float(below.x()), float(below.y()), 800, 600));
+        QVERIFY2(scene.pickText().startsWith(QStringLiteral("Точка")), qPrintable(scene.pickText()));
+        QVERIFY(std::abs(scene.lastPick().x() - (-20)) < 1.5f && std::abs(scene.lastPick().y()) < 1.5f);
+        scene.setShowCameras(true);
+
+        // Tiles around the place: zoom 15 (the context) and 20 (the finest of a custom server: the detail).
+        const QString tiles = tmp.filePath(QStringLiteral("tiles"));
+        CoordinateTransform toWgs(Crs::fromEpsg(32632), Crs::wgs84());
+        QVERIFY(toWgs.isValid());
+        auto worldPixel = [&](double e, double n, int z, double *gx, double *gy) {
+            double x = e, y = n;
+            if (!toWgs.transform(x, y)) return false;   // longitude, latitude
+            const double lat = y * pi / 180, size = 256.0 * double(1 << z);
+            *gx = (x + 180.0) / 360.0 * size;
+            *gy = (1.0 - std::log(std::tan(lat) + 1.0 / std::cos(lat)) / pi) / 2.0 * size;
+            return true;
+        };
+        int written = 0;
+        for (const auto &[z, half] : {std::pair<int, double>{15, 1800.0}, std::pair<int, double>{20, 110.0}}) {
+            double x0, y0, x1, y1;
+            QVERIFY(worldPixel(E - half, N + half, z, &x0, &y0));
+            QVERIFY(worldPixel(E + half, N - half, z, &x1, &y1));
+            for (int ty = int(y0 / 256); ty <= int(y1 / 256); ++ty)
+                for (int tx = int(x0 / 256); tx <= int(x1 / 256); ++tx) {
+                    QImage t(256, 256, QImage::Format_RGB32);
+                    for (int py = 0; py < 256; ++py)
+                        for (int px = 0; px < 256; ++px) t.setPixel(px, py, qRgb(tx & 255, ty & 255, px));
+                    const QString path = QStringLiteral("%1/%2/%3/%4.png").arg(tiles).arg(z).arg(tx).arg(ty);
+                    QVERIFY(QDir().mkpath(QFileInfo(path).absolutePath()));
+                    QVERIFY(t.save(path));
+                    ++written;
+                }
+        }
+        qInfo("Tiles written: %d", written);
+        const QString id = QStringLiteral("custom:") + QUrl::fromLocalFile(tiles).toString() + QStringLiteral("/{z}/{x}/{y}.png");
+        QSignalSpy basemapChanged(&scene, &Scene3DService::basemapChanged);
+        scene.setBasemap(id);
+        QCOMPARE(scene.basemap(), id);
+        // Drawn again as the tiles arrive; finally every pixel of the detail is there.
+        const Scene3DService::Layer *ground = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT([&] {
+            ground = nullptr;
+            for (const Scene3DService::Layer &l : scene.layers()) if (l.kind == QLatin1String("basemap") && l.mesh) ground = &l;
+            if (!ground || ground->mesh->parts.size() != 2 || ground->mesh->parts[0].texture.isNull()) return false;
+            const QImage &d = ground->mesh->parts[0].texture;
+            for (int y = 0; y < d.height(); y += 37)
+                for (int x = 0; x < d.width(); x += 37) if (d.pixelColor(x, y).alpha() < 255) return false;
+            return webtiles::TileStore::instance()->pending() == 0;
+        }(), 60000);
+        QVERIFY(ground->overlay && ground->error.isEmpty());
+        QVERIFY(!scene.basemapAttribution().isEmpty());
+        QVERIFY(basemapChanged.count() > 0);
+        // On the ground: just under the data, around the data and the cameras.
+        const Mesh &bm = *ground->mesh;
+        const Bounds data = scene.bounds();
+        QVERIFY(bm.bounds.max.z() < data.min.z() && bm.bounds.max.z() > data.min.z() - 2);
+        QVERIFY(bm.bounds.min.x() < data.min.x() - 1000 && bm.bounds.max.y() > data.max.y() + 1000);   // the wider context
+        QVERIFY(scene.bounds().max.z() < 210);   // the basemap and the cameras are not data: the view fits the data
+        // The detail texture: vertices 0 (north-west) and 2 (south-east) span it.
+        const QImage detail = bm.parts[0].texture;
+        const QVector3D nw = bm.positions[0], se = bm.positions[2];
+        QVERIFY(nw.x() < data.min.x() && nw.y() > data.max.y() && se.x() > data.max.x() && se.y() < data.min.y());
+        int checked = 0, right = 0;
+        for (int j = 1; j < 8; ++j)
+            for (int i = 1; i < 8; ++i) {
+                const double u = i / 8.0, v = j / 8.0;
+                const double e = E + nw.x() + (se.x() - nw.x()) * u, n = N + nw.y() + (se.y() - nw.y()) * v;
+                double gx, gy;
+                QVERIFY(worldPixel(e, n, 20, &gx, &gy));
+                const double column = gx - 256.0 * std::floor(gx / 256);
+                if (column < 3 || column > 252) continue;   // the edges of tiles blend
+                const QColor c = detail.pixelColor(qMin(detail.width() - 1, int(u * detail.width())), qMin(detail.height() - 1, int(v * detail.height())));
+                ++checked;
+                const bool ok = c.red() == (int(gx / 256) & 255) && c.green() == (int(gy / 256) & 255) && std::abs(c.blue() - column) <= 3;
+                if (ok) ++right;
+                else qInfo("u %.3f v %.3f: rgb %d %d %d, expected %d %d %.1f", u, v, c.red(), c.green(), c.blue(), int(gx / 256) & 255,
+                           int(gy / 256) & 255, column);
+            }
+        QVERIFY(checked > 30);
+        QVERIFY2(right == checked, qPrintable(QStringLiteral("%1 of %2").arg(right).arg(checked)));
+        // The context ring has its own texture of the wider area.
+        QVERIFY(!bm.parts[1].texture.isNull() && bm.parts[1].indices.size() == 24);
+        // Off: the basemap leaves the scene.
+        scene.setBasemap(QString());
+        for (const Scene3DService::Layer &l : scene.layers()) QVERIFY(l.kind != QLatin1String("basemap"));
+        QVERIFY(scene.basemapAttribution().isEmpty());
+        // A built-in server is used only after its terms were accepted.
+        QSettings().remove(QStringLiteral("basemap/accepted/osm"));
+        scene.setBasemap(QStringLiteral("osm"));
+        QVERIFY(scene.basemap().isEmpty());
+        // Removing the data removes the overlays.
+        const QString cloudId = scene.layers().first().id;
+        scene.removeLayer(cloudId);
+        QCOMPARE(scene.layerCount(), 0);
+        QVERIFY(scene.cameras().isEmpty());
+    }
+
     void odmJobResults()
     {
         const QString job = qEnvironmentVariable("GEOMAP_3D_JOB");
@@ -735,12 +938,23 @@ private slots:
         QVERIFY(scene.addModel(objPath).isEmpty());
         QVERIFY(scene.addTerrain(dsmPath, orthoPath).isEmpty());
         QVERIFY(waitLoaded(scene));
-        QCOMPARE(scene.layerCount(), 3);
+        int data = 0;
         for (const QVariant &l : scene.layersForQml()) {
             const QVariantMap m = l.toMap();
             QVERIFY2(m[QStringLiteral("error")].toString().isEmpty(), qPrintable(m[QStringLiteral("error")].toString()));
             qInfo("%s: %s", qPrintable(m[QStringLiteral("kindTitle")].toString()), qPrintable(m[QStringLiteral("info")].toString()));
+            data += m[QStringLiteral("overlay")].toBool() ? 0 : 1;
         }
+        QCOMPARE(data, 3);
+        // The photos of the job hang above the data at their reconstructed positions.
+        QTRY_VERIFY_WITH_TIMEOUT(!scene.cameras().isEmpty(), 60000);
+        qInfo("Cameras: %d", int(scene.cameras().size()));
+        const Bounds dataBounds = scene.bounds();
+        for (const Scene3DService::CameraMark &c : scene.cameras()) {
+            QVERIFY(c.centre.x() > dataBounds.min.x() - 200 && c.centre.x() < dataBounds.max.x() + 200);
+            QVERIFY(c.centre.z() > dataBounds.center().z());   // above the ground
+        }
+        scene.setShowCameras(false);   // the point under the cursor, not a photo
         scene.setPreset(QStringLiteral("top"));
         QVERIFY(scene.pickAt(400, 300, 800, 600));
         qInfo("%s", qPrintable(scene.pickText()));

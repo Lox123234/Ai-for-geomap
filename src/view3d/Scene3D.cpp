@@ -420,7 +420,10 @@ PointCloud readPointCloudLas(const QString &path, int maxPoints, const Origin &o
             const quint16 length = qFromLittleEndian<quint16>(vlr.constData() + 20);
             if (id == 34735 || id == 2112) {
                 cloud.georeferenced = true;
-                if (id == 2112) cloud.crs = QString::fromUtf8(f.read(qMin<int>(length, 4096))).section(QLatin1Char('"'), 1, 1);
+                if (id == 2112) {
+                    cloud.crsWkt = QString::fromUtf8(f.read(length)).trimmed().remove(QChar(0));
+                    cloud.crs = cloud.crsWkt.section(QLatin1Char('"'), 1, 1);
+                }
             }
             pos += 54 + length;
         }
@@ -821,6 +824,7 @@ Mesh demMesh(const QString &path, int maxGrid, const Origin &origin, const QImag
     if (OGRSpatialReferenceH srs = GDALGetSpatialRef(ds)) {
         mesh.georeferenced = true;
         mesh.crs = QString::fromUtf8(OSRGetName(srs));
+        mesh.crsWkt = QString::fromUtf8(GDALGetProjectionRef(ds));
     }
     const int step = qMax(1, int(std::ceil(double(qMax(W, H)) / qMax(2, maxGrid))));
     const int w = qMax(2, (W + step - 1) / step), h = qMax(2, (H + step - 1) / step);
