@@ -41,8 +41,9 @@ struct RasterInfo
 struct RasterStyle
 {
     enum Mode { Rgb, SingleBand };
-    // Slope: flat green → steep red; Aspect: compass hues; Vegetation: soil → dense green; Visibility: hidden red, visible green
-    enum Ramp { Gray, Terrain, Spectral, Slope, Aspect, Vegetation, Visibility };
+    // Slope: flat green → steep red; Aspect: compass hues; Vegetation: soil → dense green; Visibility: hidden red, visible green;
+    // Overlap: photos per point, 1 red … 9+ dark green (min 0, max 10)
+    enum Ramp { Gray, Terrain, Spectral, Slope, Aspect, Vegetation, Visibility, Overlap };
     Mode mode = Rgb;
     int red = 1, green = 2, blue = 3;   // 1-based bands
     int alpha = 0;                      // alpha band, 0 = none
@@ -70,7 +71,7 @@ public:
 
     // `crsOverride` replaces the file's CRS (user-assigned when the file has none).
     RasterSource(const QString &path, const Crs &crsOverride, const Crs &mapCrs);
-    ~RasterSource();
+    virtual ~RasterSource();
 
     bool isValid() const { return m_valid; }
     QString error() const { return m_error; }
@@ -91,13 +92,15 @@ public:
 
     // Tile (level, tx, ty) of the map-CRS grid: covers TileSize << level grid pixels.
     // Returns a null image for tiles outside the grid or on read errors.
-    QImage renderTile(int level, int tx, int ty) const;
+    virtual QImage renderTile(int level, int tx, int ty) const;
     // Any region of the map (export): the map rectangle drawn into `size` pixels.
-    QImage renderRegion(const QRectF &mapRect, const QSize &size) const;
+    virtual QImage renderRegion(const QRectF &mapRect, const QSize &size) const;
     // Value of `band` at a map point; NaN outside the raster or on nodata.
-    double valueAt(const QPointF &mapPoint, int band) const;
+    virtual double valueAt(const QPointF &mapPoint, int band) const;
 
-private:
+protected:
+    RasterSource() = default;   // sources that are not files (online basemaps) fill the grid themselves
+
     struct Handle;
     Handle *acquire() const;
     void release(Handle *h) const;

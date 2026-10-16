@@ -145,12 +145,6 @@ Dialog {
             text: dialog.resultText
             color: dialog.resultOk ? Theme.good : Theme.bad; font.pixelSize: 12
         }
-        Label {
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            text: "Результат — растр Float32 в папке analysis проекта, слой на карте со шкалой «почва → растительность». Прозрачные и пустые пиксели исходника остаются пустыми."
-            color: Theme.faint; font.pixelSize: 10
-        }
     }
     property var bandValues: ({})
 }

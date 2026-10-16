@@ -1,5 +1,6 @@
 #pragma once
 #include <QString>
+#include <QtNumeric>
 
 struct ImageMetadata
 {
@@ -12,6 +13,13 @@ struct ImageMetadata
     bool hasGps = false;
     double latitude = 0;
     double longitude = 0;
+    // For footprints before alignment (NaN / 0 when the file has none).
+    double altitude = qQNaN();           // GPS altitude, metres
+    double focalLength = qQNaN();        // mm
+    int focal35 = 0;                     // 35 mm equivalent, mm
+    double relativeAltitude = qQNaN();   // above the take-off point (DJI XMP)
+    double yaw = qQNaN();                // degrees clockwise from north (DJI XMP: gimbal, else flight)
+    double pitch = qQNaN();              // gimbal pitch, −90 = nadir (DJI XMP)
 };
 
 // Lightweight, bounded EXIF reader: JPEG APP1 and TIFF IFD metadata.

@@ -137,11 +137,5 @@ Dialog {
             text: dialog.resultText
             color: dialog.resultOk ? Theme.good : Theme.bad; font.pixelSize: 12
         }
-        Label {
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            text: "Результат сохраняется в папку analysis проекта и добавляется на карту отдельным слоем; исходная модель высот не меняется. Профиль и объём — инструменты на карте (панель «Измерения»)."
-            color: Theme.faint; font.pixelSize: 10
-        }
     }
 }

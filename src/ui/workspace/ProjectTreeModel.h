@@ -7,12 +7,13 @@
 class MapService;
 class ProcessingService;
 class ProjectManager;
+class SurveyControl;
 
 // Tree of the "Проект" panel, built from what the services hold: the photos, the newest
 // result of every kind among the processing jobs (orthophoto, DSM, DTM, point cloud, model,
-// report), the map layers and the jobs. Sections that do not exist yet (calibrations, GCP)
-// are shown as unavailable with their stage. Fixed rows are updated in place and only the
-// layer and job lists are replaced, so the view keeps its expanded branches.
+// report), the calibration and the survey control, the map layers and the jobs. Fixed rows
+// are updated in place and only the layer and job lists are replaced, so the view keeps its
+// expanded branches.
 class ProjectTreeModel : public QStandardItemModel
 {
     Q_OBJECT
@@ -33,6 +34,7 @@ public:
     ProjectTreeModel(ProjectManager *projects, ProcessingService *processing, MapService *map, QObject *parent = nullptr);
     QHash<int, QByteArray> roleNames() const override;
 
+    void setSurvey(SurveyControl *survey);   // ground control and calibration (optional)
     Q_INVOKABLE void rebuild();   // new project (or none)
     Q_INVOKABLE void refresh();   // counts, results, layers, jobs
     QStandardItem *section(const QString &kind) const;
@@ -51,6 +53,7 @@ private:
     ProjectManager *m_projects;
     ProcessingService *m_processing;
     MapService *m_map;
+    SurveyControl *m_survey = nullptr;
     QTimer m_refreshTimer;
     int m_revision = 0;
 };

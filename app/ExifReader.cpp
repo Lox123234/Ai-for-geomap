@@ -1,6 +1,7 @@
 #include "ExifReader.h"
 #include <QFile>
 #include <QImageReader>
+#include <QRegularExpression>
 #include <QByteArray>
 #include <QSet>
 #include <QtEndian>
@@ -62,7 +63,8 @@ private:
         const quint16 entries = u16(offset);
         if (entries > 512 || !inRange(quint64(offset) + 2, quint64(entries) * 12)) return;
         QString latRef, lonRef;
-        double lat = NAN, lon = NAN;
+        double lat = NAN, lon = NAN, alt = NAN;
+        int altRef = 0;
         for (int i = 0; i < entries; ++i) {
             const quint64 pos = quint64(offset) + 2 + quint64(i) * 12;
             const quint16 tag = u16(pos), type = u16(pos + 2);
@@ -80,6 +82,10 @@ private:
             else if ((kind == 0 && tag == 0x0132 || kind == 1 && tag == 0x9003) && type == 2) {
                 if (kind == 1 || meta.dateTime.isEmpty()) meta.dateTime = ascii(val, count);
             }
+            else if (kind == 1 && tag == 0x920A && type == 5) meta.focalLength = rational(val);
+            else if (kind == 1 && tag == 0xA405 && type == 3) meta.focal35 = u16(val);
+            else if (kind == 2 && tag == 5 && type == 1) altRef = uchar(b[qsizetype(val)]);
+            else if (kind == 2 && tag == 6 && type == 5) alt = rational(val);
             else if (kind == 2 && tag == 1 && type == 2) latRef = ascii(val, count);
             else if (kind == 2 && tag == 3 && type == 2) lonRef = ascii(val, count);
             else if (kind == 2 && (tag == 2 || tag == 4) && type == 5 && count == 3) {
@@ -98,6 +104,7 @@ private:
             meta.latitude = latRef == "S" ? -lat : lat;
             meta.longitude = lonRef == "W" ? -lon : lon;
         }
+        if (kind == 2 && std::isfinite(alt)) meta.altitude = altRef == 1 ? -alt : alt;
         // Walk linked IFDs only for main directories, not EXIF/GPS directories.
         const quint64 next = quint64(offset) + 2 + quint64(entries) * 12;
         if (kind == 0 && inRange(next, 4) && u32(next) != 0)
@@ -105,11 +112,14 @@ private:
     }
 };
 
-QByteArray extractExif(const QString &path)
+// EXIF (TIFF bytes) and, in JPEG, the XMP packet (DJI writes its flight data there).
+QByteArray extractExif(const QString &path, QByteArray *xmp)
 {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) return {};
     if (file.peek(2) == QByteArray::fromHex("ffd8")) {
+        QByteArray exif;
+        static const QByteArray xmpHeader("http://ns.adobe.com/xap/1.0/\0", 29);
         file.read(2);
         // JPEG metadata is before image data. Limit search to 8 MiB.
         while (file.pos() < 8 * 1024 * 1024 && !file.atEnd()) {
@@ -128,10 +138,12 @@ QByteArray extractExif(const QString &path)
             if (n < 2) break;
             if (marker == 0xe1) {
                 const QByteArray chunk = file.read(n - 2);
-                if (chunk.startsWith(QByteArray("Exif\0\0", 6))) return chunk.mid(6);
+                if (exif.isEmpty() && chunk.startsWith(QByteArray("Exif\0\0", 6))) exif = chunk.mid(6);
+                else if (xmp && xmp->isEmpty() && chunk.startsWith(xmpHeader)) *xmp = chunk.mid(xmpHeader.size());
+                if (!exif.isEmpty() && (!xmp || !xmp->isEmpty())) break;
             } else if (!file.seek(file.pos() + n - 2)) break;
         }
-        return {};
+        return exif;
     }
     const QByteArray begin = file.peek(4);
     if (begin == QByteArray::fromHex("49492a00") || begin == QByteArray::fromHex("4d4d002a"))
@@ -150,7 +162,24 @@ ImageMetadata ExifReader::read(const QString &path)
     meta.valid = size.isValid();
     meta.width = size.width();
     meta.height = size.height();
-    TiffView exif(extractExif(path));
+    QByteArray xmp;
+    TiffView exif(extractExif(path, &xmp));
     if (exif.good()) exif.parse(meta);
+    if (!xmp.isEmpty()) {
+        // drone-dji:Name="value" (attribute) or <drone-dji:Name>value</drone-dji:Name> (element).
+        const QString text = QString::fromUtf8(xmp);
+        auto value = [&text](const char *name) {
+            const QString n = QString::fromLatin1(name);
+            QRegularExpressionMatch m = QRegularExpression(QStringLiteral("drone-dji:%1=\"([-+0-9.eE]+)\"").arg(n)).match(text);
+            if (!m.hasMatch()) m = QRegularExpression(QStringLiteral("<drone-dji:%1>\\s*([-+0-9.eE]+)\\s*<").arg(n)).match(text);
+            bool ok = false;
+            const double v = m.hasMatch() ? m.captured(1).toDouble(&ok) : NAN;
+            return ok && std::isfinite(v) ? v : NAN;
+        };
+        meta.relativeAltitude = value("RelativeAltitude");
+        meta.yaw = value("GimbalYawDegree");
+        if (!std::isfinite(meta.yaw)) meta.yaw = value("FlightYawDegree");
+        meta.pitch = value("GimbalPitchDegree");
+    }
     return meta;
 }

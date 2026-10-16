@@ -166,13 +166,5 @@ Item {
                 ToolTip.text: "Сколько точек облака загружать в память (каждая k-я); действует на новые слои"
             }
         }
-        Label {
-            Layout.fillWidth: true
-            Layout.leftMargin: 10; Layout.rightMargin: 10; Layout.bottomMargin: 10
-            wrapMode: Text.Wrap
-            text: "Координаты точек и измерения — в системе координат данных (для результатов ODM — UTM задания). "
-                + "Вертикальное преувеличение меняет только изображение."
-            color: Theme.faint; font.pixelSize: 10
-        }
     }
 }

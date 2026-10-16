@@ -69,9 +69,10 @@ bool SamSegmenter::isLoaded() const { return d->encoder && d->decoder; }
 bool SamSegmenter::hasImage() const { return !d->embedding.empty(); }
 QSize SamSegmenter::imageSize() const { return d->size; }
 
-bool SamSegmenter::setImage(const QImage &image, QString *error)
+bool SamSegmenter::setImage(const QImage &image, QString *error, const QString &key)
 {
     d->embedding.clear();
+    m_imageKey.clear();
     if (!isLoaded() || image.isNull()) {
         if (error) *error = isLoaded() ? QStringLiteral("Пустое изображение") : QStringLiteral("Модель не загружена");
         return false;
@@ -114,8 +115,12 @@ bool SamSegmenter::setImage(const QImage &image, QString *error)
         if (error) *error = QStringLiteral("ONNX Runtime: %1").arg(QString::fromUtf8(e.what()));
         return false;
     }
+    m_imageKey = key;
     return true;
 }
+
+QString SamSegmenter::imageKey() const { return m_imageKey; }
+std::mutex &SamSegmenter::mutex() { return m_mutex; }
 
 SamSegmenter::Result SamSegmenter::segment(const QVector<QPointF> &points, const QVector<int> &labels)
 {
@@ -216,6 +221,21 @@ SamSegmenter::Result SamSegmenter::segment(const QVector<QPointF> &points, const
                     best = i;
                 }
             }
+            // For one click SAM's single answer (0) is often the whole object while the three
+            // variants stop at its parts (a roof's slope): taken when it contains the chosen
+            // variant and is not the background.
+            if (first == 1 && best > 0 && scores[0] >= 0.6f) {
+                const float *m0 = allLogits, *mb = allLogits + size_t(best) * size_t(pixels);
+                qint64 area0 = 0, inBest = 0, both = 0;
+                for (qint64 k = 0; k < pixels; ++k) {
+                    const bool a = m0[k] > 0.0f, b = mb[k] > 0.0f;
+                    area0 += a;
+                    inBest += b;
+                    both += a && b;
+                }
+                const int cx = qBound(0, int(points[0].x()), d->size.width() - 1), cy = qBound(0, int(points[0].y()), d->size.height() - 1);
+                if (area0 > inBest && area0 * 2 <= pixels && both >= inBest * 0.95 && m0[size_t(cy) * d->size.width() + cx] > 0.0f) best = 0;
+            }
         }
         r.score = scores ? scores[best] : 0.0f;
         const float *logits = allLogits + size_t(best) * size_t(pixels);
@@ -259,7 +279,9 @@ bool SamSegmenter::load(const ModelCard &, QString *error)
     return false;
 }
 bool SamSegmenter::isLoaded() const { return false; }
-bool SamSegmenter::setImage(const QImage &, QString *error)
+QString SamSegmenter::imageKey() const { return m_imageKey; }
+std::mutex &SamSegmenter::mutex() { return m_mutex; }
+bool SamSegmenter::setImage(const QImage &, QString *error, const QString &)
 {
     if (error) *error = QStringLiteral("Локальный AI недоступен в этой сборке");
     return false;

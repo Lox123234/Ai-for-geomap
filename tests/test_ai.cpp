@@ -19,6 +19,7 @@
 #include "MapService.h"
 #include "RasterEdit.h"
 #include "MaskPolygons.h"
+#include "PhotoMasks.h"
 #include "ModelCard.h"
 #include "Platform.h"
 #include "SamSegmenter.h"
@@ -397,6 +398,51 @@ private slots:
         QCOMPARE(saved.features.size(), 1);
         const double savedArea = saved.features.first().attributes.value(QStringLiteral("area_m2")).toDouble();
         QVERIFY2(qAbs(savedArea - expected) / expected < 0.1, qPrintable(QString::number(savedArea)));
+    }
+
+    // Masks of photos for the reconstruction: a click excludes the roof, Shift+click gives it back.
+    void photoMasks()
+    {
+        const QString project = m_dir.filePath(QStringLiteral("Маски"));
+        QVERIFY(QDir().mkpath(project + QStringLiteral("/photos")));
+        const QRect roof(500, 300, 400, 300);
+        const QImage photo = scene(QSize(1600, 1000), roof, QPoint(200, 200), 90);
+        QVERIFY(photo.save(project + QStringLiteral("/photos/p1.jpg"), "JPG", 92));
+        QCOMPARE(PhotoMasks::maskFile(QStringLiteral("photos/p1.jpg")), QStringLiteral("photos/p1_mask.png"));
+        ai::AiService aiService;
+        PhotoMasks masks(&aiService);
+        masks.setProject(project);
+        QVERIFY(!masks.hasMask(QStringLiteral("photos/p1.jpg")));
+        if (!aiService.segmentationProblem().isEmpty()) QSKIP(qPrintable(aiService.segmentationProblem()));
+        QSignalSpy finished(&masks, &PhotoMasks::finished);
+        QCOMPARE(masks.segmentAt(QStringLiteral("photos/p1.jpg"), roof.center().x() / 1600.0, roof.center().y() / 1000.0), QString());
+        QVERIFY(finished.wait(120000));
+        QVERIFY2(finished.last().at(0).toBool(), qPrintable(finished.last().at(1).toString()));
+        qInfo("%s", qPrintable(masks.status()));
+        QVERIFY(masks.hasMask(QStringLiteral("photos/p1.jpg")));
+        QCOMPARE(masks.maskCount(), 1);
+        const QImage mask = QImage(project + QStringLiteral("/photos/p1_mask.png")).convertToFormat(QImage::Format_Grayscale8);
+        QCOMPARE(mask.size(), photo.size());
+        int black = 0;
+        for (int y = roof.top(); y <= roof.bottom(); y += 4)
+            for (int x = roof.left(); x <= roof.right(); x += 4) black += mask.pixelColor(x, y).value() < 128;
+        const int samples = (roof.height() / 4 + 1) * (roof.width() / 4 + 1);
+        QVERIFY2(black > samples * 0.9, qPrintable(QStringLiteral("%1 / %2").arg(black).arg(samples)));
+        QCOMPARE(mask.pixelColor(1400, 900).value(), 255);   // the field is used
+        QVERIFY(masks.overlayUrl(QStringLiteral("photos/p1.jpg")).isLocalFile());
+        // Shift+click on the roof: given back; a mask that keeps everything is removed.
+        QCOMPARE(masks.segmentAt(QStringLiteral("photos/p1.jpg"), roof.center().x() / 1600.0, roof.center().y() / 1000.0, true), QString());
+        QVERIFY(finished.wait(60000));
+        QVERIFY(!masks.hasMask(QStringLiteral("photos/p1.jpg")));
+        // Clearing.
+        QImage object(photo.size(), QImage::Format_Grayscale8);
+        object.fill(0);
+        QPainter(&object).fillRect(QRect(0, 0, 100, 100), Qt::white);
+        QString error;
+        QVERIFY(masks.applyMask(QStringLiteral("photos/p1.jpg"), object, false, &error));
+        QVERIFY(masks.hasMask(QStringLiteral("photos/p1.jpg")));
+        masks.clearMask(QStringLiteral("photos/p1.jpg"));
+        QVERIFY(!masks.hasMask(QStringLiteral("photos/p1.jpg")));
     }
 
     // Removal of a car from an orthophoto: click, remove, the copy replaces the original on the

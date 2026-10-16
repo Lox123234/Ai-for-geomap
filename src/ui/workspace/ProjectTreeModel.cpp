@@ -4,6 +4,7 @@
 #include "ProcessingService.h"
 #include "ProcessingTypes.h"
 #include "ProjectManager.h"
+#include "SurveyControl.h"
 
 #include <QDir>
 #include <QLocale>
@@ -56,8 +57,16 @@ ProjectTreeModel::ProjectTreeModel(ProjectManager *projects, ProcessingService *
         connect(m_map, &MapService::layersChanged, this, &ProjectTreeModel::scheduleRefresh);
         connect(m_map, &MapService::projectChanged, this, &ProjectTreeModel::scheduleRefresh);
         connect(m_map->layerModel(), &QAbstractItemModel::dataChanged, this, &ProjectTreeModel::scheduleRefresh);
+        connect(m_map, &MapService::markersChanged, this, &ProjectTreeModel::scheduleRefresh);
     }
     rebuild();
+}
+
+void ProjectTreeModel::setSurvey(SurveyControl *survey)
+{
+    m_survey = survey;
+    if (m_survey) connect(m_survey, &SurveyControl::changed, this, &ProjectTreeModel::scheduleRefresh);
+    scheduleRefresh();
 }
 
 QHash<int, QByteArray> ProjectTreeModel::roleNames() const
@@ -118,10 +127,8 @@ void ProjectTreeModel::rebuild()
     QStandardItem *project = addSection(root, QStringLiteral("project"), m_projects->projectName(), QStringLiteral("project"));
     QStandardItem *chunk = addSection(project, QStringLiteral("chunk"), QStringLiteral("Блок 1"), QStringLiteral("chunk"));
     addSection(chunk, QStringLiteral("photos"), QStringLiteral("Фотографии"), QStringLiteral("camera"));
-    QStandardItem *calibrations = addSection(chunk, QStringLiteral("calibrations"), QStringLiteral("Калибровки камер"), QStringLiteral("calibration"));
-    setStatus(calibrations, QStringLiteral("этап F"), false);
-    QStandardItem *gcp = addSection(chunk, QStringLiteral("gcp"), QStringLiteral("Маркеры и опорные точки"), QStringLiteral("marker"));
-    setStatus(gcp, QStringLiteral("этап F"), false);
+    addSection(chunk, QStringLiteral("calibrations"), QStringLiteral("Калибровки камер"), QStringLiteral("calibration"));
+    addSection(chunk, QStringLiteral("gcp"), QStringLiteral("Маркеры и опорные точки"), QStringLiteral("marker"));
     for (const ResultKind &r : Results)
         addSection(chunk, QString::fromLatin1(r.kind), QString::fromUtf8(r.title), QString::fromLatin1(r.icon));
     addSection(project, QStringLiteral("layers"), QStringLiteral("Слои карты"), QStringLiteral("layers"));
@@ -142,6 +149,17 @@ void ProjectTreeModel::refresh()
     setStatus(section(QStringLiteral("chunk")), QStringLiteral("активный"), true);
     setStatus(section(QStringLiteral("photos")),
               QStringLiteral("%1 · с GPS %2").arg(m_projects->photoCount()).arg(m_projects->gpsCount()), m_projects->photoCount() > 0);
+    // Survey control: the calibration the next jobs start from, the points and the markers.
+    const QString calibration = m_survey ? m_survey->calibration() : QString();
+    setStatus(section(QStringLiteral("calibrations")),
+              calibration.isEmpty() ? QStringLiteral("самокалибровка")
+                                    : calibration == QLatin1String("?") ? QStringLiteral("калибровка проекта") : QStringLiteral("из задания ") + calibration,
+              true);
+    const int markers = m_map ? int(m_map->projectMarkers().size()) : 0;
+    setStatus(section(QStringLiteral("gcp")),
+              m_survey ? QStringLiteral("опорных %1 · контрольных %2 · маркеров %3").arg(m_survey->controlCount()).arg(m_survey->checkCount()).arg(markers)
+                       : QStringLiteral("маркеров %1").arg(markers),
+              true);
 
     // Results: the newest completed artifact of each kind.
     const QVector<ProcessingJob> jobs = m_processing ? m_processing->jobs() : QVector<ProcessingJob>();

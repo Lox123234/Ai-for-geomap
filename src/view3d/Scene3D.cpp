@@ -510,11 +510,44 @@ QString className(int c)
     }
 }
 
+// Bounds of the bulk of a cloud (0.2 … 99.8 % on every axis, 2 % margin): a few stray points of
+// the reconstruction far away must not shrink the view to a speck or flatten the height colours.
+static void robustBounds(PointCloud &cloud)
+{
+    const int n = int(cloud.positions.size());
+    if (n < 1000) return;
+    const int step = qMax(1, n / 200000);
+    QVector<float> axis[3];
+    for (int i = 0; i < n; i += step)
+        for (int k = 0; k < 3; ++k) axis[k] << cloud.positions[i][k];
+    QVector3D lo, hi;
+    for (int k = 0; k < 3; ++k) {
+        std::sort(axis[k].begin(), axis[k].end());
+        const int m = int(axis[k].size());
+        lo[k] = axis[k][int(m * 0.002)];
+        hi[k] = axis[k][qMin(m - 1, int(m * 0.998))];
+        const float margin = (hi[k] - lo[k]) * 0.02f;
+        lo[k] -= margin;
+        hi[k] += margin;
+    }
+    cloud.bounds.min = lo;
+    cloud.bounds.max = hi;
+    cloud.bounds.valid = true;
+}
+
 PointCloud readPointCloud(const QString &path, int maxPoints, const Origin &origin)
 {
     const QString suffix = QFileInfo(path).suffix().toLower();
-    if (suffix == QLatin1String("las") || suffix == QLatin1String("laz")) return readPointCloudLas(path, maxPoints, origin);
-    if (suffix == QLatin1String("ply")) return readPointCloudPly(path, maxPoints, origin);
+    if (suffix == QLatin1String("las") || suffix == QLatin1String("laz")) {
+        PointCloud cloud = readPointCloudLas(path, maxPoints, origin);
+        robustBounds(cloud);
+        return cloud;
+    }
+    if (suffix == QLatin1String("ply")) {
+        PointCloud cloud = readPointCloudPly(path, maxPoints, origin);
+        robustBounds(cloud);
+        return cloud;
+    }
     PointCloud cloud;
     cloud.source = path;
     cloud.error = QStringLiteral("Формат облака не поддерживается: %1 (поддерживаются PLY и LAS)").arg(suffix);

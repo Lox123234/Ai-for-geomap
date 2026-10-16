@@ -165,7 +165,8 @@ private slots:
         QVERIFY(tree.section(QStringLiteral("project")));
         QCOMPARE(tree.section(QStringLiteral("project"))->data(ProjectTreeModel::TitleRole).toString(), QStringLiteral("Съёмка"));
         QCOMPARE(tree.section(QStringLiteral("photos"))->data(ProjectTreeModel::StatusRole).toString(), QStringLiteral("0 · с GPS 0"));
-        QCOMPARE(tree.section(QStringLiteral("gcp"))->data(ProjectTreeModel::AvailableRole).toBool(), false);
+        QCOMPARE(tree.section(QStringLiteral("gcp"))->data(ProjectTreeModel::StatusRole).toString(), QStringLiteral("маркеров 0"));
+        QCOMPARE(tree.section(QStringLiteral("calibrations"))->data(ProjectTreeModel::StatusRole).toString(), QStringLiteral("самокалибровка"));
         QCOMPARE(tree.section(QStringLiteral("orthophoto"))->data(ProjectTreeModel::StatusRole).toString(), QStringLiteral("нет обработки"));
         QTRY_COMPARE(tree.section(QStringLiteral("layers"))->rowCount(), 2);   // photos and drawings
 

@@ -2,6 +2,8 @@
 // viewshed, the raster calculator (vegetation indices) and the export of analysis results.
 #include "MapService.h"
 #include "Geodesy.h"
+#include "Overlap.h"
+#include "PhotoModel.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -432,6 +434,77 @@ QString MapService::calculateRaster(const QString &layerId, const QString &index
                 message += QStringLiteral("; растительность (значение > %1) — %2 % площади").arg(num(threshold, 2), num(above * 100, 1));
             if (index != QLatin1String("calc")) message += QStringLiteral(". Формула: %1").arg(expression);
             emit analysisFinished(true, message + QStringLiteral(". Файл: %1").arg(QDir::toNativeSeparators(r.path)));
+        }, Qt::QueuedConnection);
+    });
+    return {};
+}
+
+// ------------------------------------------------------------------ image overlap
+
+QString MapService::computeOverlap()
+{
+    if (m_project.isEmpty()) return QStringLiteral("Откройте проект.");
+    if (m_analysisBusy) return QStringLiteral("Уже идёт расчёт: %1").arg(m_analysisStatus);
+    // The newest job with a reconstruction; without one, the photos' own metadata.
+    QString job;
+    const QDir jobs(QDir(m_project).filePath(QStringLiteral("jobs")));
+    for (const QString &id : jobs.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name | QDir::Reversed))
+        if (QFileInfo::exists(jobs.filePath(id + QStringLiteral("/opensfm/reconstruction.json")))
+            && QFileInfo::exists(jobs.filePath(id + QStringLiteral("/odm_georeferencing/coords.txt")))) {
+            job = jobs.filePath(id);
+            break;
+        }
+    QStringList photos;
+    if (m_photos)
+        for (const Photo &p : m_photos->photos()) photos << QDir(m_project).filePath(p.file);
+    if (job.isEmpty() && photos.isEmpty()) return QStringLiteral("В проекте нет снимков.");
+    const QString out = freePath(QDir(m_project).filePath(QStringLiteral("analysis")),
+                                 job.isEmpty() ? QStringLiteral("overlap-exif") : QStringLiteral("overlap-") + QFileInfo(job).fileName(), QStringLiteral(".tif"));
+    const QString photoFolder = QDir(m_project).filePath(QStringLiteral("photos"));
+    m_analysisBusy = true;
+    m_analysisStatus = job.isEmpty() ? QStringLiteral("Оценка перекрытия по данным снимков…") : QStringLiteral("Перекрытие снимков по реконструкции…");
+    emit analysisChanged();
+    QThreadPool::globalInstance()->start([this, job, photos, out, photoFolder] {
+        const overlap::Result r = job.isEmpty() ? overlap::fromPhotos(photos, out) : overlap::fromJob(job, out, photoFolder);
+        QMetaObject::invokeMethod(this, [this, r] {
+            m_analysisBusy = false;
+            m_analysisStatus.clear();
+            emit analysisChanged();
+            if (!r.ok()) {
+                emit analysisFinished(false, r.error);
+                return;
+            }
+            RasterStyle style;
+            style.mode = RasterStyle::SingleBand;
+            style.ramp = RasterStyle::Overlap;
+            style.min = 0;
+            style.max = 10;
+            m_nextStyle = style;
+            m_useNextStyle = true;
+            const QString added = addLayerFromPath(r.path, false);
+            m_useNextStyle = false;
+            if (!added.isEmpty()) {
+                emit analysisFinished(false, added);
+                return;
+            }
+            const QString id = layerIdForSource(r.path);
+            if (!id.isEmpty()) {
+                setLayerOpacity(id, 0.7);
+                zoomToLayer(id);
+            }
+            m_overlap = QVariantMap{{"method", r.method}, {"job", r.job}, {"photos", r.photos}, {"skipped", r.skipped},
+                                    {"area", r.area}, {"median", r.median}, {"share2", r.share2}, {"share3", r.share3},
+                                    {"share5", r.share5}, {"share9", r.share9}, {"cell", r.cell}, {"note", r.note}, {"path", r.path}};
+            emit overlapChanged();
+            QString verdict = r.share3 < 0.9 ? QStringLiteral(" Участков, видимых меньше чем с 3 снимков, много: там возможны дыры и искажения.")
+                                             : r.median < 5 ? QStringLiteral(" Перекрытие небольшое: для деревьев и зданий лучше 70–80 % (медиана ≥ 9 снимков).")
+                                                            : QString();
+            emit analysisFinished(true, QStringLiteral("Перекрытие (%1): медиана %2 снимков на точку; ≥ 3 снимков — %3 %, ≥ 5 — %4 %, ≥ 9 — %5 % площади %6.%7 %8")
+                                            .arg(r.method == QLatin1String("job") ? QStringLiteral("по реконструкции задания ") + r.job
+                                                                                   : QStringLiteral("оценка по EXIF"))
+                                            .arg(num(r.median, 0), num(r.share3 * 100, 1), num(r.share5 * 100, 1), num(r.share9 * 100, 1), formatArea(r.area))
+                                            .arg(verdict, r.note));
+            emit repaint();
         }, Qt::QueuedConnection);
     });
     return {};

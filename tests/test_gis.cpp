@@ -20,6 +20,9 @@
 #include "PhotoModel.h"
 #include "RasterSource.h"
 #include "VectorSource.h"
+#include "WebTiles.h"
+#include <QSignalSpy>
+#include <QUrl>
 
 namespace {
 constexpr double Pi = 3.14159265358979323846;
@@ -474,6 +477,93 @@ private slots:
         QVERIFY(!reopened.basemapVisible());
         QVERIFY(reopened.layers().first().basemap);
     }
+    // Online basemap: tiles of an XYZ server (here local files, no network) fetched as the view
+    // needs them, cached, reprojected into the map's UTM; built-in servers only after their
+    // terms are accepted; the attribution is shown; remembered in map.json.
+    void onlineBasemap()
+    {
+        QTemporaryDir tmp;
+        const QString project = tmp.filePath(QStringLiteral("p")), tiles = tmp.filePath(QStringLiteral("tiles"));
+        QVERIFY(QDir().mkpath(project));
+        webtiles::TileStore::instance()->setCacheDirectory(tmp.filePath(QStringLiteral("cache")));
+        // Zoom 17 tiles around (-92.0°, 46.83°), each filled with a colour that encodes its x, y.
+        const int z = 17, n = 1 << z;
+        const double lon0 = -92.0, lat0 = 46.83;
+        auto tileOf = [n](double lon, double lat, int *x, int *y) {
+            const double r = lat * 3.14159265358979 / 180;
+            *x = int(std::floor((lon + 180) / 360 * n));
+            *y = int(std::floor((1 - std::log(std::tan(r) + 1 / std::cos(r)) / 3.14159265358979) / 2 * n));
+        };
+        int cx, cy;
+        tileOf(lon0, lat0, &cx, &cy);
+        for (int dy = -3; dy <= 3; ++dy)
+            for (int dx = -3; dx <= 3; ++dx) {
+                QImage t(256, 256, QImage::Format_RGB32);
+                t.fill(QColor((cx + dx) % 256, (cy + dy) % 256, 77));
+                const QString path = QStringLiteral("%1/%2/%3/%4.png").arg(tiles).arg(z).arg(cx + dx).arg(cy + dy);
+                QDir().mkpath(QFileInfo(path).absolutePath());
+                QVERIFY(t.save(path));
+            }
+        const QString id = QStringLiteral("custom:") + QUrl::fromLocalFile(tiles).toString() + QStringLiteral("/{z}/{x}/{y}.png");
+        // A view of ~200 m in UTM 15N centred on the tiles.
+        Crs utm = Crs::fromEpsg(32615);
+        double ux = lon0, uy = lat0;
+        QVERIFY(CoordinateTransform(Crs::wgs84(), utm).transform(ux, uy));
+        const webtiles::Provider p = webtiles::provider(id);
+        QVERIFY(p.isValid());
+        webtiles::WebRasterSource source(p, utm, QPointF(ux, uy));
+        QVERIFY2(source.isValid(), qPrintable(source.error()));
+        const QRectF view(ux - 100, uy - 100, 200, 200);
+        QSignalSpy arrived(webtiles::TileStore::instance(), &webtiles::TileStore::arrived);
+        source.renderRegion(view, QSize(200, 200));   // queues the tiles it needs
+        QTRY_VERIFY_WITH_TIMEOUT(webtiles::TileStore::instance()->pending() == 0 && arrived.count() > 0, 10000);
+        const QImage image = source.renderRegion(view, QSize(200, 200));
+        // Every pixel shows the tile its position falls into (reprojection UTM → Web Mercator).
+        CoordinateTransform toWgs(utm, Crs::wgs84());
+        int checked = 0, right = 0;
+        for (int py = 5; py < 200; py += 19)
+            for (int px = 5; px < 200; px += 19) {
+                double x = view.left() + (px + 0.5), y = view.bottom() - (py + 0.5);
+                QVERIFY(toWgs.transform(x, y));
+                int tx, ty;
+                tileOf(x, y, &tx, &ty);
+                const QColor c = image.pixelColor(px, py);
+                ++checked;
+                if (qAbs(c.red() - tx % 256) <= 1 && qAbs(c.green() - ty % 256) <= 1 && c.alpha() == 255) ++right;
+            }
+        QVERIFY2(right >= checked - 3, qPrintable(QStringLiteral("%1 of %2").arg(right).arg(checked)));   // edges of tiles may blend
+        QVERIFY(QFileInfo::exists(tmp.filePath(QStringLiteral("cache"))));   // downloaded tiles are kept
+
+        // In the map: built-in servers need their terms accepted first; a custom one does not.
+        {
+            MapService service;
+            service.setViewSize(QSizeF(800, 600));
+            service.setProject(project, nullptr);
+            QCOMPARE(service.setMapCrs(QStringLiteral("32615")), QString());
+            QSettings().remove(QStringLiteral("basemap/accepted/osm"));
+            QVERIFY(service.setOnlineBasemap(QStringLiteral("osm")).contains(QStringLiteral("условия")));
+            QVERIFY(!service.hasBasemap());
+            QCOMPARE(service.setOnlineBasemap(id), QString());
+            QVERIFY(service.hasBasemap() && service.basemapVisible());
+            QVERIFY(service.layers().first().basemap);
+            QVERIFY(!service.basemapAttribution().isEmpty());
+            service.acceptBasemapTerms(QStringLiteral("osm"));
+            QCOMPARE(service.setOnlineBasemap(QStringLiteral("osm")), QString());   // replaces the previous one
+            int basemaps = 0;
+            for (const MapLayer &l : service.layers()) basemaps += l.basemap;
+            QCOMPARE(basemaps, 1);
+            QVERIFY(service.basemapAttribution().contains(QStringLiteral("OpenStreetMap")));
+            service.setProject(QString(), nullptr);
+        }
+        MapService reopened;
+        reopened.setViewSize(QSizeF(800, 600));
+        reopened.setProject(project, nullptr);
+        QVERIFY(reopened.hasBasemap());
+        QCOMPARE(reopened.layers().first().source, QStringLiteral("web:osm"));
+        QVERIFY(reopened.layers().first().raster);
+        QSettings().remove(QStringLiteral("basemap/accepted/osm"));
+    }
+
     void mapServiceMeasuresDrawsAndPersists()
     {
         QTemporaryDir tmp;

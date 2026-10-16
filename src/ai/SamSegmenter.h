@@ -7,6 +7,7 @@
 #include <QSize>
 #include <QVector>
 #include <memory>
+#include <mutex>
 
 // Interactive segmentation with a Segment Anything model exported to ONNX (MobileSAM): the image
 // encoder turns an RGB image (longest side scaled to 1024) into an embedding once; the mask
@@ -27,10 +28,14 @@ public:
     // Checks the files of the card (SHA-256) and opens the encoder and the decoder.
     bool load(const ModelCard &card, QString *error);
     bool isLoaded() const;
-    // The slow step: the embedding of `image` (any size, RGB).
-    bool setImage(const QImage &image, QString *error);
+    // The slow step: the embedding of `image` (any size, RGB). `key` names the image for
+    // imageKey(): users sharing one segmenter re-encode only when it holds another image.
+    bool setImage(const QImage &image, QString *error, const QString &key = {});
     bool hasImage() const;
     QSize imageSize() const;
+    QString imageKey() const;
+    // Held by whoever encodes and decodes with a shared segmenter.
+    std::mutex &mutex();
 
     struct Result
     {
@@ -45,6 +50,8 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> d;
+    std::mutex m_mutex;
+    QString m_imageKey;
 };
 
 // The segmenter of `card`, loaded once and shared (loading checks SHA-256 and builds the ONNX

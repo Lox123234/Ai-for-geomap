@@ -19,6 +19,8 @@
 #include "MapService.h"
 #include "MapView.h"
 #include "OdmEngine.h"
+#include "PhotoMasks.h"
+#include "SurveyControl.h"
 #include "Platform.h"
 #include "ProcessingService.h"
 #include "ProjectManager.h"
@@ -27,6 +29,7 @@
 #include "Scene3DService.h"
 #include "ThumbnailProvider.h"
 #include "View3DItem.h"
+#include "WebTiles.h"
 #include "WorkspaceState.h"
 
 // The user interface is a QML module in the static library GeoMapUi.
@@ -74,15 +77,28 @@ int main(int argc, char *argv[])
                      });
     // GDAL/OGR and PROJ; data folders next to the executable in deployed builds.
     GisEnvironment::initialize(QCoreApplication::applicationDirPath());
+    // Tiles of online basemaps, shared by all projects.
+    webtiles::TileStore::instance()->setCacheDirectory(QDir(Platform::dataDirectory()).filePath(QStringLiteral("cache/tiles")));
     // Local AI models (cards in <app>/models and <data folder>/models); before the map that uses them.
     ai::AiService aiModels;
     MapService map;
     map.setAi(&aiModels);
+    // Masks of the photos for the reconstruction (AI selection on the photo).
+    PhotoMasks photoMasks(&aiModels);
+    QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &photoMasks, &PhotoMasks::setProject);
     // After the photo model was reset (projectChanged), unlike projectDirectoryChanged.
     QObject::connect(&projects, &ProjectManager::projectChanged, &map, [&map, &projects] {
         if (projects.projectPath() != map.projectDirectory()) map.setProject(projects.projectPath(), projects.photoModel());
     });
     QObject::connect(&projects, &ProjectManager::photosChanged, &map, &MapService::photosChanged);
+    // Results of a job being deleted leave the map first (Windows keeps open files).
+    QObject::connect(&processing, &ProcessingService::releaseDirectory, &map, &MapService::releaseDirectory, Qt::DirectConnection);
+    // Ground control points, check points, calibration and scale bars (gcp.json).
+    SurveyControl survey;
+    QObject::connect(&projects, &ProjectManager::projectChanged, &survey, [&survey, &projects, &map] {
+        survey.setProject(projects.projectPath(), projects.photoModel(), &map);
+    });
+    QObject::connect(&map, &MapService::markersChanged, &survey, &SurveyControl::changed);
     QObject::connect(&projects, &ProjectManager::selectionChanged, &map,
                      [&map, &projects] { map.setSelectedPhoto(projects.selectedIndex()); });
     qmlRegisterType<MapView>("GeoMapAI.Map", 1, 0, "MapView");
@@ -99,6 +115,7 @@ int main(int argc, char *argv[])
     AppLog appLog(QDir(Platform::dataDirectory()).filePath(QStringLiteral("logs")));
     AppInfo appInfo(appLog.logDirectory());
     ProjectTreeModel projectTree(&projects, &processing, &map);
+    projectTree.setSurvey(&survey);
     ProjectTreeFilter projectTreeView;
     projectTreeView.setSourceModel(&projectTree);
     connectJournal(&appLog, &projects, &processing, &map);
@@ -118,6 +135,8 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("scene3d", &scene3d);
     engine.rootContext()->setContextProperty("exporter", &exporter);
     engine.rootContext()->setContextProperty("aiModels", &aiModels);
+    engine.rootContext()->setContextProperty("photoMasks", &photoMasks);
+    engine.rootContext()->setContextProperty("survey", &survey);
     engine.rootContext()->setContextProperty("commands", &commands);
     engine.rootContext()->setContextProperty("workspace", &workspace);
     engine.rootContext()->setContextProperty("appLog", &appLog);

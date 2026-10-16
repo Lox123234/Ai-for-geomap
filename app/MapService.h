@@ -112,9 +112,11 @@ class MapService final : public QObject
     // Saved measurements of the project (measurements.json): name, kind, values, method, CRS, geometry.
     Q_PROPERTY(QVariantList measurements READ measurementsForQml NOTIFY measurementsChanged)
     Q_PROPERTY(bool canSaveMeasurement READ canSaveMeasurement NOTIFY measurementChanged)
-    // Offline background map from a file (no tiles are downloaded).
+    // Background map: online (XYZ tiles of a provider whose terms the user accepted, downloaded as
+    // the view needs them) or from a file (MBTiles, GeoPackage, GeoTIFF).
     Q_PROPERTY(bool hasBasemap READ hasBasemap NOTIFY layersChanged)
     Q_PROPERTY(bool basemapVisible READ basemapVisible NOTIFY layersChanged)
+    Q_PROPERTY(QString basemapAttribution READ basemapAttribution NOTIFY layersChanged)
     Q_PROPERTY(QString shownMeasurement READ shownMeasurement NOTIFY measurementsChanged)
     // Selection by click with a local AI model (tool "aiSelect"): the contour of the object under
     // the click on the top RGB raster, shown as a candidate until it is added to the drawings.
@@ -136,8 +138,11 @@ class MapService final : public QObject
     Q_PROPERTY(bool showMarkers READ showMarkers WRITE setShowMarkers NOTIFY viewOptionsChanged)
     Q_PROPERTY(QVariantList markers READ markersForQml NOTIFY markersChanged)
     Q_PROPERTY(int selectionCount READ selectionCount NOTIFY drawingsChanged)
+    // Last image overlap map: {method, job, photos, area, median, share2, share3, share5, share9, note, path}.
+    Q_PROPERTY(QVariantMap overlapInfo READ overlapInfo NOTIFY overlapChanged)
 
 public:
+    QVariantMap overlapInfo() const { return m_overlap; }
     explicit MapService(QObject *parent = nullptr);
     ~MapService() override;
 
@@ -203,6 +208,9 @@ public:
     Q_INVOKABLE QString addLayerFile(const QString &path) { return addLayerFromPath(path); }
     QString addLayerFromPath(const QString &path, bool zoom = true);
     Q_INVOKABLE void removeLayer(const QString &id);
+    // Layers of files inside `directory` are removed (their files closed), e.g. before that
+    // processing job is deleted: open rasters would keep Windows from deleting them.
+    void releaseDirectory(const QString &directory);
     Q_INVOKABLE void moveLayer(const QString &id, int delta);   // +1 = up (drawn later)
     Q_INVOKABLE void setLayerVisible(const QString &id, bool visible);
     Q_INVOKABLE void setLayerOpacity(const QString &id, double opacity);
@@ -265,6 +273,11 @@ public:
     Q_INVOKABLE QString addBasemap(const QUrl &url);
     QString addBasemapFromPath(const QString &path);
     Q_INVOKABLE void setBasemapVisible(bool visible);
+    Q_INVOKABLE QVariantList basemapProviders() const;   // {id, title, kind, attribution, terms, accepted, current}
+    Q_INVOKABLE void acceptBasemapTerms(const QString &providerId);
+    Q_INVOKABLE QString setOnlineBasemap(const QString &providerId);   // "" or the reason
+    QString basemapAttribution() const;
+    void webTilesArrived();
     bool hasBasemap() const;
     bool basemapVisible() const;
     QVariantList measurementsForQml() const;
@@ -304,6 +317,10 @@ public:
                                         int red = 1, int green = 2, int blue = 3, int nir = 4);
     Q_INVOKABLE QString checkRasterExpression(const QString &layerId, const QString &expression) const;
     Q_INVOKABLE QVariantList rasterLayers() const;   // {id, name, bands, rgb} of the raster layers (not elevation-only)
+    // Image overlap map into <project>/analysis: from the newest job with a reconstruction, else
+    // estimated from the photos' EXIF/XMP before alignment. "" when started, else the reason;
+    // the result arrives as analysisFinished with the layer on the map and the statistics.
+    Q_INVOKABLE QString computeOverlap();
     // Everything the analysis produced (rasters, contours, measurements, drawings, the profile and
     // the cross sections) copied into a new folder inside `folder`. "" or the reason; on success
     // analysisFinished(true, …) names the folder.
@@ -411,6 +428,7 @@ signals:
     void viewshedSettingsChanged();
     void viewOptionsChanged();
     void markersChanged();
+    void overlapChanged();
     void cloudEditFinished(bool ok, const QString &message, const QString &path);
     void repaint();
     void errorOccurred(const QString &message);
@@ -483,6 +501,7 @@ private:
     qint64 m_nextFeatureId = 1;
     QUndoStack m_undo;
     QTimer m_saveTimer;
+    QTimer m_webRepaint;
     bool m_exporting = false;
     bool m_loadingState = false;
     qint64 m_lastValueQuery = 0;
@@ -551,4 +570,5 @@ private:
     bool m_showMarkers = true;
     QVector<Marker> m_markers;
     int m_nextMarker = 1;
+    QVariantMap m_overlap;
 };

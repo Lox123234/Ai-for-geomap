@@ -87,7 +87,7 @@ QVariantMap PhotoModel::details(int row) const
     if (row < 0 || row >= m_photos.size()) return {};
     const Photo &p = m_photos.at(row);
     return {
-        {"id", p.id}, {"name", p.name},
+        {"id", p.id}, {"name", p.name}, {"file", p.file},
         {"url", QUrl::fromLocalFile(QDir(m_baseDirectory).filePath(p.file))},
         {"width", p.width}, {"height", p.height}, {"bytes", p.bytes},
         {"camera", (p.cameraMake + " " + p.cameraModel).trimmed()},

@@ -110,7 +110,9 @@ const QVector<Option> &options()
                   QStringLiteral("σ"), QStringLiteral("Удаляет точки дальше N стандартных отклонений. 0 — выключен, по умолчанию 5; меньше — строже.")});
         o.append({QStringLiteral("pc-sample"), dense, QStringLiteral("Прореживание облака"), Option::Number, {}, {}, 0, 100,
                   QStringLiteral("м"), QStringLiteral("Одна точка в радиусе N м. 0 — без прореживания.")});
-        o.append({QStringLiteral("pc-classify"), dense, QStringLiteral("Классифицировать точки (земля)"), Option::Flag});
+        o.append({QStringLiteral("pc-classify"), dense, QStringLiteral("Классифицировать точки (земля)"), Option::Flag, {}, {}, 0, 0, {},
+                  QStringLiteral("Земля — фильтром SMRF; растительность, здания и машины — моделью OpenPointClass, которую ODM скачивает "
+                                 "сам из интернета при первом использовании (0,6 МБ, AGPL-3.0).")});
         o.append({QStringLiteral("pc-las"), dense, QStringLiteral("Сохранить облако также в LAS"), Option::Flag});
         o.append({QStringLiteral("mesh-size"), model, QStringLiteral("Вершин в модели, не больше"), Option::Integer, {}, {},
                   10000, 50000000, {}, QStringLiteral("По умолчанию 200 000.")});
@@ -131,7 +133,9 @@ const QVector<Option> &options()
                   QStringLiteral("Отсекает фон и горизонт. Нужен GPS.")});
         o.append({QStringLiteral("crop"), area, QStringLiteral("Обрезка краёв"), Option::Number, {}, {}, 0, 1000, QStringLiteral("м"),
                   QStringLiteral("По умолчанию 3 м; 0 — без обрезки.")});
-        o.append({QStringLiteral("sky-removal"), area, QStringLiteral("Удаление неба (ИИ, экспериментально)"), Option::Flag});
+        o.append({QStringLiteral("sky-removal"), area, QStringLiteral("Удаление неба (ИИ ODM, экспериментально)"), Option::Flag, {}, {}, 0, 0, {},
+                  QStringLiteral("ODM скачивает модель SkyRemoval (AGPL-3.0) из интернета при первом использовании. Без загрузок: маски снимков "
+                                 "GeoMap AI (Правка → Маска снимка).")});
         o.append({QStringLiteral("max-concurrency"), res, QStringLiteral("Потоков"), Option::Integer, {}, {}, 1, 1024, {},
                   QStringLiteral("По умолчанию — по числу ядер и объёму памяти (около 1 ГБ на поток).")});
         o.append({QStringLiteral("split"), res, QStringLiteral("Разбиение: снимков на подмодель"), Option::Integer, {}, {}, 1, 100000, {},
@@ -572,13 +576,21 @@ QProcessEnvironment OdmEngine::nativeEnvironment(const QString &root, const QStr
 
 QStringList OdmEngine::nativeArguments(const ProcessingJob &job, const QString &root, const QString &projectPath)
 {
+    // Inputs GeoMap AI puts into the job folder: ground control points and a camera calibration,
+    // passed through the tool-safe project path the engine works in.
+    QStringList inputs;
+    const QDir jobDir(QDir(projectPath).filePath(job.id));
+    if (QFileInfo::exists(jobDir.filePath(QStringLiteral("gcp_list.txt"))) && !job.arguments.contains(QStringLiteral("--gcp")))
+        inputs << QStringLiteral("--gcp") << QDir::toNativeSeparators(jobDir.filePath(QStringLiteral("gcp_list.txt")));
+    if (QFileInfo::exists(jobDir.filePath(QStringLiteral("geomap_cameras.json"))) && !job.arguments.contains(QStringLiteral("--cameras")))
+        inputs << QStringLiteral("--cameras") << QDir::toNativeSeparators(jobDir.filePath(QStringLiteral("geomap_cameras.json")));
 #ifdef Q_OS_WIN
     return QStringList{QStringLiteral("-X"), QStringLiteral("utf8"), QDir::toNativeSeparators(QDir(root).filePath(QStringLiteral("run.py"))),
                        QStringLiteral("--project-path"), QDir::toNativeSeparators(projectPath), job.id}
-           + job.arguments;
+           + job.arguments + inputs;
 #else
     Q_UNUSED(root)
-    return QStringList{QStringLiteral("--project-path"), projectPath, job.id} + job.arguments;   // after run.sh
+    return QStringList{QStringLiteral("--project-path"), projectPath, job.id} + job.arguments + inputs;   // after run.sh
 #endif
 }
 
@@ -1055,6 +1067,51 @@ void OdmEngine::handleOutput()
     }
 }
 
+QString OdmEngine::explainFailure(const QStringList &recent, const QStringList &errors, const QString &stage, int exitCode)
+{
+    // The program ODM ran last ("[INFO]    running pdal translate …") is the one that failed.
+    QString command;
+    for (int i = int(recent.size()) - 1; i >= 0 && command.isEmpty(); --i) {
+        const int at = recent[i].indexOf(QLatin1String("running "));
+        if (at >= 0 && recent[i].contains(QLatin1String("INFO"))) command = recent[i].mid(at + 8).trimmed();
+    }
+    QString tool = command.section(QLatin1Char(' '), 0, 0).remove(QLatin1Char('"'));
+    tool = QFileInfo(tool).completeBaseName();
+    const QString all = (errors + recent.mid(qMax(0, int(recent.size()) - 30))).join(QLatin1Char('\n'));
+    const QString where = stage.isEmpty() ? QString() : QStringLiteral(" на этапе «%1»").arg(stage);
+    if (all.contains(QLatin1String("No space left"), Qt::CaseInsensitive) || all.contains(QLatin1String("Errno 28")))
+        return QStringLiteral("Обработка остановлена%1: на диске кончилось место. Освободите место и нажмите «Продолжить».").arg(where);
+    if (all.contains(QLatin1String("Not enough")) && all.contains(QLatin1String("images"), Qt::CaseInsensitive))
+        return QStringLiteral("Снимков недостаточно для реконструкции%1: нужно больше снимков с перекрытием 70–80 %.").arg(where);
+    QString what;
+    if (tool == QLatin1String("pdal")) {
+        what = command.contains(QLatin1String("smrf")) || command.contains(QLatin1String("classify"))
+                   ? QStringLiteral("PDAL при классификации точек земли (нужна для DTM)")
+                   : command.contains(QLatin1String("writers.gdal")) || command.contains(QLatin1String("dem"))
+                         ? QStringLiteral("PDAL при построении модели высот")
+                         : QStringLiteral("PDAL при обработке облака точек");
+    } else if (tool.contains(QLatin1String("Densify"), Qt::CaseInsensitive) || tool.contains(QLatin1String("OpenMVS"), Qt::CaseInsensitive)) {
+        what = QStringLiteral("OpenMVS при построении плотного облака (чаще всего — нехватка памяти)");
+    } else if (tool.contains(QLatin1String("texrecon"), Qt::CaseInsensitive)) {
+        what = QStringLiteral("текстурирование модели");
+    } else if (tool.contains(QLatin1String("orthophoto"), Qt::CaseInsensitive)) {
+        what = QStringLiteral("построение ортофотоплана ODM");
+    } else if (!tool.isEmpty()) {
+        what = QStringLiteral("программа %1").arg(tool);
+    }
+    const bool crash = all.contains(QLatin1String("strange values")) || exitCode == 139 || exitCode == 134 || exitCode == -1073741819
+                       || quint32(exitCode) == 3221225477u;
+    QString text = what.isEmpty() ? QStringLiteral("OpenDroneMap остановился с ошибкой%1 (код %2).").arg(where).arg(exitCode)
+                                  : QStringLiteral("Сбой%1: %2%3.").arg(where, what, crash ? QStringLiteral(" завершилась аварийно") : QString());
+    if (what.contains(QLatin1String("DTM")))
+        text += QStringLiteral(" Нажмите «Продолжить» — повтор с этого этапа обычно проходит; если ошибка повторится, запустите обработку без DTM.");
+    else if (what.contains(QLatin1String("памят")))
+        text += QStringLiteral(" Уменьшите качество облака или число потоков и нажмите «Продолжить».");
+    else
+        text += QStringLiteral(" Нажмите «Продолжить», чтобы повторить с этого этапа; подробности — во вкладке «Журнал».");
+    return text;
+}
+
 void OdmEngine::handleRunFinished(int exitCode, QProcess::ExitStatus status)
 {
     if (!m_run) return;
@@ -1078,9 +1135,7 @@ void OdmEngine::handleRunFinished(int exitCode, QProcess::ExitStatus status)
         message = QStringLiteral("OpenDroneMap остановлен из-за нехватки памяти. Попробуйте профиль попроще, меньше потоков "
                                  "(«Ресурсы» → «Потоков») или разбиение на подмодели.");
     } else {
-        const QString detail = !m_errors.isEmpty() ? m_errors.constLast()
-                             : !m_recent.isEmpty() ? m_recent.constLast() : QString();
-        message = QStringLiteral("ODM завершился с ошибкой (код %1). %2").arg(exitCode).arg(detail);
+        message = explainFailure(m_recent, m_errors, stageTitle(m_stage), exitCode);
     }
     m_run->deleteLater();
     m_run = nullptr;

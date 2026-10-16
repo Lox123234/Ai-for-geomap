@@ -46,7 +46,6 @@ Dialog {
         RowLayout {
             FlatButton { text: "Проверить снова"; compact: true; onClicked: dialog.checkResult = projects.checkProject() }
             Item { Layout.fillWidth: true }
-            Label { text: "Проверка только читает файлы и ничего не меняет."; color: Theme.faint; font.pixelSize: 10 }
         }
     }
 }

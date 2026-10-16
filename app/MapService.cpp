@@ -1,4 +1,5 @@
 #include "MapService.h"
+#include "WebTiles.h"
 #include "AiService.h"
 #include "Geodesy.h"
 #include "GisEnvironment.h"
@@ -22,6 +23,7 @@
 #include <QPainterPath>
 #include <QPdfWriter>
 #include <QSaveFile>
+#include <QSettings>
 #include <QTextStream>
 #include <QThread>
 #include <QThreadPool>
@@ -408,6 +410,19 @@ MapService::MapService(QObject *parent)
     : QObject(parent), m_model(new LayerListModel(this)), m_tiles(new TileCache(this))
 {
     connect(m_tiles, &TileCache::tileReady, this, &MapService::repaint);
+    // Online basemap: tiles that arrive redraw its part of the map (at most four times a second).
+    m_webRepaint.setSingleShot(true);
+    m_webRepaint.setInterval(250);
+    connect(&m_webRepaint, &QTimer::timeout, this, [this] {
+        bool any = false;
+        for (MapLayer &l : m_layers)
+            if (l.basemap && l.source.startsWith(QLatin1String("web:"))) {
+                ++l.version;
+                any = true;
+            }
+        if (any) emit repaint();
+    });
+    connect(webtiles::TileStore::instance(), &webtiles::TileStore::arrived, this, &MapService::webTilesArrived);
     connect(&m_undo, &QUndoStack::indexChanged, this, &MapService::undoChanged);
     connect(&m_undo, &QUndoStack::cleanChanged, this, &MapService::undoChanged);
     m_saveTimer.setSingleShot(true);
@@ -475,12 +490,14 @@ QString MapService::cacheDirectory() const
 
 QString MapService::relativeSource(const QString &path) const
 {
+    if (path.startsWith(QLatin1String("web:"))) return path;   // an online basemap, not a file
     const QString rel = QDir(m_project).relativeFilePath(path);
     return rel.startsWith(QLatin1String("..")) || QDir::isAbsolutePath(rel) ? QDir::cleanPath(path) : rel;
 }
 
 QString MapService::resolveSource(const QString &path) const
 {
+    if (path.startsWith(QLatin1String("web:"))) return path;
     return QDir::isAbsolutePath(path) ? path : QDir(m_project).filePath(path);
 }
 
@@ -525,6 +542,7 @@ void MapService::setProject(const QString &directory, const PhotoModel *photos)
     m_shownMeasurement.clear();
     m_multiSelection.clear();
     m_markers.clear();
+    m_overlap.clear();
     m_showGrid = false;
     m_showMarkers = true;
     ++m_aiGeneration;
@@ -878,6 +896,29 @@ void MapService::prepareRaster(int index)
     l.raster.reset();
     l.needsCrs = false;
     l.status.clear();
+    if (l.source.startsWith(QLatin1String("web:"))) {   // online basemap: tiles drawn as the view needs them
+        const webtiles::Provider provider = webtiles::provider(l.source.mid(4));
+        if (!m_crs.isValid()) {
+            l.status = QStringLiteral("Подложка появится, когда у карты будет система координат.");
+            return;
+        }
+        auto web = std::make_shared<webtiles::WebRasterSource>(provider, m_crs, m_center);   // ±100 km around the view
+        if (!web->isValid()) {
+            l.status = web->error();
+            return;
+        }
+        l.rasterInfo = RasterInfo{};
+        l.rasterInfo.valid = true;
+        l.rasterInfo.path = l.source;
+        l.rasterInfo.driver = QStringLiteral("XYZ");
+        l.rasterInfo.bands = 4;
+        l.rasterInfo.alphaBand = 4;
+        l.rasterInfo.dataType = QStringLiteral("Byte");
+        l.rasterInfo.hasGeoTransform = true;
+        l.rasterInfo.crs = Crs::fromEpsg(3857);
+        l.raster = web;
+        return;
+    }
     l.rasterInfo = RasterInfo::read(l.source);
     if (!l.rasterInfo.valid) {
         l.status = l.rasterInfo.error;
@@ -1099,6 +1140,16 @@ void MapService::removeLayer(const QString &id)
     emit selectionChanged();
     scheduleSave();
     emit repaint();
+}
+
+void MapService::releaseDirectory(const QString &directory)
+{
+    const QString prefix = QDir::cleanPath(QDir(directory).absolutePath()) + QLatin1Char('/');
+    QStringList ids;
+    for (const MapLayer &l : std::as_const(m_layers))
+        if (!l.source.isEmpty() && QDir::cleanPath(l.source).startsWith(prefix, Qt::CaseInsensitive)) ids << l.id;
+    for (const QString &id : ids) removeLayer(id);
+    if (!ids.isEmpty()) m_tiles->clear();
 }
 
 void MapService::moveLayer(const QString &id, int delta)
@@ -1972,9 +2023,15 @@ void MapService::runAiSelection(int index)
         ai::SamSegmenter::Result result;
         QVector<ai::MaskPolygon> polygons;
         std::shared_ptr<ai::SamSegmenter> segmenter = ai::cachedSegmenter(card, &error);
-        if (segmenter && encode) {
-            encoded = segmenter->setImage(source->renderRegion(window, size), &error);
+        // The segmenter is shared (photo masks use it too): held while it encodes and decodes,
+        // and re-encoded only when it holds another image.
+        std::unique_lock<std::mutex> lock;
+        if (segmenter) lock = std::unique_lock<std::mutex>(segmenter->mutex());
+        if (segmenter && segmenter->imageKey() != key) {
+            encoded = segmenter->setImage(source->renderRegion(window, size), &error, key);
             if (!encoded) segmenter.reset();
+        } else if (segmenter) {
+            encoded = true;
         }
         if (segmenter) {
             result = segmenter->segment(pixels, labels);
@@ -1985,7 +2042,7 @@ void MapService::runAiSelection(int index)
         const float score = result.score;
         QMetaObject::invokeMethod(this, [this, key, encode, encoded, error, polygons, pixels, labels, window, size, generation, seconds, score] {
             m_aiBusy = false;
-            if (encode) m_aiImageKey = encoded ? key : QString();
+            m_aiImageKey = encoded ? key : QString();
             if (generation != m_aiGeneration) {   // cleared, another tool or another project meanwhile
                 m_aiStatus.clear();
                 emit aiChanged();
@@ -3126,6 +3183,67 @@ QString MapService::addBasemapFromPath(const QString &path)
     emit layersChanged();
     emit repaint();
     return {};
+}
+
+QVariantList MapService::basemapProviders() const
+{
+    QVariantList list;
+    QSettings settings;
+    QString current;
+    for (const MapLayer &l : m_layers)
+        if (l.basemap && l.source.startsWith(QLatin1String("web:"))) current = l.source.mid(4);
+    for (const webtiles::Provider &p : webtiles::providers())
+        list << QVariantMap{{"id", p.id}, {"title", p.title}, {"kind", p.kind}, {"attribution", p.attribution}, {"terms", p.termsUrl},
+                            {"accepted", settings.value(QStringLiteral("basemap/accepted/") + p.id).toBool()}, {"current", p.id == current}};
+    return list;
+}
+
+void MapService::acceptBasemapTerms(const QString &providerId)
+{
+    QSettings().setValue(QStringLiteral("basemap/accepted/") + providerId, true);
+}
+
+QString MapService::setOnlineBasemap(const QString &providerId)
+{
+    if (m_project.isEmpty()) return QStringLiteral("Откройте проект.");
+    const webtiles::Provider p = webtiles::provider(providerId);
+    if (!p.isValid()) return QStringLiteral("Неизвестная подложка.");
+    if (!providerId.startsWith(QLatin1String("custom:")) && !QSettings().value(QStringLiteral("basemap/accepted/") + providerId).toBool())
+        return QStringLiteral("Сначала примите условия использования подложки.");
+    if (!m_crs.isValid()) return QStringLiteral("У карты ещё нет системы координат: добавьте снимки с GPS или задайте её (Проект → Система координат карты).");
+    // One background at a time: the previous one (online or from a file) is replaced.
+    for (int i = int(m_layers.size()) - 1; i >= 0; --i)
+        if (m_layers[i].basemap) {
+            if (m_layers[i].cancel) *m_layers[i].cancel = true;
+            m_layers.removeAt(i);
+        }
+    MapLayer l;
+    l.id = QUuid::createUuid().toString(QUuid::Id128).left(12);
+    l.type = MapLayer::Raster;
+    l.source = QStringLiteral("web:") + providerId;
+    l.name = QStringLiteral("Подложка · ") + p.title;
+    l.basemap = true;
+    m_layers.insert(0, l);
+    prepareRaster(0);
+    m_model->reset();
+    scheduleSave();
+    emit layersChanged();
+    emit repaint();
+    return m_layers[0].status.isEmpty() ? QString() : m_layers[0].status;
+}
+
+QString MapService::basemapAttribution() const
+{
+    for (const MapLayer &l : m_layers)
+        if (l.basemap && l.visible && l.source.startsWith(QLatin1String("web:"))) return webtiles::provider(l.source.mid(4)).attribution;
+    return {};
+}
+
+void MapService::webTilesArrived()
+{
+    // New tiles of an online basemap: its map tiles are drawn again (from the tile cache, cheap).
+    if (m_webRepaint.isActive()) return;
+    m_webRepaint.start();
 }
 
 bool MapService::hasBasemap() const

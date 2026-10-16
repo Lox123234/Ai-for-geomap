@@ -152,7 +152,7 @@ RasterStyle RasterStyle::automatic(const RasterInfo &info, const QVector<QPair<d
 QVariantMap RasterStyle::toVariant() const
 {
     return {{"mode", mode == Rgb ? "rgb" : "single"}, {"red", red}, {"green", green}, {"blue", blue}, {"alpha", alpha},
-            {"band", band}, {"ramp", ramp == Gray ? "gray" : ramp == Terrain ? "terrain" : ramp == Slope ? "slope" : ramp == Aspect ? "aspect" : ramp == Vegetation ? "vegetation" : ramp == Visibility ? "visibility" : "spectral"},
+            {"band", band}, {"ramp", ramp == Gray ? "gray" : ramp == Terrain ? "terrain" : ramp == Slope ? "slope" : ramp == Aspect ? "aspect" : ramp == Vegetation ? "vegetation" : ramp == Visibility ? "visibility" : ramp == Overlap ? "overlap" : "spectral"},
             {"min", min}, {"max", max}, {"rgbMin", QVariantList{rgbMin[0], rgbMin[1], rgbMin[2]}},
             {"rgbMax", QVariantList{rgbMax[0], rgbMax[1], rgbMax[2]}}, {"hillshade", hillshade}};
 }
@@ -174,6 +174,7 @@ RasterStyle RasterStyle::fromVariant(const QVariantMap &m, const RasterStyle &fa
     else if (ramp == QLatin1String("aspect")) s.ramp = Aspect;
     else if (ramp == QLatin1String("vegetation")) s.ramp = Vegetation;
     else if (ramp == QLatin1String("visibility")) s.ramp = Visibility;
+    else if (ramp == QLatin1String("overlap")) s.ramp = Overlap;
     s.min = m.value("min", s.min).toDouble();
     s.max = m.value("max", s.max).toDouble();
     const QVariantList lo = m.value("rgbMin").toList(), hi = m.value("rgbMax").toList();
@@ -206,6 +207,9 @@ QVector<QPair<double, QColor>> RasterStyle::rampStops(Ramp ramp)
                 {0.7, QColor(120, 190, 70)}, {1.0, QColor(20, 110, 40)}};
     case Visibility:   // 0 hidden, 1 visible
         return {{0.0, QColor(200, 60, 70)}, {0.49, QColor(200, 60, 70)}, {0.51, QColor(70, 210, 110)}, {1.0, QColor(70, 210, 110)}};
+    case Overlap:   // photos per point over 0…10: 1 red, 2 orange, 3–4 yellow, 5–8 green, 9+ dark green
+        return {{0.0, QColor(200, 40, 50)}, {0.15, QColor(200, 40, 50)}, {0.16, QColor(240, 140, 50)}, {0.25, QColor(240, 140, 50)},
+                {0.26, QColor(240, 215, 80)}, {0.45, QColor(240, 215, 80)}, {0.46, QColor(150, 210, 90)}, {0.85, QColor(60, 170, 80)}, {1.0, QColor(20, 110, 60)}};
     }
     return {};
 }

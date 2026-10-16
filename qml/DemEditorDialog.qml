@@ -88,10 +88,5 @@ Dialog {
             Layout.fillWidth: true; visible: dialog.resultText.length > 0; wrapMode: Text.Wrap
             text: dialog.resultText; color: dialog.resultOk ? Theme.good : Theme.bad; font.pixelSize: 12
         }
-        Label {
-            Layout.fillWidth: true; wrapMode: Text.Wrap
-            text: "Правки идут в копию модели в папке analysis проекта; она заменяет модель на карте, исходный файл не меняется. Ctrl+Z отменяет правку."
-            color: Theme.faint; font.pixelSize: 10
-        }
     }
 }

@@ -1,5 +1,6 @@
 #include "ProcessingService.h"
 #include "PhotoModel.h"
+#include "SurveyControl.h"
 #include "TrueOrthophoto.h"
 #include <QCoreApplication>
 #include <QDesktopServices>
@@ -80,7 +81,7 @@ bool linkOrCopy(const QString &source, const QString &target, bool *copied)
     return QFile::copy(source, target);
 }
 
-struct PrepareResult { QString error; int copied = 0; };
+struct PrepareResult { QString error; int copied = 0; int masks = 0; SurveyControl::JobInputs control; };
 
 // Runs on a worker thread: verifies every input photo and places it into <job>/images.
 PrepareResult prepareInput(const QString &project, const QString &jobDirectory, const QStringList &images,
@@ -110,10 +111,24 @@ PrepareResult prepareInput(const QString &project, const QString &jobDirectory, 
             return result;
         }
         if (copied) ++result.copied;
+        // Its mask (photos/<name>_mask.png: black = not used) goes with it; the engine finds it by name.
+        const QString maskName = QFileInfo(file).completeBaseName() + QStringLiteral("_mask.png");
+        const QString mask = QDir(project).filePath(QFileInfo(file).path() + QLatin1Char('/') + maskName);
+        if (QFileInfo::exists(mask)) {
+            const QString maskTarget = job.filePath(QStringLiteral("images/") + maskName);
+            QFile::remove(maskTarget);
+            bool maskCopied = false;
+            if (linkOrCopy(mask, maskTarget, &maskCopied)) ++result.masks;
+        }
     }
     if (!unreadable.isEmpty())
         result.error = QStringLiteral("Не читаются снимки (%1): %2. Удалите их из проекта или импортируйте заново.")
                            .arg(unreadable.size()).arg(sample(unreadable));
+    // Ground control points and the camera calibration of the project (gcp.json, calibration/).
+    if (result.error.isEmpty() && !cancel) {
+        result.control = SurveyControl::prepareJob(project, jobDirectory, images);
+        if (!result.control.error.isEmpty()) result.error = result.control.error;
+    }
     return result;
 }
 } // namespace
@@ -490,7 +505,19 @@ void ProcessingService::runNext()
         const QStringList images = job->images;
         QThread *thread = QThread::create([this, id, project, directory, images, cancel] {
             const PrepareResult result = prepareInput(project, directory, images, *cancel);
-            QMetaObject::invokeMethod(this, [this, id, result] { prepareFinished(id, result.error, result.copied); },
+            QStringList notes;
+            const SurveyControl::JobInputs &c = result.control;
+            if (c.gcpUsed)
+                notes << QStringLiteral("[GeoMap] Опорные точки: %1 (gcp_list.txt, привязка по ним вместо GPS снимков)").arg(c.points);
+            else if (c.points > 0 || !c.dropped.isEmpty())
+                notes << QStringLiteral("[GeoMap] Опорные точки не используются: нужно не меньше 3 точек, каждая отмечена на 3 снимках "
+                                        "задания (сейчас таких %1)").arg(c.points);
+            if (!c.dropped.isEmpty())
+                notes << QStringLiteral("[GeoMap] Отмечены меньше чем на 3 снимках задания и пропущены: %1").arg(c.dropped.join(QStringLiteral(", ")));
+            if (!c.calibration.isEmpty())
+                notes << QStringLiteral("[GeoMap] Калибровка камеры: начальные значения из задания %1 (geomap_cameras.json)")
+                             .arg(c.calibration == QLatin1String("?") ? QStringLiteral("проекта") : c.calibration);
+            QMetaObject::invokeMethod(this, [this, id, result, notes] { prepareFinished(id, result.error, result.copied, result.masks, notes); },
                                       Qt::QueuedConnection);
         });
         connect(thread, &QThread::finished, thread, &QObject::deleteLater);
@@ -499,7 +526,7 @@ void ProcessingService::runNext()
     }
 }
 
-void ProcessingService::prepareFinished(const QString &id, const QString &error, int copied)
+void ProcessingService::prepareFinished(const QString &id, const QString &error, int copied, int masks, const QStringList &notes)
 {
     if (id != m_current) return;   // stopped meanwhile
     ProcessingJob *job = findJob(id);
@@ -528,6 +555,8 @@ void ProcessingService::prepareFinished(const QString &id, const QString &error,
     writeLog(QStringLiteral("[GeoMap] Снимки подготовлены: %1%2").arg(job->images.size())
                  .arg(copied > 0 ? QStringLiteral(" (скопировано %1: жёсткие ссылки на этом диске недоступны)").arg(copied)
                                  : QString()));
+    if (masks > 0) writeLog(QStringLiteral("[GeoMap] Маски снимков: %1 (чёрные области не используются в реконструкции)").arg(masks));
+    for (const QString &note : notes) writeLog(note);
     job->startedAt = QDateTime::currentDateTime();   // of this run
     m_resumed.removeAll(id);
     ++job->runs;
@@ -719,6 +748,14 @@ QString ProcessingService::buildTrueOrthophoto(const QString &requested)
             ortho::Options options;
             const QString dtm = QDir(dir).filePath(QStringLiteral("odm_dem/dtm.tif"));
             if (QFileInfo::exists(dtm)) options.groundPath = dtm;
+            // The dense point cloud gives crowns and roofs their true outline and height.
+            const QString cloud = QDir(dir).filePath(QStringLiteral("odm_filterpoints/point_cloud.ply"));
+            const QString surface = QDir(dir).filePath(QStringLiteral("geomap/true_surface.tif"));
+            const QString surfacePartial = QDir(dir).filePath(QStringLiteral("geomap/true_surface.partial.tif"));
+            if (QFileInfo::exists(cloud)) {
+                options.pointCloudPath = cloud;
+                options.surfacePath = surfacePartial;   // the 3D view drapes the orthophoto over it
+            }
             std::atomic_int lastPercent{-1};
             options.progress = [this, cancel, &lastPercent](double v) {
                 const int percent = int(v * 100);
@@ -735,8 +772,13 @@ QString ProcessingService::buildTrueOrthophoto(const QString &requested)
             if (r.ok()) {
                 QFile::remove(target);
                 if (!QFile::rename(partial, target)) r.error = QStringLiteral("Не удалось сохранить %1").arg(QDir::toNativeSeparators(target));
+                if (QFileInfo::exists(surfacePartial)) {
+                    QFile::remove(surface);
+                    QFile::rename(surfacePartial, surface);
+                }
             } else {
                 QFile::remove(partial);
+                QFile::remove(surfacePartial);
             }
         }
         QMetaObject::invokeMethod(this, [this, id, r, cancel, project] {
@@ -821,8 +863,13 @@ bool ProcessingService::deleteJob(const QString &id)
 {
     ProcessingJob *job = findJob(id);
     if (!job || isActive(job->state) || id == m_current) return false;
+    if (id == m_orthoJob) {
+        emit errorOccurred(QStringLiteral("Для этого задания строится истинный ортофотоплан — дождитесь окончания."));
+        return false;
+    }
     const QFileInfo dir(jobDirectory(id));
     if (dir.exists()) {
+        emit releaseDirectory(dir.absoluteFilePath());   // the map closes the job's rasters first
         // Only a real directory directly inside <project>/jobs, never through a link to elsewhere.
         const QString jobsRoot = QFileInfo(QDir(m_project).filePath(JobsDir)).canonicalFilePath();
         if (jobsRoot.isEmpty() || dir.isSymLink() || dir.isJunction() || !dir.isDir() || dir.canonicalPath() != jobsRoot) {

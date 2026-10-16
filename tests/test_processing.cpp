@@ -18,12 +18,19 @@
 #include <QSettings>
 #include "Downloader.h"
 #include "GeoTiffInfo.h"
+#include "GisEnvironment.h"
 #include "MockEngine.h"
 #include "OdmEngine.h"
 #include "PhotoModel.h"
 #include "Platform.h"
 #include "ProcessingService.h"
+#include "SurveyControl.h"
 #include "TestImages.h"
+#include "TrueOrthophoto.h"
+#include "Overlap.h"
+#include <gdal.h>
+#include <QUrl>
+#include <cmath>
 
 namespace {
 bool writeFile(const QString &path, const QByteArray &bytes)
@@ -193,6 +200,8 @@ private slots:
         QCoreApplication::setOrganizationName(QStringLiteral("GeoMapAI-Tests"));
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_settings.path());
+        // Coordinate systems of the ground control points (PROJ database).
+        QVERIFY2(GisEnvironment::initialize(QCoreApplication::applicationDirPath()), qPrintable(GisEnvironment::problems().join('\n')));
     }
 
     void preflightReportsRealProblems()
@@ -333,6 +342,271 @@ private slots:
         QCOMPARE(reopened.job(id).state, JobState::Completed);
         QCOMPARE(reopened.job(id).outputs.size(), 2);
         QVERIFY(record->cleaned.isEmpty());
+    }
+
+    // A photo's mask (photos/<name>_mask.png) is placed next to it for the engine.
+    void masksGoWithTheirPhotos()
+    {
+        Fixture f;
+        QVERIFY(f.init(2));
+        QVERIFY(f.checkEnvironment());
+        QImage mask(8, 8, QImage::Format_Grayscale8);
+        mask.fill(255);
+        QVERIFY(mask.save(QDir(f.project).filePath(QStringLiteral("photos/p1_mask.png"))));
+        const QString id = f.service->startJob(QStringLiteral("fast"));
+        QVERIFY(!id.isEmpty());
+        QTRY_COMPARE(f.record->started, QStringList{id});
+        QCOMPARE(readFile(f.jobFile(id, QStringLiteral("images/p1_mask.png"))), readFile(QDir(f.project).filePath(QStringLiteral("photos/p1_mask.png"))));
+        QVERIFY(!QFileInfo::exists(f.jobFile(id, QStringLiteral("images/p0_mask.png"))));
+        QTRY_VERIFY(QString::fromUtf8(readFile(f.jobFile(id, QStringLiteral("log.txt")))).contains(QStringLiteral("Маски снимков: 1")));
+    }
+
+    // Ground control points go to the job as gcp_list.txt (≥ 3 points on ≥ 3 of its photos).
+    void controlGoesWithTheJob()
+    {
+        Fixture f;
+        QVERIFY(f.init(4));
+        QVERIFY(f.checkEnvironment());
+        SurveyControl survey;
+        survey.setProject(f.project, &f.photos);
+        QCOMPARE(survey.setCrs(QStringLiteral("EPSG:32632")), QString());
+        for (int i = 0; i < 4; ++i) {
+            const QString id = survey.addPoint(QStringLiteral("ОП %1").arg(i + 1), 500000 + i, 5000000 + i, 100);
+            for (int k = 0; k < (i == 3 ? 2 : 3); ++k) survey.setObservation(id, QStringLiteral("photos/p%1.jpg").arg(k), 0.25 + 0.1 * i, 0.5);
+        }
+        const QString id = f.service->startJob(QStringLiteral("fast"));
+        QVERIFY(!id.isEmpty());
+        QTRY_COMPARE(f.record->started, QStringList{id});
+        const QStringList lines = QString::fromUtf8(readFile(f.jobFile(id, QStringLiteral("gcp_list.txt")))).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        QCOMPARE(lines.size(), 1 + 9);
+        QCOMPARE(lines.first(), QStringLiteral("EPSG:32632"));
+        QCOMPARE(lines.at(1), QStringLiteral("500000.0000 5000000.0000 100.0000 15.50 23.50 p0.jpg ОП_1"));   // 0.25·64 − 0.5, 0.5·48 − 0.5
+        QTRY_VERIFY(QString::fromUtf8(readFile(f.jobFile(id, QStringLiteral("log.txt")))).contains(QStringLiteral("Опорные точки: 3")));
+        QVERIFY(QString::fromUtf8(readFile(f.jobFile(id, QStringLiteral("log.txt")))).contains(QStringLiteral("пропущены: ОП 4")));
+    }
+
+    // Accuracy from a reconstruction with a known answer, the job's inputs, the calibration of
+    // an earlier job, import and export of point lists.
+    void surveyControlAccuracy()
+    {
+        QTemporaryDir tmp;
+        const QString project = QDir(tmp.path()).filePath(QStringLiteral("Съёмка с опорными точками"));
+        QVERIFY(QDir().mkpath(project + QStringLiteral("/photos")));
+        // Six nadir photos 40 m above the ground, 10 m apart, with lens distortion; the poses as
+        // OpenSfM stores them (axis-angle, translation) in a frame shifted by coords.txt.
+        const double offX = 500000, offY = 5000000;
+        QVector<Photo> list;
+        QVector<ortho::Shot> shots;
+        QJsonObject jsonShots;
+        const QJsonObject camera{{"projection_type", "brown"}, {"width", 1200}, {"height", 800}, {"focal_x", 0.9}, {"focal_y", 0.9},
+                                 {"c_x", 0.004}, {"c_y", -0.003}, {"k1", -0.02}, {"k2", 0.003}, {"k3", 0.0}, {"p1", 0.0005}, {"p2", -0.0004}};
+        for (int i = 0; i < 6; ++i) {
+            Photo p;
+            p.id = QStringLiteral("s%1").arg(i);
+            p.file = QStringLiteral("photos/%1.jpg").arg(p.id);
+            p.name = QStringLiteral("DJI_%1.JPG").arg(i, 4, 10, QLatin1Char('0'));
+            QImage img(1200, 800, QImage::Format_RGB32);
+            img.fill(Qt::gray);
+            QVERIFY(img.save(QDir(project).filePath(p.file), "JPG"));
+            list << p;
+            ortho::Shot s;
+            s.image = QDir(project).filePath(p.file);
+            s.camera.width = 1200;
+            s.camera.height = 800;
+            s.camera.fx = s.camera.fy = 0.9;
+            s.camera.cx = 0.004;
+            s.camera.cy = -0.003;
+            s.camera.k1 = -0.02;
+            s.camera.k2 = 0.003;
+            s.camera.p1 = 0.0005;
+            s.camera.p2 = -0.0004;
+            const double R[9] = {1, 0, 0, 0, -1, 0, 0, 0, -1};
+            std::copy(R, R + 9, s.R);
+            const double C[3] = {(i % 3) * 10.0, (i / 3) * 10.0, 140};
+            for (int k = 0; k < 3; ++k) s.t[k] = -(R[k * 3] * C[0] + R[k * 3 + 1] * C[1] + R[k * 3 + 2] * C[2]);
+            std::copy(C, C + 3, s.centre);
+            shots << s;
+            jsonShots.insert(QFileInfo(p.file).fileName(),
+                             QJsonObject{{"camera", "test camera"}, {"rotation", QJsonArray{3.14159265358979323846, 0, 0}},
+                                         {"translation", QJsonArray{s.t[0], s.t[1], s.t[2]}}});
+        }
+        PhotoModel photos;
+        photos.resetPhotos(list, project);
+        const QString jobId = QStringLiteral("20261015-100000");
+        const QString job = QDir(project).filePath(QStringLiteral("jobs/") + jobId);
+        QVERIFY(writeFile(job + QStringLiteral("/opensfm/reconstruction.json"),
+                          QJsonDocument(QJsonArray{QJsonObject{{"cameras", QJsonObject{{"test camera", camera}}}, {"shots", jsonShots},
+                                                        {"points", QJsonObject{{"1", QJsonObject{{"coordinates", QJsonArray{5, 5, 100}}}},
+                                                                               {"2", QJsonObject{{"coordinates", QJsonArray{15, 3, 100}}}}}}}}).toJson()));
+        QVERIFY(writeFile(job + QStringLiteral("/odm_georeferencing/coords.txt"), "WGS84 UTM 32N\n500000 5000000\n"));
+        QVERIFY(writeFile(job + QStringLiteral("/cameras.json"), QJsonDocument(QJsonObject{{"test camera", camera}}).toJson()));
+
+        SurveyControl survey;
+        survey.setProject(project, &photos);
+        QCOMPARE(survey.setCrs(QStringLiteral("EPSG:32632")), QString());
+        // Four control points, a check point surveyed 3, −2 and 5 cm off, a point on two photos.
+        struct True { const char *name; double x, y, z; bool check; int photos; QVector<double> shift; };
+        const QVector<True> truth = {{"A", 5, 5, 100.5, false, 6, {0, 0, 0}},     {"B", 15, 3, 101.2, false, 6, {0, 0, 0}},
+                                     {"C", 2, 12, 99.8, false, 6, {0, 0, 0}},     {"D", 18, 11, 100.1, false, 6, {0, 0, 0}},
+                                     {"K", 10, 6, 100.0, true, 6, {0.03, -0.02, 0.05}}, {"E", 9, 8, 100.3, false, 2, {0, 0, 0}}};
+        QHash<QString, QString> ids;
+        QHash<QString, QPointF> onFirst;   // true position on photo s0
+        for (const True &t : truth) {
+            const QString id = survey.addPoint(QString::fromLatin1(t.name), offX + t.x + t.shift[0], offY + t.y + t.shift[1], t.z + t.shift[2]);
+            ids.insert(QString::fromLatin1(t.name), id);
+            survey.setCheck(id, t.check);
+            const double X[3] = {t.x, t.y, t.z};
+            for (int i = 0; i < t.photos; ++i) {
+                double px, py, depth;
+                QVERIFY(shots[i].project(X, &px, &py, &depth));
+                const QPointF n((px + 0.5) / 1200, (py + 0.5) / 800);
+                QVERIFY(n.x() > 0 && n.x() < 1 && n.y() > 0 && n.y() < 1);
+                survey.setObservation(id, list[i].file, n.x(), n.y());
+                if (i == 0) onFirst.insert(QString::fromLatin1(t.name), n);
+            }
+        }
+        QCOMPARE(survey.controlCount(), 5);
+        QCOMPARE(survey.checkCount(), 1);
+
+        QVariantMap a = survey.accuracy();
+        QVERIFY2(a.value("error").toString().isEmpty(), qPrintable(a.value("error").toString()));
+        QCOMPARE(a.value("job").toString(), jobId);
+        QVERIFY(!a.value("gcpUsed").toBool());
+        const QVariantMap control = a.value("control").toMap(), check = a.value("check").toMap();
+        QCOMPARE(control.value("count").toInt(), 5);
+        QVERIFY2(control.value("rmse").toDouble() < 1e-4, qPrintable(QString::number(control.value("rmse").toDouble())));
+        QCOMPARE(check.value("count").toInt(), 1);
+        for (const QVariant &v : a.value("rows").toList()) {
+            const QVariantMap r = v.toMap();
+            QVERIFY(r.value("reprojection").toDouble() < 1e-3);
+            if (r.value("name").toString() != QLatin1String("K")) continue;
+            QVERIFY(std::fabs(r.value("dx").toDouble() + 0.03) < 1e-4);
+            QVERIFY(std::fabs(r.value("dy").toDouble() - 0.02) < 1e-4);
+            QVERIFY(std::fabs(r.value("dz").toDouble() + 0.05) < 1e-4);
+        }
+
+        // Where a point not yet placed on a photo should be.
+        survey.removeObservation(ids.value("A"), list[0].file);
+        bool suggested = false;
+        for (const QVariant &v : survey.marksOnPhoto(list[0].file)) {
+            const QVariantMap m = v.toMap();
+            if (m.value("id").toString() != ids.value("A")) continue;
+            QVERIFY(!m.value("placed").toBool());
+            QVERIFY(std::fabs(m.value("nx").toDouble() - onFirst.value("A").x()) < 1e-5);
+            QVERIFY(std::fabs(m.value("ny").toDouble() - onFirst.value("A").y()) < 1e-5);
+            suggested = true;
+        }
+        QVERIFY(suggested);
+
+        // What a job receives: control points on ≥ 3 of its photos, the check point never.
+        QStringList images;
+        for (const Photo &p : list) images << p.file;
+        const QString job2 = QDir(project).filePath(QStringLiteral("jobs/20261015-110000"));
+        QVERIFY(QDir().mkpath(job2));
+        SurveyControl::JobInputs in = SurveyControl::prepareJob(project, job2, images);
+        QVERIFY2(in.error.isEmpty(), qPrintable(in.error));
+        QVERIFY(in.gcpUsed);
+        QCOMPARE(in.points, 4);
+        QCOMPARE(in.dropped, QStringList{QStringLiteral("E")});
+        QVERIFY(in.calibration.isEmpty());
+        const QStringList gcp = QString::fromUtf8(readFile(job2 + QStringLiteral("/gcp_list.txt"))).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        QCOMPARE(gcp.size(), 1 + 5 + 6 + 6 + 6);
+        QCOMPARE(gcp.first(), QStringLiteral("EPSG:32632"));
+        QVERIFY(!gcp.join(QLatin1Char('\n')).contains(QStringLiteral(" K")));
+        in = SurveyControl::prepareJob(project, job2, images.mid(0, 2));   // too few photos: no file
+        QVERIFY(!in.gcpUsed);
+        QVERIFY(!QFileInfo::exists(job2 + QStringLiteral("/gcp_list.txt")));
+
+        // Calibration of the first job as the initial cameras of the next ones.
+        const QVariantList calibrations = survey.jobCalibrations();
+        QCOMPARE(calibrations.size(), 1);
+        QCOMPARE(calibrations.first().toMap().value("cameras").toList().first().toMap().value("focalPx").toDouble(), 1080.0);
+        QCOMPARE(survey.useCalibration(jobId), QString());
+        QCOMPARE(survey.calibration(), jobId);
+        QVERIFY(survey.useCalibration(QStringLiteral("20261015-110000")).contains(QStringLiteral("cameras.json")));
+        in = SurveyControl::prepareJob(project, job2, images);
+        QCOMPARE(in.calibration, jobId);
+        QCOMPARE(readFile(job2 + QStringLiteral("/geomap_cameras.json")), readFile(job + QStringLiteral("/cameras.json")));
+        survey.clearCalibration();
+        in = SurveyControl::prepareJob(project, job2, images);
+        QVERIFY(in.calibration.isEmpty());
+        QVERIFY(!QFileInfo::exists(job2 + QStringLiteral("/geomap_cameras.json")));
+
+        // The engine gets both files of the job folder.
+        ProcessingJob pj;
+        pj.id = QStringLiteral("20261015-110000");
+        QVERIFY(survey.useCalibration(jobId).isEmpty());
+        SurveyControl::prepareJob(project, job2, images);
+        const QStringList args = OdmEngine::nativeArguments(pj, QStringLiteral("C:/odm"), QDir(project).filePath(QStringLiteral("jobs")));
+        QCOMPARE(args.mid(args.size() - 4),
+                 (QStringList{QStringLiteral("--gcp"), QDir::toNativeSeparators(job2 + QStringLiteral("/gcp_list.txt")),
+                              QStringLiteral("--cameras"), QDir::toNativeSeparators(job2 + QStringLiteral("/geomap_cameras.json"))}));
+
+        // Export, then import of the same gcp_list.txt restores the points and their positions.
+        const QString exported = tmp.filePath(QStringLiteral("gcp_list.txt"));
+        QCOMPARE(survey.exportGcpList(QUrl::fromLocalFile(exported)), QString());
+        QVERIFY(QString::fromUtf8(readFile(exported)).contains(QStringLiteral(" s1.jpg B\n")));
+        const QPointF before = survey.controlPoints().at(1).observations.value(list[1].file);
+        for (const QString &id : ids) survey.removePoint(id);
+        QCOMPARE(survey.controlPoints().size(), 0);
+        QVariantMap imported = survey.importFile(QUrl::fromLocalFile(exported));
+        QVERIFY2(imported.value("error").toString().isEmpty(), qPrintable(imported.value("error").toString()));
+        QCOMPARE(imported.value("added").toInt(), 5);   // the check point is not in a gcp_list.txt
+        QCOMPARE(imported.value("observations").toInt(), 5 + 6 + 6 + 6 + 2);
+        const QPointF after = survey.controlPoints().at(1).observations.value(list[1].file);
+        QVERIFY(std::fabs(after.x() - before.x()) < 1e-5 && std::fabs(after.y() - before.y()) < 1e-5);
+
+        // Coordinate lists: semicolons with decimal commas, northing first as in Russian surveys.
+        const QString csv = tmp.filePath(QStringLiteral("пункты.csv"));
+        QVERIFY(writeFile(csv, QStringLiteral("Пункт;X;Y;H\nРп 12;5000002,5;500001,5;99,9\n").toUtf8()));
+        imported = survey.importFile(QUrl::fromLocalFile(csv), QString(), true);
+        QCOMPARE(imported.value("added").toInt(), 1);
+        const SurveyControl::Point last = survey.controlPoints().last();
+        QCOMPARE(last.name, QStringLiteral("Рп 12"));
+        QCOMPARE(last.x, 500001.5);
+        QCOMPARE(last.y, 5000002.5);
+        QCOMPARE(last.z, 99.9);
+
+        // Image overlap from the same job: six photos 10 m apart, each ~44 × 30 m on the ground.
+        const overlap::Result o = overlap::fromJob(job, tmp.filePath(QStringLiteral("overlap.tif")), QDir(project).filePath(QStringLiteral("photos")));
+        QVERIFY2(o.ok(), qUtf8Printable(o.error));
+        QCOMPARE(o.photos, 6);
+        QVERIFY2(o.median >= 3 && o.share2 > 0.6, qPrintable(QStringLiteral("median %1, ≥2 %2").arg(o.median).arg(o.share2)));
+        QVERIFY(o.area > 30.0 * 20 && o.area < 80.0 * 60);   // the union of the footprints
+        GDALDatasetH od = GDALOpen(o.path.toUtf8().constData(), GA_ReadOnly);
+        QVERIFY(od);
+        int maximum = 0;
+        {
+            std::vector<uchar> counts(size_t(o.width) * o.height);
+            QCOMPARE(GDALRasterIO(GDALGetRasterBand(od, 1), GF_Read, 0, 0, o.width, o.height, counts.data(), o.width, o.height, GDT_Byte, 0, 0), CE_None);
+            for (uchar c : counts) maximum = qMax<int>(maximum, c);
+        }
+        GDALClose(od);
+        QCOMPARE(maximum, 6);   // the middle is seen by every photo
+
+        // Everything is in gcp.json.
+        SurveyControl reopened;
+        reopened.setProject(project, &photos);
+        QCOMPARE(reopened.controlPoints().size(), survey.controlPoints().size());
+        QCOMPARE(reopened.crs().epsg(), 32632);
+        QCOMPARE(reopened.calibration(), jobId);
+    }
+
+    // A failed ODM run is explained in plain words: which program failed on which stage, what to do.
+    void odmFailureIsExplained()
+    {
+        const QStringList recent = {
+            QStringLiteral("[INFO]    Running odm_georeferencing stage"),
+            QStringLiteral("[INFO]    running pdal translate -i \"in.laz\" -o \"out.laz\" smrf --filters.smrf.scalar=1.25"),
+            QStringLiteral("[ERROR]   Uh oh! Processing stopped because of strange values in the reconstruction. This is often a sign..."),
+        };
+        QString m = OdmEngine::explainFailure(recent, {recent.last()}, QStringLiteral("Геопривязка"), 1);
+        QVERIFY2(m.contains(QStringLiteral("«Геопривязка»")) && m.contains(QStringLiteral("классификации точек земли"))
+                     && m.contains(QStringLiteral("Продолжить")) && !m.contains(QStringLiteral("Uh oh")), qUtf8Printable(m));
+        m = OdmEngine::explainFailure({QStringLiteral("OSError: [Errno 28] No space left on device")}, {}, QStringLiteral("Ортофотоплан"), 1);
+        QVERIFY2(m.contains(QStringLiteral("место")), qUtf8Printable(m));
+        m = OdmEngine::explainFailure({QStringLiteral("something")}, {}, QString(), 3);
+        QVERIFY2(m.contains(QStringLiteral("код 3")) && m.contains(QStringLiteral("Журнал")), qUtf8Printable(m));
     }
 
     void failureKeepsEngineMessage()

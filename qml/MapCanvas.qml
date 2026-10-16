@@ -62,6 +62,34 @@ Item {
                 FlatButton { text: "Удалить объект"; compact: true; implicitHeight: 24; caution: true; enabled: gis.hasSelection
                              onClicked: canvas.host.runCommand("edit.delete") }
                 Item { Layout.fillWidth: true }
+                // Background map, as in Metashape: none, a street map or satellite imagery, or a file.
+                ComboBox {
+                    id: basemapBox
+                    objectName: "basemapBox"
+                    implicitHeight: 24; implicitWidth: 210
+                    font.pixelSize: 11
+                    enabled: gis.crsDefined
+                    textRole: "title"
+                    valueRole: "id"
+                    property var providers: gis.layerCount >= 0 ? gis.basemapProviders() : []
+                    model: [{ id: "", title: "Подложка: нет" }].concat(providers.map(function(p) { return { id: p.id, title: p.title } }))
+                                                            .concat([{ id: "file", title: "Подложка из файла…" }])
+                    currentIndex: {
+                        if (!gis.basemapVisible) return 0
+                        for (var i = 0; i < providers.length; ++i) if (providers[i].current) return i + 1
+                        return gis.hasBasemap ? providers.length + 1 : 0
+                    }
+                    onActivated: function(index) {
+                        var id = currentValue
+                        if (id === "") { gis.setBasemapVisible(false); return }
+                        if (id === "file") { canvas.host.addBasemapFile(); return }
+                        var p = providers[index - 1]
+                        if (p.current) { gis.setBasemapVisible(true); return }
+                        if (!p.accepted) { canvas.host.openBasemap(id); return }   // terms first
+                        var e = gis.setOnlineBasemap(id)
+                        if (e.length > 0) canvas.host.showError(e)
+                    }
+                }
                 FlatButton { text: "Экспорт карты…"; compact: true; implicitHeight: 24
                              enabled: canvas.host && canvas.host.commandEnabled("export.map"); onClicked: canvas.host.runCommand("export.map") }
                 FlatButton { text: "Экспорт объектов…"; compact: true; implicitHeight: 24
@@ -410,7 +438,7 @@ Item {
                 objectName: "mapLegend"
                 visible: canvas.host && canvas.host.legendShown && gis.crsDefined
                 anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 12
-                anchors.bottomMargin: canvas.profileShown ? profilePanel.height + 24 : 12
+                anchors.bottomMargin: (canvas.profileShown ? profilePanel.height + 24 : 12) + (gis.basemapAttribution.length > 0 ? 16 : 0)
                 width: 240
                 height: Math.min(legendColumn.implicitHeight + 16, parent.height * 0.6)
                 radius: 6
@@ -479,6 +507,17 @@ Item {
                     color: "white"; font.pixelSize: 11; font.bold: true
                     style: Text.Outline; styleColor: "#10151c"
                 }
+            }
+            // Attribution of the online basemap (required by its terms).
+            Label {
+                objectName: "basemapAttribution"
+                visible: gis.basemapAttribution.length > 0
+                anchors.right: parent.right; anchors.bottom: parent.bottom
+                anchors.bottomMargin: canvas.profileShown ? profilePanel.height + 12 : 0
+                text: gis.basemapAttribution
+                padding: 3; leftPadding: 6; rightPadding: 6
+                color: "#2a2f36"; font.pixelSize: 10
+                background: Rectangle { color: "#CCFFFFFF" }
             }
         }
     }

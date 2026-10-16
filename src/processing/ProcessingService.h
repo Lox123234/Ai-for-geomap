@@ -162,6 +162,8 @@ signals:
     void errorOccurred(const QString &message);
     void trueOrthoChanged();
     void trueOrthoFinished(const QString &jobId, bool ok, const QString &message);
+    // Emitted just before a job folder is deleted: whoever holds its files open closes them.
+    void releaseDirectory(const QString &directory);
 
 private:
     struct Check {
@@ -180,7 +182,7 @@ private:
     ProcessingJob *findJob(const QString &id);
     void setState(ProcessingJob &job, JobState state, const QString &message = {});
     void runNext();
-    void prepareFinished(const QString &id, const QString &error, int copied);
+    void prepareFinished(const QString &id, const QString &error, int copied, int masks = 0, const QStringList &notes = {});
     void onStage(const QString &id, const QString &stage, int index, int count);
     void onLog(const QString &id, const QString &line);
     void onFinished(const QString &id, JobOutcome outcome, int exitCode, const QString &message);

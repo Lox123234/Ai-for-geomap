@@ -448,6 +448,9 @@ bool ProjectManager::removeSelectedPhoto()
         return false;
     }
     QFile::remove(ThumbnailCache::thumbnailPath(m_projectPath, p.file));
+    // Its mask for the reconstruction (photos/<name>_mask.png) goes with it.
+    const QFileInfo photoInfo(file);
+    QFile::remove(photoInfo.absoluteDir().filePath(photoInfo.completeBaseName() + QStringLiteral("_mask.png")));
     m_photos.erase(m_selectedIndex);
     m_selectedIndex = photoCount() ? qMin(m_selectedIndex, photoCount() - 1) : -1;
     emit selectionChanged(); emit photosChanged();

@@ -21,7 +21,10 @@
 #include "MapService.h"
 #include "MapView.h"
 #include "MockEngine.h"
+#include "PhotoMasks.h"
 #include "ProcessingService.h"
+#include "SurveyControl.h"
+#include <cmath>
 #include "ProjectManager.h"
 #include "ProjectTreeModel.h"
 #include "ResultExporter.h"
@@ -44,6 +47,8 @@ struct Session
     ProcessingService processing{new MockEngine(record)};
     ai::AiService aiModels;
     MapService map;
+    PhotoMasks photoMasks{&aiModels};
+    SurveyControl survey;
     Scene3DService scene3d;
     ResultExporter exporter{&processing};
     CommandRegistry commands;
@@ -64,7 +69,13 @@ struct Session
         });
         QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &scene3d, &Scene3DService::clear);
         treeView.setSourceModel(&tree);
+        tree.setSurvey(&survey);
         map.setAi(&aiModels);
+        QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &photoMasks, &PhotoMasks::setProject);
+        QObject::connect(&projects, &ProjectManager::projectChanged, &survey,
+                         [this] { survey.setProject(projects.projectPath(), projects.photoModel(), &map); });
+        QObject::connect(&map, &MapService::markersChanged, &survey, &SurveyControl::changed);
+        QObject::connect(&processing, &ProcessingService::releaseDirectory, &map, &MapService::releaseDirectory, Qt::DirectConnection);
         connectJournal(&log, &projects, &processing, &map);
         auto *thumbnails = new ThumbnailProvider;
         QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, thumbnails,
@@ -77,6 +88,8 @@ struct Session
         c->setContextProperty("scene3d", &scene3d);
         c->setContextProperty("exporter", &exporter);
         c->setContextProperty("aiModels", &aiModels);
+        c->setContextProperty("photoMasks", &photoMasks);
+        c->setContextProperty("survey", &survey);
         c->setContextProperty("commands", &commands);
         c->setContextProperty("workspace", &workspace);
         c->setContextProperty("appLog", &log);
@@ -307,9 +320,12 @@ private slots:
         // Context actions of a layer and of a planned section.
         const QVariantList layerActions = s->call("treeActions", QVariantMap{{"kind", "layer"}, {"payload", layer}, {"available", true}}).toList();
         QCOMPARE(layerActions.size(), 3);
-        const QVariantList gcpActions = s->call("treeActions", QVariantMap{{"kind", "gcp"}, {"available", false}, {"status", "этап F"}}).toList();
-        QCOMPARE(gcpActions.size(), 1);
-        QCOMPARE(gcpActions.first().toMap().value("enabled").toBool(), false);
+        const QVariantList gcpActions = s->call("treeActions", QVariantMap{{"kind", "gcp"}, {"available", true}}).toList();
+        QCOMPARE(gcpActions.size(), 4);
+        QCOMPARE(gcpActions.at(1).toMap().value("enabled").toBool(), false);   // no points to place
+        const QVariantList unknownActions = s->call("treeActions", QVariantMap{{"kind", "chunk"}, {"available", false}, {"status", "нет данных"}}).toList();
+        QCOMPARE(unknownActions.size(), 1);
+        QCOMPARE(unknownActions.first().toMap().value("enabled").toBool(), false);
         s->shot(QStringLiteral("ui-04-map-orthophoto.png"));
         // Export of the results: the command opens the dialog with the job's results checked.
         QVERIFY(s->run(QStringLiteral("export.all")));
@@ -610,6 +626,55 @@ private slots:
             QTRY_VERIFY(!d->property("visible").toBool());
         }
     }
+    // Ground control points: the dialog's tabs open from their commands, and in the photo view
+    // a click places the selected point where it was clicked.
+    void surveyOnThePhotos()
+    {
+        QTemporaryDir tmp;
+        auto s = open();
+        QVERIFY(s->projects.createProject(QUrl::fromLocalFile(tmp.path()), QStringLiteral("Опорные точки UI")));
+        QImage photo(600, 400, QImage::Format_RGB32);
+        photo.fill(QColor(90, 120, 80));
+        const QString source = tmp.filePath(QStringLiteral("DJI_0001.JPG"));
+        QVERIFY(photo.save(source, "JPG"));
+        s->projects.importFiles({QUrl::fromLocalFile(source)});
+        QTRY_VERIFY_WITH_TIMEOUT(!s->projects.busy() && s->projects.photoCount() == 1, 10000);
+        QVERIFY(!s->enabled(QStringLiteral("project.gcpTag")));   // no points yet
+        for (const char *id : {"project.gcp", "project.cameras", "project.calibrations", "project.scaleBars"}) {
+            QVERIFY2(s->run(QString::fromLatin1(id)), id);
+            QObject *d = s->window->findChild<QObject *>(QStringLiteral("surveyDialog"));
+            QVERIFY(d);
+            QTRY_VERIFY2(d->property("visible").toBool(), id);
+            QMetaObject::invokeMethod(d, "close");
+            QTRY_VERIFY(!d->property("visible").toBool());
+        }
+        QCOMPARE(s->survey.setCrs(QStringLiteral("EPSG:32637")), QString());
+        const QString id = s->survey.addPoint(QStringLiteral("ОП-1"), 400000, 6200000, 150);
+        QTRY_VERIFY(s->enabled(QStringLiteral("project.gcpTag")));
+        QVERIFY(s->run(QStringLiteral("project.gcpTag")));
+        QCOMPARE(s->prop("activeView").toInt(), 0);
+        QVERIFY(s->checked(QStringLiteral("project.gcpTag")));
+        QCOMPARE(s->prop("gcpPoint").toString(), id);
+        QObject *bar = s->window->findChild<QObject *>(QStringLiteral("gcpBar"));
+        QVERIFY(bar);
+        QTRY_VERIFY(bar->property("visible").toBool());
+        auto *preview = s->window->findChild<QQuickItem *>(QStringLiteral("photoPreview"));
+        QVERIFY(preview);
+        QTRY_VERIFY(preview->property("paintedWidth").toReal() > 10);
+        const qreal pw = preview->property("paintedWidth").toReal(), ph = preview->property("paintedHeight").toReal();
+        const QPointF at = preview->mapToScene(QPointF((preview->width() - pw) / 2 + 0.25 * pw, (preview->height() - ph) / 2 + 0.75 * ph));
+        QTest::mouseClick(s->window, Qt::LeftButton, Qt::NoModifier, at.toPoint());
+        QTRY_COMPARE(s->survey.controlPoints().first().observations.size(), 1);
+        const QPointF n = s->survey.controlPoints().first().observations.first();
+        QVERIFY2(std::fabs(n.x() - 0.25) < 0.01 && std::fabs(n.y() - 0.75) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(n.x()).arg(n.y())));
+        QTRY_COMPARE(s->prop("gcpMarks").toList().size(), 1);
+        s->shot(QStringLiteral("ui-gcp-on-photo.png"));
+        QTest::mouseClick(s->window, Qt::RightButton, Qt::NoModifier, at.toPoint());   // right click: removed
+        QTRY_COMPARE(s->survey.controlPoints().first().observations.size(), 0);
+        QVERIFY(s->run(QStringLiteral("project.gcpTag")));
+        QVERIFY(!s->prop("gcpMode").toBool());
+    }
+
     // The 3D view: commands, tools without a map CRS, and an ODM point cloud opened from the
     // project tree (the job's LAZ is shown through odm_filterpoints/point_cloud.ply). The
     // software renderer cannot draw it: the view says so instead of showing an empty black area.

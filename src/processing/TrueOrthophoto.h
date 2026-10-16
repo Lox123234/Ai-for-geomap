@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <functional>
 
@@ -27,6 +28,7 @@ struct Shot
     double t[3] = {0, 0, 0};
     double centre[3] = {0, 0, 0};                // -Rᵀt
     bool project(const double local[3], double *px, double *py, double *depth) const;   // pixels of the photo
+    void ray(double px, double py, double dir[3]) const;   // inverse of project(): unit direction of a pixel
 };
 
 struct Scene
@@ -38,14 +40,20 @@ struct Scene
 // The photos and their poses from an ODM job folder: opensfm/reconstruction.json (+ the offset
 // from odm_georeferencing/coords.txt), photos from images/ (or `photoFolder`).
 bool readOdmJob(const QString &jobDirectory, Scene *scene, QString *error, const QString &photoFolder = {});
+// WKT of the CRS the job's results and its shifted reconstruction are in (from its DSM or
+// orthophoto, else the "WGS84 UTM 32N" line of coords.txt); "" if unknown.
+QString resultCrsWkt(const QString &jobDirectory);
 
 struct Options
 {
     double resolution = 0;        // metres per pixel; 0 = the ground sample distance of the photos
     double objectHeight = 2.0;    // objects (trees, buildings) above the ground taken from one photo
     QString groundPath;           // DTM for object heights; empty = estimated from the DSM
+    QString pointCloudPath;       // dense point cloud (ODM point_cloud.ply, local frame) for the crowns' surface
     bool balanceColours = true;
     double blendDegrees = 3.0;    // ground: two photos whose view angles differ less than this are blended
+    QString sourceMapPath;        // optional: Byte GeoTIFF, the photo of every pixel (index; 255 none) — seams at a glance
+    QString surfacePath;          // optional: the surface built from the point cloud (Float32 GeoTIFF) for the 3D view
     std::function<bool(double)> progress;   // 0..1; false cancels
 };
 
@@ -60,6 +68,8 @@ struct Result
     double hidden = 0;            // share of them hidden from every photo by the DSM (taken from the most vertical one)
     double seconds = 0;
     QVector<double> gains;        // brightness factor per photo (balanced)
+    double pointCloudShare = 0;   // share of the surface taken from the dense point cloud
+    QStringList notes;            // what could not be used (the point cloud), the result is still valid
     bool ok() const { return error.isEmpty(); }
 };
 

@@ -71,6 +71,9 @@ public:
     static QProcessEnvironment nativeEnvironment(const QString &root, const QString &cacheDirectory,
                                                  const QProcessEnvironment &base);
     static QStringList nativeArguments(const ProcessingJob &job, const QString &root, const QString &projectPath);
+    // A failed run in plain words: which program of ODM failed on which stage and what to do,
+    // from the last lines of its log (the raw lines stay in the job's log).
+    static QString explainFailure(const QStringList &recent, const QStringList &errors, const QString &stage, int exitCode);
     static QString nativeProgram(const QString &root);    // venv python (Windows) or run.sh (Linux)
     // Re-points venv\pyvenv.cfg and OpenCV's loader config at `root` (what ODM's
     // winpostinstall.bat does), so an installation keeps working after it was moved.

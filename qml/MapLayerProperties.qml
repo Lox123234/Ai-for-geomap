@@ -154,13 +154,8 @@ Item {
                          onClicked: { panel.controller.assignLayerCrs(panel.d.id) } }
             FlatButton { Layout.fillWidth: true; text: "Убрать с карты"; compact: true; caution: true
                          visible: panel.d.removable === true
+                         ToolTip.visible: hovered; ToolTip.delay: 600; ToolTip.text: "Файл остаётся на диске"
                          onClicked: gis.removeLayer(panel.d.id) }
-            Label {
-                Layout.fillWidth: true; wrapMode: Text.Wrap
-                visible: panel.d.removable === true
-                text: "Файл слоя не удаляется: убирается только ссылка на него из карты проекта."
-                color: Theme.faint; font.pixelSize: 10
-            }
             }
         }
     }

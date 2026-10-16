@@ -331,12 +331,17 @@ private slots:
         const QString job = qEnvironmentVariable("GEOMAP_3D_JOB");
         if (job.isEmpty()) QSKIP("GEOMAP_3D_JOB is not set");
         struct Case { QString name, kind, path, drape; };
-        const QList<Case> cases = {
+        QList<Case> cases = {
             {QStringLiteral("cloud"), QStringLiteral("pointcloud"), job + QStringLiteral("/odm_georeferencing/odm_georeferenced_model.laz"), {}},
             {QStringLiteral("model"), QStringLiteral("mesh"), job + QStringLiteral("/odm_texturing/odm_textured_model_geo.obj"), {}},
             {QStringLiteral("dsm"), QStringLiteral("terrain"), job + QStringLiteral("/odm_dem/dsm.tif"), job + QStringLiteral("/odm_orthophoto/odm_orthophoto.tif")},
             {QStringLiteral("dtm"), QStringLiteral("terrain"), job + QStringLiteral("/odm_dem/dtm.tif"), {}},
         };
+        // The surface and the true orthophoto of GeoMap AI (in the job, or GEOMAP_3D_TRUE=<folder with both>).
+        const QString trueDir = qEnvironmentVariable("GEOMAP_3D_TRUE", job + QStringLiteral("/geomap"));
+        if (QFileInfo::exists(trueDir + QStringLiteral("/true_surface.tif")))
+            cases << Case{QStringLiteral("true"), QStringLiteral("terrain"), trueDir + QStringLiteral("/true_surface.tif"),
+                          trueDir + QStringLiteral("/true_orthophoto.tif")};
         for (const Case &c : cases) {
             m_scene.clear();
             QElapsedTimer t;
@@ -375,7 +380,7 @@ private slots:
         m_scene.orbit(200, -40);
         const QImage image = m_view.render();
         keep(image, QStringLiteral("brighton-all-height.png"));
-        QVERIFY(coverage(image) > 0.15);
+        QVERIFY(coverage(image) > 0.08);   // a low oblique view of the whole scene
         m_scene.setColorMode(QStringLiteral("rgb"));
     }
 

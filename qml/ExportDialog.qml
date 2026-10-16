@@ -156,11 +156,5 @@ Dialog {
             text: "Открыть папку"; compact: true
             onClicked: Qt.openUrlExternally(dialog.folder)
         }
-        Label {
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            text: "Исходные файлы задания не меняются; существующие файлы в папке не перезаписываются. Модель копируется вместе с материалами и текстурами."
-            color: Theme.faint; font.pixelSize: 10
-        }
     }
 }

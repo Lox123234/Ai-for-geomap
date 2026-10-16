@@ -58,6 +58,22 @@ ApplicationWindow {
     property string activeJobText: ""
     property int clockTick: 0
     property bool showOptions: false
+    property bool maskMode: false   // photo view: clicks edit the photo's mask
+    onMaskModeChanged: if (maskMode) gcpMode = false
+    // Photo view: clicks place the selected ground control point (survey, gcp.json).
+    property bool gcpMode: false
+    property string gcpPoint: ""
+    property var gcpMarks: []
+    onGcpModeChanged: {
+        if (gcpMode) maskMode = false
+        if (gcpMode && gcpPoint === "" && survey.points.length > 0) gcpPoint = survey.points[0].id
+        refreshGcpMarks()
+    }
+    function refreshGcpMarks() { gcpMarks = gcpMode ? survey.marksOnPhoto(projects.selectedPhoto.file || "") : [] }
+    function gcpPointInfo() {
+        for (var i = 0; i < survey.points.length; ++i) if (survey.points[i].id === gcpPoint) return survey.points[i]
+        return null
+    }
     property bool legendShown: workspace.value("legendShown", false) === true || workspace.value("legendShown", false) === "true"
     onLegendShownChanged: workspace.setValue("legendShown", legendShown)
     property var optionValues: ({})      // structured engine options set by the user
@@ -159,13 +175,18 @@ ApplicationWindow {
         case "analysis.viewshed": case "analysis.ai": case "proc.contours": return map
         case "tool.rasterCalc": case "analysis.vegetation": case "analysis.ndvi": case "analysis.export": return has
         case "analysis.aiModels": return true
+        case "edit.mask": return has && projects.photoCount > 0
+        case "edit.maskEdit": return has && projects.selectedIndex >= 0 && photoMasks.revision >= 0 && photoMasks.hasMask(projects.selectedPhoto.file || "")
         case "file.saveAs": return has && idle
         case "project.settings": case "project.check": case "project.markers": case "view.markers": case "tool.cloudEditor": case "tool.classify": return has
+        case "project.gcp": case "project.cameras": case "project.calibrations": case "project.scaleBars": return has
+        case "project.gcpTag": return has && projects.photoCount > 0 && survey.points.length > 0
         case "edit.selectAll": case "edit.invertSelection": return window.activeView === 3 && gis.drawingCount > 0
         case "edit.copy": return window.activeView === 3 && gis.hasSelection
         case "edit.paste": return window.activeView === 3 && map
         case "view.grid": case "view.legend": case "tool.marker": case "tool.demEditor": return map
         case "proc.trueOrthophoto": return has && !processing.trueOrthoBusy
+        case "proc.overlap": return has && !gis.analysisBusy && (projects.photoCount > 0 || processing.jobCount > 0)
         // Terrain analysis needs the map (and a DEM on it, which the tools and dialog check).
         case "tool.profile": case "tool.volume": case "analysis.longProfile": case "analysis.cutFill":
         case "view.slope": case "view.aspect": case "view.contours": case "analysis.terrain":
@@ -223,6 +244,8 @@ ApplicationWindow {
         case "view.grid": return gis.showGrid
         case "view.legend": return window.legendShown
         case "view.markers": return gis.showMarkers
+        case "edit.mask": return window.activeView === 0 && window.maskMode
+        case "project.gcpTag": return window.activeView === 0 && window.gcpMode
         case "view.panelProject": return window.showLeft
         case "view.panelProperties": return window.showRight
         case "view.panelLog": return window.showBottom
@@ -232,6 +255,8 @@ ApplicationWindow {
         }
         return false
     }
+    function openBasemap(id) { basemapDialog.openFor(id) }
+    function addBasemapFile() { window.activeView = 3; mapController.addBasemap() }
     function setTool(tool) { window.activeView = 3; gis.tool = tool }
     function set3DTool(tool) { window.activeView = 4; scene3d.tool = tool }
     // Opens a file in the 3D view: point cloud, model, or a DEM as terrain (with the project's
@@ -239,6 +264,12 @@ ApplicationWindow {
     function open3D(kind, path) {
         if (!path) return
         var orthophoto = projectTree.result("orthophoto")
+        // A job's DSM in 3D: the surface the true orthophoto was built on (crowns and roofs from
+        // the point cloud, edges without ramps), when the job has one.
+        if (kind === "dsm") {
+            var surface = String(path).replace(/odm_dem[\\\/]dsm\.tif$/, "geomap/true_surface.tif")
+            if (surface !== String(path) && appInfo.fileExists(surface)) path = surface
+        }
         var error = kind === "pointcloud" ? scene3d.addPointCloud(path)
                   : kind === "mesh" ? scene3d.addModel(path)
                   : kind === "dsm" || kind === "dtm" || kind === "terrain" ? scene3d.addTerrain(path, orthophoto.path || "")
@@ -407,11 +438,7 @@ ApplicationWindow {
         "view.dem": function() { window.showDem() },
         "view.hillshade": function() { gis.setLayerStyle(mapController.details.id, { hillshade: !(mapController.details.style.hillshade === true) }) },
         "view.cameras": function() { gis.setLayerVisible("photos", !window.photosShown) },
-        "view.basemap": function() {
-            window.activeView = 3
-            if (gis.hasBasemap) gis.setBasemapVisible(!gis.basemapVisible)
-            else mapController.addBasemap()
-        },
+        "view.basemap": function() { basemapDialog.openFor("") },
         "view.reset": function() { if (window.activeView === 3) gis.zoomToAll(); else if (window.activeView === 4) scene3d.fitAll(); else window.imageZoom = 1.0 },
         "view.panelProject": function() { window.showLeft = !window.showLeft },
         "view.panelProperties": function() { window.showRight = !window.showRight },
@@ -455,9 +482,26 @@ ApplicationWindow {
         },
         "proc.contours": function() { window.activeView = 3; terrainDialog.openFor("contours") },
         "file.saveAs": function() { saveAsDialog.open() },
+        "edit.mask": function() { window.activeView = 0; window.maskMode = !window.maskMode },
+        "edit.maskEdit": function() { photoMasks.clearMask(projects.selectedPhoto.file || ""); window.flash("Маска снята: снимок используется целиком") },
         "project.settings": function() { projectSettingsDialog.open() },
         "project.check": function() { projectCheckDialog.open() },
         "project.markers": function() { markersDialog.open() },
+        "proc.overlap": function() {
+            var error = gis.computeOverlap()
+            if (error.length > 0) { window.showError(error); return }
+            window.activeView = 3
+            window.flash("Считается перекрытие снимков — карта появится слоем «overlap»")
+        },
+        "project.gcp": function() { surveyDialog.openTab(0) },
+        "project.cameras": function() { surveyDialog.openTab(2) },
+        "project.calibrations": function() { surveyDialog.openTab(2) },
+        "project.scaleBars": function() { surveyDialog.openTab(3) },
+        "project.gcpTag": function() {
+            window.activeView = 0
+            window.gcpMode = !window.gcpMode
+            if (window.gcpMode) window.flash("Выберите точку и щёлкните по её марке на снимке; лупа помогает попасть точно")
+        },
         "edit.selectAll": function() { gis.selectAllDrawings(); window.setTool("edit") },
         "edit.invertSelection": function() { gis.invertDrawingSelection(); window.setTool("edit") },
         "edit.copy": function() { var e = gis.copySelection(); if (e.length > 0) window.showError(e); else window.flash("Объекты скопированы в буфер обмена (GeoJSON): " + gis.selectionCount) },
@@ -521,6 +565,8 @@ ApplicationWindow {
         case "layer": window.activeView = 3; gis.selectedLayer = item.payload; gis.zoomToLayer(item.payload); return
         case "jobs": window.activeView = 2; return
         case "job": window.openJob(item.payload); return
+        case "calibrations": surveyDialog.openTab(2); return
+        case "gcp": surveyDialog.openTab(0); return
         }
         if (!item.available && item.status) window.flash(item.title + ": " + item.status)
     }
@@ -543,6 +589,9 @@ ApplicationWindow {
         case "layer": return [{ id: "zoom", title: "Показать слой целиком" }, { id: "toggle", title: "Показать / скрыть" },
                               { id: "remove", title: "Убрать с карты", enabled: item.payload !== "photos" && item.payload !== "drawings" }]
         case "job": return [{ id: "open", title: "Открыть задание" }, { id: "folder", title: "Открыть папку задания" }]
+        case "calibrations": return [{ id: "open", title: "Камеры и калибровки…" }]
+        case "gcp": return [{ id: "open", title: "Опорные точки…" }, { id: "gcpTag", title: "Отметить на снимках", enabled: window.commandEnabled("project.gcpTag") },
+                            { id: "accuracy", title: "Точность по точкам" }, { id: "markers", title: "Маркеры…" }]
         }
         return item.available ? [] : [{ id: "none", title: item.status || "Недоступно", enabled: false }]
     }
@@ -559,6 +608,9 @@ ApplicationWindow {
         case "zoom": window.activeView = 3; gis.zoomToLayer(item.payload); break
         case "toggle": gis.setLayerVisible(item.payload, !(gis.layerDetails(item.payload).visible === true)); break
         case "remove": gis.removeLayer(item.payload); break
+        case "gcpTag": window.runCommand("project.gcpTag"); break
+        case "accuracy": surveyDialog.openTab(1); break
+        case "markers": window.runCommand("project.markers"); break
         }
     }
 
@@ -669,6 +721,17 @@ ApplicationWindow {
     RasterCalcDialog { id: rasterCalcDialog }
     AiModelsDialog { id: aiModelsDialog }
     MarkersDialog { id: markersDialog; host: window }
+    SurveyDialog { id: surveyDialog; host: window }
+    BasemapDialog { id: basemapDialog; host: window }
+    Connections {
+        target: survey
+        function onChanged() { window.refreshGcpMarks() }
+    }
+    Connections {
+        target: projects
+        function onSelectionChanged() { window.refreshGcpMarks() }
+        function onProjectChanged() { window.gcpMode = false; window.gcpPoint = "" }
+    }
     DemEditorDialog { id: demEditorDialog }
     CloudEditorDialog { id: cloudEditorDialog; host: window }
     ProjectSettingsDialog { id: projectSettingsDialog; host: window }
@@ -1335,6 +1398,7 @@ ApplicationWindow {
                         Rectangle { anchors.fill: parent; color: "#10151c" }
                         Image {
                             id: preview
+                            objectName: "photoPreview"
                             anchors.centerIn: parent
                             width: Math.max(100, parent.width - 50)
                             height: Math.max(100, parent.height - 55)
@@ -1348,6 +1412,188 @@ ApplicationWindow {
                                 origin.y: preview.height / 2
                                 xScale: window.imageZoom
                                 yScale: window.imageZoom
+                            }
+                            // Excluded areas of the photo's mask, over the painted image.
+                            Image {
+                                objectName: "maskOverlay"
+                                x: (preview.width - preview.paintedWidth) / 2
+                                y: (preview.height - preview.paintedHeight) / 2
+                                width: preview.paintedWidth
+                                height: preview.paintedHeight
+                                cache: false
+                                visible: photoMasks.revision >= 0 && photoMasks.hasMask(projects.selectedPhoto.file || "")
+                                source: photoMasks.revision >= 0 ? photoMasks.overlayUrl(projects.selectedPhoto.file || "") : ""
+                            }
+                            MouseArea {
+                                id: photoMouse
+                                anchors.fill: parent
+                                enabled: window.maskMode || window.gcpMode
+                                hoverEnabled: window.gcpMode
+                                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                cursorShape: enabled ? Qt.CrossCursor : Qt.ArrowCursor
+                                property real nx: (mouseX - (preview.width - preview.paintedWidth) / 2) / Math.max(1, preview.paintedWidth)
+                                property real ny: (mouseY - (preview.height - preview.paintedHeight) / 2) / Math.max(1, preview.paintedHeight)
+                                onClicked: function(mouse) {
+                                    var file = projects.selectedPhoto.file || ""
+                                    if (window.maskMode) {
+                                        var e = photoMasks.segmentAt(file, nx, ny, (mouse.modifiers & Qt.ShiftModifier) !== 0)
+                                        if (e.length > 0) window.flash(e)
+                                        return
+                                    }
+                                    if (mouse.button === Qt.RightButton) { survey.removeObservation(window.gcpPoint, file); return }
+                                    if (nx < 0 || ny < 0 || nx > 1 || ny > 1) return
+                                    // A click on the mark of another point selects that point.
+                                    for (var i = 0; i < window.gcpMarks.length; ++i) {
+                                        var m = window.gcpMarks[i]
+                                        if (m.id === window.gcpPoint) continue
+                                        if (Math.hypot((m.nx - nx) * preview.paintedWidth, (m.ny - ny) * preview.paintedHeight) * window.imageZoom < 12) {
+                                            window.gcpPoint = m.id
+                                            window.flash("Выбрана точка «" + m.name + "»" + (m.placed ? "" : ": щёлкните точно по её марке"))
+                                            return
+                                        }
+                                    }
+                                    if (window.gcpPoint === "") { window.flash("Выберите точку в панели справа"); return }
+                                    survey.setObservation(window.gcpPoint, file, nx, ny)
+                                }
+                            }
+                            // Ground control points on this photo: placed (filled) and where the
+                            // newest reconstruction expects the others (hollow).
+                            Repeater {
+                                model: window.gcpMode ? window.gcpMarks : []
+                                delegate: Item {
+                                    required property var modelData
+                                    x: (preview.width - preview.paintedWidth) / 2 + modelData.nx * preview.paintedWidth
+                                    y: (preview.height - preview.paintedHeight) / 2 + modelData.ny * preview.paintedHeight
+                                    property color tone: !modelData.placed ? "#B8C4D2" : modelData.check ? "#5EC8FF" : "#FFD54A"
+                                    property bool current: modelData.id === window.gcpPoint
+                                    Rectangle {
+                                        x: -width / 2; y: -height / 2
+                                        width: (parent.current ? 22 : 16) / window.imageZoom; height: width; radius: width / 2
+                                        color: "transparent"
+                                        border.color: parent.tone; border.width: (parent.current ? 2.5 : 1.5) / window.imageZoom
+                                        opacity: modelData.placed ? 1 : 0.75
+                                    }
+                                    Rectangle { x: -0.5 / window.imageZoom; y: -4 / window.imageZoom; width: 1 / window.imageZoom; height: 8 / window.imageZoom; color: parent.tone; visible: modelData.placed }
+                                    Rectangle { x: -4 / window.imageZoom; y: -0.5 / window.imageZoom; width: 8 / window.imageZoom; height: 1 / window.imageZoom; color: parent.tone; visible: modelData.placed }
+                                    Label {
+                                        x: 12 / window.imageZoom; y: -height / 2
+                                        scale: 1 / window.imageZoom; transformOrigin: Item.Left
+                                        text: modelData.name + (modelData.placed ? "" : " ?")
+                                        color: parent.tone; font.pixelSize: 12; font.bold: parent.current
+                                        style: Text.Outline; styleColor: "#C0000000"
+                                    }
+                                }
+                            }
+                        }
+                        // Magnifier under the cursor while placing points: the photo at twice
+                        // its native resolution, so a mark is hit to a fraction of a pixel.
+                        Rectangle {
+                            id: loupe
+                            objectName: "gcpLoupe"
+                            visible: window.gcpMode && photoMouse.containsMouse && photoMouse.nx >= 0 && photoMouse.ny >= 0 && photoMouse.nx <= 1 && photoMouse.ny <= 1
+                            width: 190; height: 190; radius: 95
+                            clip: true
+                            color: "#10151c"; border.color: Theme.accent; border.width: 2
+                            property point at: preview.mapToItem(photoWorkspace, photoMouse.mouseX, photoMouse.mouseY)
+                            x: Math.min(photoWorkspace.width - width - 8, at.x + 30)
+                            y: Math.max(8, at.y - height - 30)
+                            property real factor: Math.max(4, 2 * preview.implicitWidth / Math.max(1, preview.paintedWidth))
+                            Image {
+                                source: loupe.visible ? (projects.selectedPhoto.url || "") : ""
+                                autoTransform: true
+                                smooth: false
+                                width: preview.paintedWidth * loupe.factor
+                                height: preview.paintedHeight * loupe.factor
+                                x: loupe.width / 2 - photoMouse.nx * width
+                                y: loupe.height / 2 - photoMouse.ny * height
+                            }
+                            Rectangle { anchors.centerIn: parent; width: 1; height: 26; color: "#FF5A5A" }
+                            Rectangle { anchors.centerIn: parent; width: 26; height: 1; color: "#FF5A5A" }
+                        }
+                        // Mask of the photo for the reconstruction (Правка → Маска снимка).
+                        Rectangle {
+                            objectName: "maskBar"
+                            visible: window.maskMode
+                            anchors.top: parent.top; anchors.right: parent.right; anchors.margins: 12
+                            width: maskColumn.implicitWidth + 20
+                            height: maskColumn.implicitHeight + 16
+                            radius: 6
+                            color: "#E61A1F27"; border.color: Theme.line
+                            ColumnLayout {
+                                id: maskColumn
+                                anchors.fill: parent; anchors.margins: 8
+                                spacing: 5
+                                RowLayout {
+                                    Label { text: "МАСКА СНИМКА"; color: Theme.muted; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.2; Layout.fillWidth: true }
+                                    BusyIndicator { visible: photoMasks.busy; running: photoMasks.busy; implicitWidth: 18; implicitHeight: 18 }
+                                }
+                                Label {
+                                    Layout.preferredWidth: 300; wrapMode: Text.Wrap
+                                    text: "Щелчок — исключить объект, Shift+щелчок — вернуть"
+                                    color: Theme.text; font.pixelSize: 11
+                                }
+                                Label {
+                                    Layout.preferredWidth: 300; wrapMode: Text.Wrap
+                                    visible: photoMasks.status.length > 0
+                                    text: photoMasks.status; color: Theme.good; font.pixelSize: 11
+                                }
+                                RowLayout {
+                                    spacing: 6
+                                    FlatButton {
+                                        text: "Снять маску"; compact: true; caution: true
+                                        enabled: photoMasks.revision >= 0 && photoMasks.hasMask(projects.selectedPhoto.file || "")
+                                        onClicked: photoMasks.clearMask(projects.selectedPhoto.file || "")
+                                    }
+                                    FlatButton { text: "Готово"; compact: true; onClicked: window.maskMode = false }
+                                }
+                            }
+                        }
+                        // Ground control points on the photos (Проект → Отметить опорные точки).
+                        Rectangle {
+                            objectName: "gcpBar"
+                            visible: window.gcpMode
+                            anchors.top: parent.top; anchors.right: parent.right; anchors.margins: 12
+                            width: gcpColumn.implicitWidth + 20
+                            height: gcpColumn.implicitHeight + 16
+                            radius: 6
+                            color: "#E61A1F27"; border.color: Theme.line
+                            ColumnLayout {
+                                id: gcpColumn
+                                anchors.fill: parent; anchors.margins: 8
+                                spacing: 5
+                                Label { text: "ОПОРНЫЕ ТОЧКИ"; color: Theme.muted; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.2 }
+                                ComboBox {
+                                    id: gcpCombo
+                                    Layout.preferredWidth: 300
+                                    model: survey.points
+                                    textRole: "name"
+                                    valueRole: "id"
+                                    font.pixelSize: 12
+                                    currentIndex: { for (var i = 0; i < survey.points.length; ++i) if (survey.points[i].id === window.gcpPoint) return i; return -1 }
+                                    onActivated: window.gcpPoint = currentValue
+                                }
+                                Label {
+                                    Layout.preferredWidth: 300; wrapMode: Text.Wrap
+                                    property var info: survey.points.length >= 0 ? window.gcpPointInfo() : null
+                                    text: info ? (info.check ? "Контрольная точка" : "Опорная точка") + " · отмечена на снимках: " + info.photos
+                                                 + (!info.check && info.photos < 3 ? " (нужно не меньше 3)" : "") : ""
+                                    color: info && !info.check && info.photos < 3 ? Theme.warn : Theme.text; font.pixelSize: 11
+                                }
+                                Label {
+                                    Layout.preferredWidth: 300; wrapMode: Text.Wrap
+                                    text: "Щелчок — поставить, правый щелчок — снять"
+                                    color: Theme.faint; font.pixelSize: 10
+                                }
+                                RowLayout {
+                                    spacing: 6
+                                    FlatButton {
+                                        text: "Снять с этого снимка"; compact: true; caution: true
+                                        enabled: { for (var i = 0; i < window.gcpMarks.length; ++i) if (window.gcpMarks[i].id === window.gcpPoint && window.gcpMarks[i].placed) return true; return false }
+                                        onClicked: survey.removeObservation(window.gcpPoint, projects.selectedPhoto.file || "")
+                                    }
+                                    FlatButton { text: "Список точек…"; compact: true; onClicked: surveyDialog.openTab(0) }
+                                    FlatButton { text: "Готово"; compact: true; onClicked: window.gcpMode = false }
+                                }
                             }
                         }
                         WheelHandler {
@@ -1446,13 +1692,6 @@ ApplicationWindow {
                                     Label { text: "Нет GPS-координат"; color: window.white; font.pixelSize: 17; font.bold: true; Layout.alignment: Qt.AlignHCenter }
                                     Label { text: "Добавьте фотографии с геометками, чтобы увидеть схему их расположения"; color: window.muted; font.pixelSize: 12; Layout.alignment: Qt.AlignHCenter }
                                 }
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                text: "Схема показывает относительное расположение GPS-точек. Масштаб по осям независим; это не географическая карта и не ортофотоплан."
-                                wrapMode: Text.Wrap
-                                color: window.muted
-                                font.pixelSize: 11
                             }
                         }
                     }
@@ -1643,11 +1882,6 @@ ApplicationWindow {
                                             Layout.fillWidth: true
                                             visible: window.showOptions
                                             spacing: 6
-                                            Label {
-                                                Layout.fillWidth: true; wrapMode: Text.Wrap
-                                                text: "Пустое значение — как в выбранном профиле. Настройки применяются поверх профиля."
-                                                color: "#6f7f92"; font.pixelSize: 10
-                                            }
                                             Repeater {
                                                 model: window.optionDefs
                                                 delegate: ColumnLayout {
@@ -1788,11 +2022,6 @@ ApplicationWindow {
                                                 }
                                             }
                                         }
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text: "Время и качество реконструкции зависят от перекрытия и качества снимков, GPS/GCP и ресурсов компьютера; они не гарантируются."
-                                            wrapMode: Text.Wrap; color: "#6f7f92"; font.pixelSize: 10
-                                        }
                                     }
                                 }
                                 // GeoMap AI's own orthophoto after ODM: directly from the photos over the DSM.
@@ -1801,7 +2030,7 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     checked: processing.autoTrueOrthophoto
                                     onToggled: processing.autoTrueOrthophoto = checked
-                                    text: "Истинный ортофотоплан GeoMap AI после обработки (резкие кроны и крыши; нужен DSM)"
+                                    text: "Истинный ортофотоплан после обработки"
                                     font.pixelSize: 11
                                 }
                                 Label {
@@ -1986,12 +2215,16 @@ ApplicationWindow {
                                                     + (started ? " · время: " + window.durationText(elapsed) : "")
                                             }
                                             color: "#b7c6d8"; font.pixelSize: 11
+                                            HoverHandler { id: jobInfoHover }
+                                            ToolTip.visible: jobInfoHover.hovered && (window.jobInfo.arguments || "").length > 0
+                                            ToolTip.delay: 500
+                                            ToolTip.text: "Параметры ODM: " + (window.jobInfo.arguments || "")
                                         }
                                         Label {
                                             Layout.fillWidth: true
-                                            visible: window.jobInfo.stageIndex > 0
-                                            text: "Этап " + window.jobInfo.stageIndex + " из " + window.jobInfo.stageCount + ": " + window.jobInfo.stageTitle
-                                                + (window.jobInfo.active ? "" : " (последний выполнявшийся)")
+                                            visible: window.jobInfo.stageIndex > 0 && window.jobInfo.state !== "completed"
+                                            text: (window.jobInfo.active ? "Этап " + window.jobInfo.stageIndex + " из " + window.jobInfo.stageCount + ": "
+                                                                         : "Остановлено на этапе: ") + window.jobInfo.stageTitle
                                             color: window.white; font.pixelSize: 12
                                         }
                                         Row {
@@ -2008,22 +2241,13 @@ ApplicationWindow {
                                                 }
                                             }
                                         }
-                                        Label {
-                                            Layout.fillWidth: true; wrapMode: Text.Wrap
-                                            visible: window.jobInfo.active === true
-                                            text: "Этапы ODM сильно различаются по длительности, поэтому номер этапа не означает долю выполненной работы."
-                                            color: "#6f7f92"; font.pixelSize: 10
-                                        }
+
                                         Label {
                                             Layout.fillWidth: true; wrapMode: Text.Wrap
                                             text: window.jobInfo.message || ""
                                             color: window.jobInfo.state === "failed" ? "#f4c6c6" : "#d4e2f2"; font.pixelSize: 12
                                         }
-                                        Label {
-                                            Layout.fillWidth: true; wrapMode: Text.WrapAnywhere
-                                            text: "Параметры: " + (window.jobInfo.arguments || "")
-                                            color: window.muted; font.pixelSize: 10; font.family: "Consolas"
-                                        }
+
 
                                         Repeater {
                                             model: window.jobInfo.notes || []
@@ -2419,7 +2643,7 @@ ApplicationWindow {
                 Layout.maximumWidth: 360
                 onClicked: window.openJob(processing.activeJobId.length > 0 ? processing.activeJobId : window.selectedJobId)
             }
-            Label { text: "OFFLINE · v" + Qt.application.version; color: Theme.faint; font.pixelSize: 10; font.letterSpacing: 0.5 }
+            Label { text: "v" + Qt.application.version; color: Theme.faint; font.pixelSize: 10; font.letterSpacing: 0.5 }
         }
     }
 }
