@@ -208,7 +208,7 @@ ApplicationWindow {
         case "proc.start": return has && idle && processing.environmentChecked && processing.engineAvailable
         case "proc.stop": return processing.active
         case "view.photo": case "view.map": case "view.processing": case "view.gps": case "view.reset":
-        case "view.cameras": case "view.dem": return has
+        case "view.cameras": case "view.orthophoto": case "view.dem": return has
         case "view.basemap": return has
         case "view.split": return has
         case "proc.batch": return has && projects.photoCount > 0 && processing.engineAvailable
@@ -323,6 +323,14 @@ ApplicationWindow {
         }
         window.activeView = 3
         if (id.length > 0) { gis.selectedLayer = id; gis.zoomToLayer(id) }
+    }
+    function showOrthophoto() {   // the true orthophoto when built: the tree lists it first
+        var ortho = projectTree.result("orthophoto")
+        if (ortho.path === undefined) {
+            window.showNotice("В проекте нет ортофотоплана. Постройте его (Обработка → Построение ортофотоплана) или добавьте файл: Файл → Импорт ортофотоплана.")
+            return
+        }
+        window.showResultOnMap(ortho.path)
     }
     function showDem() {
         var dem = projectTree.result("dsm")
@@ -444,6 +452,7 @@ ApplicationWindow {
         "view.iso": function() { window.activeView = 4; scene3d.setPreset("iso") },
         "tool.rotate": function() { window.set3DTool("orbit") },
         "tool.scale": function() { window.set3DTool("zoom") },
+        "view.orthophoto": function() { window.showOrthophoto() },
         "view.dem": function() { window.showDem() },
         "view.hillshade": function() { gis.setLayerStyle(mapController.details.id, { hillshade: !(mapController.details.style.hillshade === true) }) },
         "view.cameras": function() {   // the photos on the map, or the cameras in the 3D scene

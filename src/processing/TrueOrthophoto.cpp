@@ -767,6 +767,42 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
         for (size_t i = 0; i < m.size(); ++i) high[i] = m[i] > 0.5f && !std::isnan(dsm.v[i]);
     }
     {
+        // Holes in a canopy up to 25 m² (undergrowth, a gap lower than objectHeight) belong to it:
+        // as "ground" they were projected over the raw surface of the reconstruction from a photo
+        // of their own — swirled patches with a seam around them inside the crowns. Taken with
+        // the canopy they lie on its smooth surface and come from its photo.
+        const qint64 maxHole = qint64(25.0 / (cell * cell));
+        std::vector<uchar> seen(high.size(), 0);
+        std::vector<int> stack, members;
+        for (int y = 0; y < dsm.h; ++y)
+            for (int x = 0; x < dsm.w; ++x) {
+                const size_t start = size_t(y) * dsm.w + x;
+                if (high[start] || seen[start]) continue;
+                bool enclosed = true;
+                members.clear();
+                stack = {int(start)};
+                seen[start] = 1;
+                while (!stack.empty()) {
+                    const int p = stack.back();
+                    stack.pop_back();
+                    members.push_back(p);
+                    const int px = p % dsm.w, py = p / dsm.w;
+                    if (!valid[size_t(p)] || std::isnan(dsm.v[size_t(p)]) || px == 0 || py == 0 || px == dsm.w - 1 || py == dsm.h - 1)
+                        enclosed = false;
+                    for (int d = 0; d < 4; ++d) {
+                        const int nx = px + (d == 0) - (d == 1), ny = py + (d == 2) - (d == 3);
+                        if (nx < 0 || ny < 0 || nx >= dsm.w || ny >= dsm.h) continue;
+                        const size_t q = size_t(ny) * dsm.w + nx;
+                        if (high[q] || seen[q]) continue;
+                        seen[q] = 1;
+                        stack.push_back(int(q));
+                    }
+                }
+                if (enclosed && qint64(members.size()) <= maxHole)
+                    for (int p : members) high[size_t(p)] = 1;
+            }
+    }
+    {
         std::vector<uchar> grown = high;
         for (int pass = 0; pass < 2; ++pass) {
             std::vector<uchar> g = grown;
@@ -833,7 +869,27 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
         for (size_t i = 0; i < rough.size(); ++i)
             if (high[i] && !std::isnan(dsm.v[i]) && !std::isnan(crowns[i])) rough[i] = std::fabs(dsm.v[i] - crowns[i]);
         maskedSmooth(rough, high, dsm.w, dsm.h, qMax(1, int(std::lround(1.0 / cell))));
+        // Below objectHeight: the ground finely smoothed (kerbs and paths keep their shape); low
+        // vegetation (bushes, undergrowth), scattered by the reconstruction like foliage, smoothed
+        // at 1 m — a photo draped over that scatter swirls. Told apart by the same roughness.
+        std::vector<float> lowCoarse = dsm.v, lowRough(dsm.v.size(), 0.0f);
+        maskedSmooth(lowCoarse, low, dsm.w, dsm.h, qMax(1, int(std::lround(0.3 / cell))));
+        for (size_t i = 0; i < lowRough.size(); ++i)
+            if (low[i] && !std::isnan(dsm.v[i]) && !std::isnan(lowCoarse[i])) lowRough[i] = std::fabs(dsm.v[i] - lowCoarse[i]);
+        maskedSmooth(lowRough, low, dsm.w, dsm.h, qMax(1, int(std::lround(1.0 / cell))));
+        lowCoarse = dsm.v;
+        maskedSmooth(lowCoarse, low, dsm.w, dsm.h, qMax(1, int(std::lround(1.0 / cell))));
         maskedSmooth(dsm.v, low, dsm.w, dsm.h, qMax(1, int(std::lround(0.12 / cell))));
+        // Not at the foot of a crown or a roof: within 0.6 m the fine surface keeps their edge,
+        // fading into the coarse one over the next 0.6 m.
+        const std::vector<float> toObject = distanceInside(low, dsm.w, dsm.h);
+        const float foot = float(0.6 / cell);
+        for (size_t i = 0; i < dsm.v.size(); ++i) {
+            if (!low[i] || toObject[i] <= foot || (!fromPoints.empty() && !fromPoints[i]) || std::isnan(lowCoarse[i])) continue;
+            const float t = qBound(0.0f, (lowRough[i] - 0.06f) / 0.09f, 1.0f)
+                                                                                 * qMin(1.0f, (toObject[i] - foot) / foot);
+            dsm.v[i] = dsm.v[i] * (1 - t) + lowCoarse[i] * t;
+        }
         for (size_t i = 0; i < crowns.size(); ++i)
             if (!high[i]) crowns[i] = dsm.v[i];
     }
@@ -918,6 +974,31 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
             object[i] = compact[r];
         }
         res.objects = pieces;
+    }
+    // Boundaries between the crowns of a canopy (not their outlines): how far every cell is from
+    // one, in cells, and the crown across it within 0.4 m — the photos of two crowns fade into
+    // each other across it instead of meeting in a seam.
+    std::vector<float> fromBoundary;
+    std::vector<int> acrossBoundary(object.size(), -1);
+    {
+        std::vector<uchar> core(high.size(), 1);
+        for (int y = 0; y < dsm.h; ++y)
+            for (int x = 0; x < dsm.w; ++x) {
+                const size_t i = size_t(y) * dsm.w + x;
+                if (!high[i] || object[i] < 0) continue;
+                for (int d = 0; d < 4; ++d) {
+                    const int nx = x + (d == 0) - (d == 1), ny = y + (d == 2) - (d == 3);
+                    if (nx < 0 || ny < 0 || nx >= dsm.w || ny >= dsm.h) continue;
+                    const size_t q = size_t(ny) * dsm.w + nx;
+                    if (high[q] && object[q] >= 0 && object[q] != object[i]) {
+                        core[i] = 0;
+                        acrossBoundary[i] = object[q];
+                        break;
+                    }
+                }
+            }
+        fromBoundary = distanceInside(core, dsm.w, dsm.h);
+        nearestLabel(acrossBoundary, dsm.w, dsm.h, float(0.4 / cell));
     }
     // --- The surface of every crown: a dome (quadric z = a + bx + cy + dx² + exy + fy², robust
     // least squares over its highest points). It keeps the crown's height and shape — the photo
@@ -1221,6 +1302,10 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
     // object's photos when they see it, so a gap does not become a patch from another photo.
     std::vector<int> nearObject = object;
     nearestLabel(nearObject, dsm.w, dsm.h, float(0.6 / cell));
+    // Ground hidden from every photo lies mostly under the overhang of a crown or a roof: within
+    // 3 m of one it is taken from that object's photo (where the overhang covers it anyway).
+    std::vector<int> underObject = object;
+    nearestLabel(underObject, dsm.w, dsm.h, float(3.0 / cell));
     if (!progress(0.3)) { res.error = QStringLiteral("Отменено"); CPLFree(srsWkt); return res; }
 
     // --- Brightness balance on the ground seen by several photos (photos decoded at 1/8).
@@ -1403,8 +1488,19 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
                 // object's photos when they see it (gaps in a canopy stay in the crowns' photo).
                 bool done = false;
                 int used = -1;
-                if (isObject) done = fromRanked(objectShots[o], P, cellIndex, true, rgb, &used);
-                else if (nearObject[cellIndex] >= 0 && objectShot[nearObject[cellIndex]] >= 0)
+                if (isObject) {
+                    done = fromRanked(objectShots[o], P, cellIndex, true, rgb, &used);
+                    // Near the boundary with a crown taken from another photo: towards that photo,
+                    // half and half on the boundary itself.
+                    const int across = acrossBoundary[cellIndex];
+                    if (done && across >= 0 && across != o && objectShot[across] >= 0 && objectShot[across] != objectShot[o]) {
+                        const double k = 0.5 * (1 - qBound(0.0, fromBoundary[cellIndex] * cell / 0.4, 1.0));
+                        double c2[3];
+                        int other = -1;
+                        if (k > 0 && fromRanked(objectShots[across], P, cellIndex, true, c2, &other))
+                            for (int ch = 0; ch < 3; ++ch) rgb[ch] = rgb[ch] * (1 - k) + c2[ch] * k;
+                    }
+                } else if (nearObject[cellIndex] >= 0 && objectShot[nearObject[cellIndex]] >= 0)
                     done = fromRanked(objectShots[nearObject[cellIndex]], P, cellIndex, false, rgb, &used);
                 if (!done) {
                     // The photo that looks at the surface most squarely (on flat ground: the most vertical).
@@ -1417,20 +1513,27 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
                         else if (a < a2) { s2 = s; a2 = a; u2 = u; w2 = w; }
                     }
                     if (s1 < 0) {
-                        // Hidden from every photo (a pit in a noisy crown, ground between crowns):
-                        // the object's own photo, else the photo where it is least hidden — its
-                        // depth nearest to the surface seen at its pixel — rather than a hole.
+                        // Hidden from every photo: ground in the margin around a crown or a roof,
+                        // a pit in a crown. The most vertical photo that sees it over the projection
+                        // surface (the margin aside), else the photo of its object or of the object
+                        // next to it, else the most vertical photo over it — choices that hold over
+                        // whole areas. Picking per pixel the photo where it is least hidden
+                        // alternated photos in stripes.
                         ++hidden;
-                        const int own = isObject ? objectShot[o] : -1;
-                        double leastHidden = 1e300;
+                        const int near = isObject ? o : underObject[cellIndex];
+                        const int own = near >= 0 ? objectShot[near] : -1;
+                        double best = 1e300;
                         for (int s : candidates) {
                             double u, w, d;
                             const Shot &shot = scene.shots[s];
                             if (!shot.project(P, &u, &w, &d) || u < 1 || w < 1 || u > shot.camera.width - 2 || w > shot.camera.height - 2) continue;
                             const View &v = views[s];
-                            const double excess = s == own ? -1e300
-                                                           : d - v.z[size_t(qMin(v.zh - 1, int(w / v.div))) * v.zw + qMin(v.zw - 1, int(u / v.div))];
-                            if (excess < leastHidden) { leastHidden = excess; s1 = s; u1 = u; w1 = w; }
+                            const bool visible = !isObject
+                                                 && d <= v.z[size_t(qMin(v.zh - 1, int(w / v.div))) * v.zw + qMin(v.zw - 1, int(u / v.div))] + 0.25 + 0.005 * d;
+                            const double dx = shot.centre[0] - P[0], dy = shot.centre[1] - P[1], dz = shot.centre[2] - P[2];
+                            const double vertical = std::acos(qBound(-1.0, dz / std::sqrt(dx * dx + dy * dy + dz * dz), 1.0));   // 0…π/2
+                            const double score = visible ? vertical : s == own ? 10 : 20 + vertical;
+                            if (score < best) { best = score; s1 = s; u1 = u; w1 = w; }
                         }
                         s2 = -1;
                     }

@@ -288,6 +288,16 @@ private slots:
         QVERIFY2(qAbs(near.area - 3.14159 * 400) < 60, qPrintable(QString::number(near.area)));
         QVERIFY(qAbs(near.visibleArea - near.area) < 1);
         QVERIFY(!terrain::viewshed(m_dir.filePath("wall.tif"), {X0 - 500, Y0}, utm(), 1.7, 0, 100, m_dir.filePath("out/v3.tif")).ok());
+        // Cells without heights (the edges of a real DSM) are neither seen nor hidden: nodata, not counted.
+        QVERIFY(makeDem(m_dir.filePath("holes.tif"), 200, 100, [](int c, int) { return c >= 150 ? -9999.0 : 100.0; }, 32615, 1.0, -9999));
+        const terrain::Viewshed holes = terrain::viewshed(m_dir.filePath("holes.tif"), {X0 + 50.5, Y0 - 50.5}, utm(), 1.7, 0, 1000,
+                                                          m_dir.filePath("out/viewshed-holes.tif"));
+        QVERIFY2(holes.ok(), qPrintable(holes.error));
+        QVERIFY2(qAbs(holes.area - 15000) < 1, qPrintable(QString::number(holes.area)));
+        QVERIFY2(qAbs(holes.visibleArea - 15000) < 1, qPrintable(QString::number(holes.visibleArea)));
+        QCOMPARE(pixel(holes.path, 175, 50), 255.0);
+        QCOMPARE(pixel(holes.path, 120, 50), 1.0);
+        QVERIFY(!QFileInfo::exists(holes.path + QStringLiteral(".partial.tif")));
     }
 
     // Raster calculator: vegetation indices and expressions on bands with known values.

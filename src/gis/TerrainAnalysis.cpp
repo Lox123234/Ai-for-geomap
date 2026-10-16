@@ -639,14 +639,17 @@ Viewshed viewshed(const QString &demPath, const QPointF &observer, const Crs &ob
     }
     const double k = dem.crs.metersPerUnit();
     QDir().mkpath(QFileInfo(out).absolutePath());
-    const char *create[] = {"COMPRESS=DEFLATE", "TILED=YES", nullptr};
+    // Into an uncompressed file first: the cells without heights are masked in place below, then
+    // the result is copied compressed.
+    const QString raw = out + QStringLiteral(".partial.tif");
+    const char *rawOptions[] = {"TILED=YES", nullptr};
     GisEnvironment::clearError();
-    GDALDatasetH ds = GDALViewshedGenerate(dem.band, "GTiff", nativePath(out).constData(), create, p[0].x(), p[0].y(),
+    GDALDatasetH ds = GDALViewshedGenerate(dem.band, "GTiff", nativePath(raw).constData(), rawOptions, p[0].x(), p[0].y(),
                                            observerHeight / k, targetHeight / k, 1, 0, 255, 255, 0.85714, GVM_Edge, radius / k,
                                            nullptr, nullptr, GVOT_NORMAL, nullptr);
     if (!ds) {
         v.error = QStringLiteral("GDAL: %1").arg(GisEnvironment::lastError());
-        QFile::remove(out);
+        QFile::remove(raw);
         return v;
     }
     GDALRasterBandH band = GDALGetRasterBand(ds, 1);
@@ -655,16 +658,41 @@ Viewshed viewshed(const QString &demPath, const QPointF &observer, const Crs &ob
     GDALGetGeoTransform(ds, gt);
     const int w = GDALGetRasterXSize(ds), h = GDALGetRasterYSize(ds);
     const double cell = std::fabs(gt[1] * gt[5]) * k * k;
+    // GDAL's viewshed ignores the model's nodata: such cells come out "not visible". They become
+    // nodata here, so the map and the areas cover only the cells with heights.
+    const int xoff = int(std::lround((gt[0] - dem.gt[0]) / dem.gt[1])), yoff = int(std::lround((gt[3] - dem.gt[3]) / dem.gt[5]));
+    const int x0 = qMax(0, -xoff), x1 = qMin(w, dem.width - xoff);
     std::vector<uchar> row(w);
+    std::vector<double> heights(size_t(qMax(0, x1 - x0)));
     for (int y = 0; y < h; ++y) {
         if (GDALRasterIO(band, GF_Read, 0, y, w, 1, row.data(), w, 1, GDT_Byte, 0, 0) != CE_None) break;
+        bool masked = false;
+        const int dy = yoff + y;
+        if (x1 > x0 && dy >= 0 && dy < dem.height
+            && GDALRasterIO(dem.band, GF_Read, xoff + x0, dy, x1 - x0, 1, heights.data(), x1 - x0, 1, GDT_Float64, 0, 0) == CE_None) {
+            for (int x = x0; x < x1; ++x)
+                if (row[x] != 255 && !dem.valid(heights[size_t(x - x0)])) {
+                    row[x] = 255;
+                    masked = true;
+                }
+        }
+        if (masked) GDALRasterIO(band, GF_Write, 0, y, w, 1, row.data(), w, 1, GDT_Byte, 0, 0);
         for (int x = 0; x < w; ++x) {
             if (row[x] == 255) continue;
             v.area += cell;
             if (row[x] == 1) v.visibleArea += cell;
         }
     }
+    const char *create[] = {"COMPRESS=DEFLATE", "TILED=YES", nullptr};
+    GDALDatasetH copy = GDALCreateCopy(GDALGetDriverByName("GTiff"), nativePath(out).constData(), ds, FALSE,
+                                       const_cast<char **>(create), nullptr, nullptr);
     GDALClose(ds);
+    QFile::remove(raw);
+    if (!copy) {
+        v.error = QStringLiteral("GDAL: %1").arg(GisEnvironment::lastError());
+        return v;
+    }
+    GDALClose(copy);
     return v;
 }
 

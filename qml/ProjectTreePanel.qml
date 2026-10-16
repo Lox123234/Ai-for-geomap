@@ -93,6 +93,18 @@ Rectangle {
                     color: row.selected ? Theme.accentSoft : rowHover.hovered ? Theme.hover : "transparent"
                 }
                 HoverHandler { id: rowHover }
+                // A MouseArea, not a TapHandler: in a TreeView delegate the handler's double tap never
+                // fired. Below the row's content, so the expand arrow still gets its taps.
+                MouseArea {
+                    objectName: "treeRow:" + row.kind
+                    anchors.fill: parent
+                    acceptedButtons: Qt.LeftButton
+                    onClicked: {
+                        panel.selectedKey = panel.keyOf(row.kind, row.payload)
+                        panel.host.selectTreeItem(panel.itemOf(row))
+                    }
+                    onDoubleClicked: panel.host.openTreeItem(panel.itemOf(row))
+                }
                 RowLayout {
                     anchors.fill: parent
                     anchors.leftMargin: 6 + row.depth * 14
@@ -134,14 +146,6 @@ Rectangle {
                         elide: Text.ElideRight
                         horizontalAlignment: Text.AlignRight
                     }
-                }
-                TapHandler {
-                    acceptedButtons: Qt.LeftButton
-                    onTapped: {
-                        panel.selectedKey = panel.keyOf(row.kind, row.payload)
-                        panel.host.selectTreeItem(panel.itemOf(row))
-                    }
-                    onDoubleTapped: panel.host.openTreeItem(panel.itemOf(row))
                 }
                 TapHandler {
                     acceptedButtons: Qt.RightButton

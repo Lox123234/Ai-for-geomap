@@ -467,6 +467,9 @@ private:
     void computeProfile(const QVector<QPointF> &line);
     void computeVolume(const QVector<QPointF> &ring);
     bool isElevation(const MapLayer &l) const;
+    // A product of the analysis (slope, viewshed, indices…) in <project>/analysis: a single-band
+    // raster, but not heights. Edited copies of a model (_правка, _заполнено) are heights.
+    bool isDerived(const MapLayer &l) const;
     void loadMeasurements();
     void saveMeasurements() const;
 

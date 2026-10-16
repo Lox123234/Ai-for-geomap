@@ -92,11 +92,11 @@ Dialog {
                                                : [{ t: "R", f: "red", v: 1 }, { t: "G", f: "green", v: 2 }, { t: "B", f: "blue", v: 3 }]
                 delegate: RowLayout {
                     required property var modelData
-                    Label { text: modelData.t + " = B"; color: Theme.muted; font.pixelSize: 11 }
+                    Label { text: modelData.t + " — канал"; color: Theme.muted; font.pixelSize: 11 }
                     SpinBox {
                         objectName: "band_" + modelData.f
                         from: 1; to: Math.max(1, dialog.bands); value: Math.min(modelData.v, Math.max(1, dialog.bands))
-                        implicitWidth: 90; implicitHeight: 28; editable: true
+                        implicitWidth: 112; implicitHeight: 28; editable: true   // the number between the ± buttons stays readable
                         onValueChanged: bandValues[modelData.f] = value
                         Component.onCompleted: bandValues[modelData.f] = value
                     }

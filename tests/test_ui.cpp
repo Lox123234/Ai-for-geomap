@@ -128,6 +128,17 @@ struct Session
         }
         return nullptr;
     }
+    // By objectName in the item tree: view delegates are not QObject children of the window.
+    QQuickItem *findItem(const QString &name) const
+    {
+        QList<QQuickItem *> stack{window->contentItem()};
+        while (!stack.isEmpty()) {
+            QQuickItem *item = stack.takeLast();
+            if (item->objectName() == name) return item;
+            stack << item->childItems();
+        }
+        return nullptr;
+    }
     void shot(const QString &name)
     {
         const QString keep = qEnvironmentVariable("GEOMAP_TEST_OUTPUT");
@@ -307,6 +318,14 @@ private slots:
         auto s = open();
         QVERIFY(s->projects.openProject(QUrl::fromLocalFile(project)));
         QTRY_VERIFY(!s->tree.result(QStringLiteral("orthophoto")).isEmpty());
+        // A real double click on a row of the tree opens it (the photos: the photo view).
+        s->run(QStringLiteral("view.map"));
+        QQuickItem *photosRow = nullptr;
+        QTRY_VERIFY((photosRow = s->findItem(QStringLiteral("treeRow:photos"))) != nullptr);
+        QTRY_VERIFY(photosRow->isVisible() && photosRow->width() > 0);
+        QTest::mouseDClick(s->window, Qt::LeftButton, Qt::NoModifier,
+                           photosRow->mapToScene(QPointF(photosRow->width() / 2, photosRow->height() / 2)).toPoint());
+        QTRY_COMPARE(s->prop("activeView").toInt(), 0);
         // Double click on the orthophoto in the tree: added to the map once, selected and shown.
         const QVariantMap item{{"kind", "orthophoto"}, {"title", "Ортофотоплан"}, {"available", true},
                                {"payload", s->tree.result(QStringLiteral("orthophoto")).value("path")},
@@ -317,6 +336,10 @@ private slots:
         QVERIFY(!layer.isEmpty());
         QCOMPARE(s->map.selectedLayer(), layer);
         s->call("openTreeItem", item);
+        s->run(QStringLiteral("view.photo"));
+        QVERIFY(s->run(QStringLiteral("view.orthophoto")));   // «Вид → Ортофотоплан»: the same layer
+        QCOMPARE(s->prop("activeView").toInt(), 3);
+        QCOMPARE(s->map.selectedLayer(), layer);
         int rasters = 0;
         for (const MapLayer &l : s->map.layers()) rasters += l.type == MapLayer::Raster;
         QCOMPARE(rasters, 1);
@@ -405,6 +428,10 @@ private slots:
         QVERIFY(QFileInfo::exists(slopePath));
         QCOMPARE(s->map.layerDetails(s->map.layerIdForSource(slopePath)).value("style").toMap().value("ramp").toString(), QStringLiteral("slope"));
         QVERIFY(dialog->property("resultText").toString().contains(QStringLiteral("Карта уклонов")));
+        // The slope map on top, even selected, is not what the tools measure: the model of heights is.
+        s->map.selectLayer(s->map.layerIdForSource(slopePath));
+        QCOMPARE(s->map.terrainLayerId(), demId);
+        QCOMPARE(s->map.elevationLayers().first().toMap().value("id").toString(), demId);
         s->shot(QStringLiteral("ui-08-terrain-slope.png"));
         QMetaObject::invokeMethod(dialog, "close");
         // Contours every metre: a vector layer.
@@ -429,6 +456,11 @@ private slots:
         QCOMPARE(s->map.addLayerFile(flat), QString());
         const QString flatId = s->map.layerIdForSource(flat);
         QTRY_VERIFY_WITH_TIMEOUT(s->map.elevationLayers().size() == 3, 30000);   // dem, slope, flat
+        // The dialog pairs the two models of heights, never a model with the slope map or itself.
+        QMetaObject::invokeMethod(dialog, "openFor", Q_ARG(QVariant, QStringLiteral("difference")));
+        const QStringList pair{dialog->property("layerId").toString(), dialog->property("otherLayerId").toString()};
+        QVERIFY2(pair.contains(demId) && pair.contains(flatId), qPrintable(pair.join(' ')));
+        QMetaObject::invokeMethod(dialog, "close");
         finished.clear();
         QCOMPARE(s->map.analyzeTerrain(demId, QStringLiteral("difference"), 0, 0, demId), QStringLiteral("Выберите две разные модели высот."));
         QCOMPARE(s->map.analyzeTerrain(demId, QStringLiteral("difference"), 0, 0, flatId), QString());

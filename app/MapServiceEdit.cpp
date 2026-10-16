@@ -276,17 +276,11 @@ QString MapService::addMarker(const QPointF &mapPoint, const QString &name)
     // copies) before other single-band rasters (slope, indices, calculator results).
     static const QStringList heightWords = {QStringLiteral("dsm"), QStringLiteral("dtm"), QStringLiteral("dem"), QStringLiteral("высот"),
                                             QStringLiteral("рельеф"), QStringLiteral("_правка"), QStringLiteral("_заполнено"), QStringLiteral("elev")};
-    const QString analysis = QDir::cleanPath(QDir(m_project).filePath(QStringLiteral("analysis")));
     for (int pass = 0; pass < 2 && !std::isfinite(m.z); ++pass)
         for (int i = int(m_layers.size()) - 1; i >= 0; --i) {
             const MapLayer &l = m_layers[i];
-            if (!l.visible || !isElevation(l) || !l.raster) continue;
+            if (!l.visible || !isElevation(l) || !l.raster || isDerived(l)) continue;
             const QString file = QFileInfo(l.source).fileName();
-            // Products of the analysis (slope, indices, calculator, viewshed…) are not heights;
-            // edited copies of a model are.
-            const bool derived = QDir::cleanPath(QFileInfo(l.source).absolutePath()).compare(analysis, Qt::CaseInsensitive) == 0
-                                 && !file.contains(QStringLiteral("_правка")) && !file.contains(QStringLiteral("_заполнено"));
-            if (derived) continue;
             const QString key = (file + QLatin1Char(' ') + l.name).toLower();
             const bool named = std::any_of(heightWords.cbegin(), heightWords.cend(), [&key](const QString &w) { return key.contains(w); });
             if (pass == 0 && !named) continue;

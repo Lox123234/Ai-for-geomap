@@ -2635,23 +2635,39 @@ bool MapService::isElevation(const MapLayer &l) const
     return l.type == MapLayer::Raster && !l.basemap && l.rasterInfo.valid && l.rasterInfo.bands == 1 && l.raster && !l.needsCrs;
 }
 
+bool MapService::isDerived(const MapLayer &l) const
+{
+    if (m_project.isEmpty()) return false;
+    const QString analysis = QDir::cleanPath(QDir(m_project).filePath(QStringLiteral("analysis")));
+    const QString file = QFileInfo(l.source).fileName();
+    return QDir::cleanPath(QFileInfo(l.source).absolutePath()).compare(analysis, Qt::CaseInsensitive) == 0
+           && !file.contains(QStringLiteral("_правка")) && !file.contains(QStringLiteral("_заполнено"));
+}
+
 QVariantList MapService::elevationLayers() const
 {
-    QVariantList list;
-    for (int i = int(m_layers.size()) - 1; i >= 0; --i) {
-        const MapLayer &l = m_layers[i];
-        if (!isElevation(l)) continue;
-        list << QVariantMap{{"id", l.id}, {"name", l.name}, {"min", l.style.min}, {"max", l.style.max}, {"visible", l.visible}};
-    }
+    QVariantList list;   // top first; the models of heights before the products of the analysis
+    for (int pass = 0; pass < 2; ++pass)
+        for (int i = int(m_layers.size()) - 1; i >= 0; --i) {
+            const MapLayer &l = m_layers[i];
+            if (!isElevation(l) || isDerived(l) != (pass == 1)) continue;
+            list << QVariantMap{{"id", l.id}, {"name", l.name}, {"min", l.style.min}, {"max", l.style.max}, {"visible", l.visible},
+                                {"derived", pass == 1}};
+        }
     return list;
 }
 
 QString MapService::terrainLayerId() const
 {
+    // The selected model, else the top visible one — a model of heights before a product of the
+    // analysis (a slope map or a viewshed just added on top is not what the tools should measure).
     const int selected = indexOf(m_selectedLayer);
-    if (selected >= 0 && isElevation(m_layers[selected])) return m_layers[selected].id;
-    for (int i = int(m_layers.size()) - 1; i >= 0; --i)
-        if (m_layers[i].visible && isElevation(m_layers[i])) return m_layers[i].id;
+    for (int pass = 0; pass < 2; ++pass) {
+        const auto fits = [&](const MapLayer &l) { return isElevation(l) && (pass == 1 || !isDerived(l)); };
+        if (selected >= 0 && fits(m_layers[selected])) return m_layers[selected].id;
+        for (int i = int(m_layers.size()) - 1; i >= 0; --i)
+            if (m_layers[i].visible && fits(m_layers[i])) return m_layers[i].id;
+    }
     return {};
 }
 

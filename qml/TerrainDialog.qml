@@ -35,10 +35,17 @@ Dialog {
         var preferred = gis.terrainLayerId()
         layerId = preferred.length > 0 ? preferred : (layers.length > 0 ? layers[0].id : "")
         otherLayerId = ""
-        for (var i = 0; i < layers.length; ++i) if (layers[i].id !== layerId) { otherLayerId = layers[i].id; break }
+        pickOther()
         resultText = ""
         suggest()
         open()
+    }
+    // Model B of the difference: another model of heights (not a slope map or a viewshed), else none.
+    function pickOther() {
+        if (otherLayerId.length > 0 && otherLayerId !== layerId) return
+        otherLayerId = ""
+        for (var i = 0; i < layers.length; ++i)
+            if (layers[i].id !== layerId && !layers[i].derived) { otherLayerId = layers[i].id; break }
     }
     function suggest() {
         if (layerId.length === 0) return
@@ -63,7 +70,7 @@ Dialog {
             textRole: "name"; valueRole: "id"
             enabled: dialog.layers.length > 0
             currentIndex: Math.max(0, indexOfValue(dialog.layerId))
-            onActivated: { dialog.layerId = currentValue; dialog.suggest() }
+            onActivated: { dialog.layerId = currentValue; dialog.pickOther(); dialog.suggest() }
         }
         Label {
             Layout.fillWidth: true
