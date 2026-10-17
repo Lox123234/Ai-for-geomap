@@ -79,6 +79,8 @@ struct Session
                          [this] { survey.setProject(projects.projectPath(), projects.photoModel(), &map); });
         QObject::connect(&map, &MapService::markersChanged, &survey, &SurveyControl::changed);
         QObject::connect(&processing, &ProcessingService::releaseDirectory, &map, &MapService::releaseDirectory, Qt::DirectConnection);
+        QObject::connect(&processing, &ProcessingService::resultFileReplacing, &map, &MapService::releaseRasterFile, Qt::DirectConnection);
+        QObject::connect(&processing, &ProcessingService::resultFileReplaced, &map, &MapService::reopenRasterFile, Qt::DirectConnection);
         connectJournal(&log, &projects, &processing, &map);
         auto *thumbnails = new ThumbnailProvider;
         QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, thumbnails,

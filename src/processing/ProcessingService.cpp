@@ -802,12 +802,17 @@ QString ProcessingService::buildTrueOrthophoto(const QString &requested)
     emit trueOrthoChanged();
     const auto cancel = m_orthoCancel;
     const QString project = m_project;
-    m_orthoPool->start([this, id, dir, cancel, project] {
+    // The results are written as .partial files and replace the previous ones on the main thread
+    // (see the end): a result shown on the map is open there, and Windows does not replace an open file.
+    const QStringList finals = {QDir(dir).filePath(QStringLiteral("geomap/true_orthophoto.tif")),
+                                QDir(dir).filePath(QStringLiteral("geomap/true_surface.tif")),
+                                QDir(dir).filePath(QStringLiteral("geomap/true_orthophoto_stretch.tif"))};
+    auto partialOf = [](const QString &path) { return path.left(path.size() - 4) + QStringLiteral(".partial.tif"); };
+    m_orthoPool->start([this, id, dir, cancel, project, finals, partialOf] {
         ortho::Scene scene;
         QString error;
         ortho::Result r;
-        const QString target = QDir(dir).filePath(QStringLiteral("geomap/true_orthophoto.tif"));
-        const QString partial = QDir(dir).filePath(QStringLiteral("geomap/true_orthophoto.partial.tif"));
+        const QString partial = partialOf(finals[0]);
         if (!ortho::readOdmJob(dir, &scene, &error)) {
             r.error = error;
         } else {
@@ -816,16 +821,12 @@ QString ProcessingService::buildTrueOrthophoto(const QString &requested)
             if (QFileInfo::exists(dtm)) options.groundPath = dtm;
             // The dense point cloud gives crowns and roofs their true outline and height.
             const QString cloud = QDir(dir).filePath(QStringLiteral("odm_filterpoints/point_cloud.ply"));
-            const QString surface = QDir(dir).filePath(QStringLiteral("geomap/true_surface.tif"));
-            const QString surfacePartial = QDir(dir).filePath(QStringLiteral("geomap/true_surface.partial.tif"));
             if (QFileInfo::exists(cloud)) {
                 options.pointCloudPath = cloud;
-                options.surfacePath = surfacePartial;   // the 3D view drapes the orthophoto over it
+                options.surfacePath = partialOf(finals[1]);   // the 3D view drapes the orthophoto over it
             }
             // Where its pixels are streaks: the input of «Анализ → Ретушь ИИ».
-            const QString stretch = QDir(dir).filePath(QStringLiteral("geomap/true_orthophoto_stretch.tif"));
-            const QString stretchPartial = QDir(dir).filePath(QStringLiteral("geomap/true_orthophoto_stretch.partial.tif"));
-            options.stretchMaskPath = stretchPartial;
+            options.stretchMaskPath = partialOf(finals[2]);
             std::atomic_int lastPercent{-1};
             options.progress = [this, cancel, &lastPercent](double v) {
                 const int percent = int(v * 100);
@@ -837,29 +838,40 @@ QString ProcessingService::buildTrueOrthophoto(const QString &requested)
                     });
                 return !*cancel;
             };
-            QFile::remove(partial);
+            for (const QString &f : finals) QFile::remove(partialOf(f));
             r = ortho::build(scene, QDir(dir).filePath(QStringLiteral("odm_dem/dsm.tif")), partial, options);
-            if (r.ok()) {
-                QFile::remove(target);
-                if (!QFile::rename(partial, target)) r.error = QStringLiteral("Не удалось сохранить %1").arg(QDir::toNativeSeparators(target));
-                if (QFileInfo::exists(surfacePartial)) {
-                    QFile::remove(surface);
-                    QFile::rename(surfacePartial, surface);
-                }
-                QFile::remove(stretch);
-                if (QFileInfo::exists(stretchPartial)) QFile::rename(stretchPartial, stretch);
-            } else {
-                QFile::remove(partial);
-                QFile::remove(surfacePartial);
-                QFile::remove(stretchPartial);
-            }
         }
-        QMetaObject::invokeMethod(this, [this, id, r, cancel, project] {
+        QMetaObject::invokeMethod(this, [this, id, r, cancel, project, finals, partialOf]() mutable {
             m_orthoJob.clear();
+            if (*cancel || project != m_project || !r.ok()) {
+                for (const QString &f : finals) QFile::remove(partialOf(f));
+            }
             if (*cancel || project != m_project) {
                 m_orthoStatus.clear();
                 emit trueOrthoChanged();
                 return;
+            }
+            // The orthophoto first: if it cannot be replaced, the others stay as they were too.
+            for (int k = 0; r.ok() && k < finals.size(); ++k) {
+                const QString &target = finals[k], partial = partialOf(target);
+                if (!QFileInfo::exists(partial)) {
+                    if (k == 2) QFile::remove(target);   // no mask this time: none, not an old one
+                    continue;
+                }
+                emit resultFileReplacing(target);   // the map closes the file
+                bool replaced = false;
+                for (int attempt = 0; attempt < 30 && !replaced; ++attempt) {   // a tile still rendering holds it a moment
+                    if (attempt) QThread::msleep(100);
+                    replaced = (!QFileInfo::exists(target) || QFile::remove(target)) && QFile::rename(partial, target);
+                }
+                emit resultFileReplaced(target);   // the map opens it again (the new one, or the old one if kept)
+                if (!replaced) {
+                    if (k == 0) {
+                        r.error = QStringLiteral("Не удалось заменить %1: файл занят другой программой").arg(QDir::toNativeSeparators(target));
+                        for (const QString &f : finals) QFile::remove(partialOf(f));
+                    }
+                    QFile::remove(partial);
+                }
             }
             const bool ok = r.ok();
             m_orthoStatus = ok ? QStringLiteral("Истинный ортофотоплан готов: %1×%2 пикс., %3 см/пикс., %4 с%5")

@@ -888,6 +888,33 @@ QString MapService::addLayerFromPath(const QString &path, bool zoom)
     return {};
 }
 
+void MapService::releaseRasterFile(const QString &path)
+{
+    const QString wanted = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    for (MapLayer &l : m_layers) {
+        if (l.type != MapLayer::Raster || QDir::cleanPath(QFileInfo(l.source).absoluteFilePath()).compare(wanted, Qt::CaseInsensitive) != 0) continue;
+        if (l.cancel) *l.cancel = true;   // statistics or pyramids of the old file
+        l.raster.reset();                 // its handles close with the last tile rendering from it
+    }
+    m_tiles->clear();
+}
+
+void MapService::reopenRasterFile(const QString &path)
+{
+    const QString wanted = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    bool any = false;
+    for (int i = 0; i < m_layers.size(); ++i) {
+        MapLayer &l = m_layers[i];
+        if (l.type != MapLayer::Raster || QDir::cleanPath(QFileInfo(l.source).absoluteFilePath()).compare(wanted, Qt::CaseInsensitive) != 0) continue;
+        l.status = QStringLiteral("style");   // keep the style the user set
+        prepareRaster(i);
+        ++l.version;
+        changed(i);
+        any = true;
+    }
+    if (any) emit repaint();
+}
+
 void MapService::prepareRaster(int index)
 {
     MapLayer &l = m_layers[index];

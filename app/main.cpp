@@ -96,6 +96,8 @@ int main(int argc, char *argv[])
     QObject::connect(&projects, &ProjectManager::photosChanged, &map, &MapService::photosChanged);
     // Results of a job being deleted leave the map first (Windows keeps open files).
     QObject::connect(&processing, &ProcessingService::releaseDirectory, &map, &MapService::releaseDirectory, Qt::DirectConnection);
+    QObject::connect(&processing, &ProcessingService::resultFileReplacing, &map, &MapService::releaseRasterFile, Qt::DirectConnection);
+    QObject::connect(&processing, &ProcessingService::resultFileReplaced, &map, &MapService::reopenRasterFile, Qt::DirectConnection);
     // Ground control points, check points, calibration and scale bars (gcp.json).
     SurveyControl survey;
     QObject::connect(&projects, &ProjectManager::projectChanged, &survey, [&survey, &projects, &map] {

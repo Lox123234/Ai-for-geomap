@@ -316,6 +316,10 @@ public:
     // on the map; the original stays as it is (hidden). Recorded in <copy>.edits.json. The layer:
     // the selected one if it has a mask, else the top visible one with a mask. "" when started.
     Q_INVOKABLE QString retouchOrthophoto();
+    // A raster file shown on the map is about to be replaced (a rebuilt result): its layers close it
+    // (on Windows an open file cannot be replaced); after, they open it again keeping their style.
+    void releaseRasterFile(const QString &path);
+    void reopenRasterFile(const QString &path);
     Q_INVOKABLE QString retouchLayerId() const;   // the layer retouchOrthophoto() would work on; "" none
     void rasterEdited(const QString &path);   // a raster file changed in place: reload its layers
 

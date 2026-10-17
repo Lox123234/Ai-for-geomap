@@ -171,6 +171,10 @@ signals:
     void errorOccurred(const QString &message);
     void trueOrthoChanged();
     void trueOrthoFinished(const QString &jobId, bool ok, const QString &message);
+    // A result file is about to be replaced by a rebuilt one, and was (or could not be): whoever
+    // shows it closes it before and opens it again after (on Windows an open file cannot be replaced).
+    void resultFileReplacing(const QString &path);
+    void resultFileReplaced(const QString &path);
     // Emitted just before a job folder is deleted: whoever holds its files open closes them.
     void releaseDirectory(const QString &directory);
 

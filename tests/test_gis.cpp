@@ -419,6 +419,41 @@ private slots:
             }
     }
 
+    // A raster shown on the map is replaced by a rebuilt file (the true orthophoto rebuilt): while
+    // released it can be removed (on Windows not while open); reopened, the layer shows the new
+    // file and keeps the style the user set.
+    void rasterOnTheMapIsReplaced()
+    {
+        QTemporaryDir tmp;
+        const QString project = tmp.filePath(QStringLiteral("p"));
+        QVERIFY(QDir().mkpath(project));
+        const QString ortho = tmp.filePath(QStringLiteral("true_orthophoto.tif"));
+        const double gt[6] = {576600, 0.1, 0, 5188300, 0, -0.1};
+        QVERIFY(makeRaster(ortho, 400, 300, 3, GDT_Byte, gt, 32615, [](int, int, int) { return 40.0; }));
+        MapService service;
+        service.setViewSize(QSizeF(800, 600));
+        service.setProject(project, nullptr);
+        QCOMPARE(service.addLayerFromPath(ortho), QString());
+        const QString id = service.layerIdForSource(ortho);
+        QTRY_VERIFY_WITH_TIMEOUT(!service.layers().last().loading, 15000);
+        service.setLayerStyle(id, QVariantMap{{"red", 3}, {"blue", 1}});   // the user's choice of bands
+        const QPointF centre(576620, 5188285);
+        auto value = [&] {
+            for (const MapLayer &l : service.layers())
+                if (l.id == id && l.raster) return l.raster->valueAt(centre, 1);
+            return -1.0;
+        };
+        QCOMPARE(value(), 40.0);   // the file is open now
+        service.releaseRasterFile(ortho);
+        QVERIFY(QFile::remove(ortho));
+        QVERIFY(makeRaster(ortho, 400, 300, 3, GDT_Byte, gt, 32615, [](int, int, int) { return 200.0; }));
+        service.reopenRasterFile(ortho);
+        QTRY_VERIFY_WITH_TIMEOUT(!service.layers().last().loading, 15000);
+        QCOMPARE(value(), 200.0);
+        for (const MapLayer &l : service.layers())
+            if (l.id == id) QCOMPARE(l.style.red, 3);
+    }
+
     // An offline background map from a local MBTiles file (Web Mercator tiles in SQLite): placed
     // under every layer, kept there, switched on and off, remembered in map.json.
     void basemapFromMbtiles()
