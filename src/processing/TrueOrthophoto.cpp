@@ -1809,6 +1809,74 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
         runningFilter(lid.v, dsm.w, dsm.h, qMax(1, int(std::lround(4.0 / cell))), false);
         maskedSmooth(lid.v, valid, dsm.w, dsm.h, qMax(1, int(std::lround(2.0 / cell))));
         const double cross = 0.4;   // metres
+        // The lid point of an output pixel and how a photo sees it: its pixel and a score (the angle
+        // from the vertical, worse near the edge of the frame); false if the photo does not see it.
+        auto lidPoint = [&](int px, int py, double Q[3]) {
+            const double X = ogt[0] + (px + 0.5) * res.resolution, Y = ogt[3] - (py + 0.5) * res.resolution;
+            const double gx = (X - dsm.gt[0]) / dsm.gt[1] - 0.5, gy = (Y - dsm.gt[3]) / dsm.gt[5] - 0.5;
+            const float zq = lid.surface(gx, gy, 1);
+            Q[0] = X - scene.offsetX;
+            Q[1] = Y - scene.offsetY;
+            Q[2] = zq;
+            return !std::isnan(zq);
+        };
+        auto score = [&](int s, const double Q[3], double *u, double *v, double *frame) {
+            const double X = Q[0] + scene.offsetX, Y = Q[1] + scene.offsetY;
+            if (X < views[s].minX || X > views[s].maxX || Y < views[s].minY || Y > views[s].maxY) return -1.0;
+            const Shot &shot = scene.shots[s];
+            double d;
+            if (!shot.project(Q, u, v, &d) || *u < 1 || *v < 1 || *u > shot.camera.width - 2 || *v > shot.camera.height - 2) return -1.0;
+            const double dx = shot.centre[0] - Q[0], dy = shot.centre[1] - Q[1], dz = shot.centre[2] - Q[2];
+            const double vertical = std::acos(qBound(-1.0, dz / std::sqrt(dx * dx + dy * dy + dz * dz), 1.0));
+            *frame = qBound(0.0, qMin(qMin(*u, *v), qMin(shot.camera.width - 1 - *u, shot.camera.height - 1 - *v))
+                                     / (0.06 * qMax(shot.camera.width, shot.camera.height)), 1.0);
+            return vertical + 0.5 * (1 - *frame);
+        };
+        // One photo for every connected streak area — the one most of its points would choose — so
+        // no seam runs through it where neighbouring pixels would switch photos.
+        std::vector<int> region(area.size(), -1);
+        std::vector<int> regionShot;
+        {
+            std::vector<int> stack, members;
+            for (size_t start = 0; start < area.size(); ++start) {
+                if (!area[start] || region[start] >= 0) continue;
+                const int id = int(regionShot.size());
+                members.clear();
+                stack = {int(start)};
+                region[start] = id;
+                while (!stack.empty()) {
+                    const int p = stack.back();
+                    stack.pop_back();
+                    members.push_back(p);
+                    const int px = p % halfW, py = p / halfW;
+                    for (int d = 0; d < 4; ++d) {
+                        const int nx = px + (d == 0) - (d == 1), ny = py + (d == 2) - (d == 3);
+                        if (nx < 0 || ny < 0 || nx >= halfW || ny >= halfH) continue;
+                        const size_t q = size_t(ny) * halfW + nx;
+                        if (area[q] && region[q] < 0) {
+                            region[q] = id;
+                            stack.push_back(int(q));
+                        }
+                    }
+                }
+                std::vector<int> votes(n, 0);
+                const size_t step = qMax<size_t>(1, members.size() / 400);
+                for (size_t m = 0; m < members.size(); m += step) {
+                    double Q[3];
+                    if (!lidPoint(members[m] % halfW * 2, members[m] / halfW * 2, Q)) continue;
+                    int best = -1;
+                    double bestScore = 1e9;
+                    for (int s = 0; s < n; ++s) {
+                        double u, v, frame;
+                        const double sc = score(s, Q, &u, &v, &frame);
+                        if (sc >= 0 && sc < bestScore) { bestScore = sc; best = s; }
+                    }
+                    if (best >= 0) ++votes[best];
+                }
+                regionShot.push_back(int(std::max_element(votes.begin(), votes.end()) - votes.begin()));
+                if (votes[regionShot.back()] == 0) regionShot.back() = -1;
+            }
+        }
         parallelFor(tilesX * tilesY, [&](int tile) {
             const int tx = tile % tilesX, ty = tile / tilesX;
             const int x0 = tx * T, y0 = ty * T, tw = qMin(T, res.width - x0), th = qMin(T, res.height - y0);
@@ -1830,30 +1898,38 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
                     if (!area[hi] || p[3] == 0) continue;
                     const double meters = depth[hi] * 2 * res.resolution;
                     const double k = qBound(0.0, meters / cross, 1.0);
-                    const double X = ogt[0] + (x0 + x + 0.5) * res.resolution, Y = ogt[3] - (y0 + y + 0.5) * res.resolution;
-                    const double gx = (X - dsm.gt[0]) / dsm.gt[1] - 0.5, gy = (Y - dsm.gt[3]) / dsm.gt[5] - 0.5;
-                    const float zq = lid.surface(gx, gy, 1);
-                    if (std::isnan(zq)) continue;
-                    const double Q[3] = {X - scene.offsetX, Y - scene.offsetY, zq};
+                    double Q[3];
+                    if (!lidPoint(x0 + x, y0 + y, Q)) continue;
+                    // The area's photo; near the edge of its frame faded into the best one here.
                     int best = -1;
                     double bestScore = 1e9, bu = 0, bw = 0;
                     for (int s = 0; s < n; ++s) {
-                        if (X < views[s].minX || X > views[s].maxX || Y < views[s].minY || Y > views[s].maxY) continue;
-                        const Shot &shot = scene.shots[s];
-                        double u, v, d;
-                        if (!shot.project(Q, &u, &v, &d) || u < 1 || v < 1 || u > shot.camera.width - 2 || v > shot.camera.height - 2) continue;
-                        const double dx = shot.centre[0] - Q[0], dy = shot.centre[1] - Q[1], dz = shot.centre[2] - Q[2];
-                        const double vertical = std::acos(qBound(-1.0, dz / std::sqrt(dx * dx + dy * dy + dz * dz), 1.0));
-                        const double edge = qMin(qMin(u, v), qMin(shot.camera.width - 1 - u, shot.camera.height - 1 - v)) / (0.06 * qMax(shot.camera.width, shot.camera.height));
-                        const double score = vertical + 0.5 * (1 - qBound(0.0, edge, 1.0));
-                        if (score < bestScore) { bestScore = score; best = s; bu = u; bw = v; }
+                        double u, v, frame;
+                        const double sc = score(s, Q, &u, &v, &frame);
+                        if (sc >= 0 && sc < bestScore) { bestScore = sc; best = s; bu = u; bw = v; }
                     }
                     if (best < 0) continue;
-                    auto it = images.find(best);
-                    if (it == images.end()) it = images.emplace(best, photos.get(scene.shots[best].image)).first;
+                    auto colour = [&](int s, double u, double v, double c[3]) {
+                        auto it = images.find(s);
+                        if (it == images.end()) it = images.emplace(s, photos.get(scene.shots[s].image)).first;
+                        sampleCubic(it->second, u, v, c);
+                        for (int ch = 0; ch < 3; ++ch) c[ch] *= gain[size_t(s) * 3 + ch];
+                    };
                     double c[3];
-                    sampleCubic(it->second, bu, bw, c);
-                    for (int ch = 0; ch < 3; ++ch) p[ch] = uchar(qBound(0.0, p[ch] * (1 - k) + c[ch] * gain[size_t(best) * 3 + ch] * k + 0.5, 255.0));
+                    const int own = regionShot[size_t(region[hi])];
+                    double ou, ov, frame;
+                    if (own >= 0 && own != best && score(own, Q, &ou, &ov, &frame) >= 0) {
+                        colour(own, ou, ov, c);
+                        if (frame < 1) {
+                            double c2[3];
+                            colour(best, bu, bw, c2);
+                            for (int ch = 0; ch < 3; ++ch) c[ch] = c[ch] * frame + c2[ch] * (1 - frame);
+                        }
+                        best = own;
+                    } else {
+                        colour(best, bu, bw, c);
+                    }
+                    for (int ch = 0; ch < 3; ++ch) p[ch] = uchar(qBound(0.0, p[ch] * (1 - k) + c[ch] * k + 0.5, 255.0));
                     if (((x0 + x) & 1) == 0 && ((y0 + y) & 1) == 0) {
                         const Shot &shot = scene.shots[best];
                         const double a = std::fmod(std::atan2(-(Q[1] - shot.centre[1]), Q[0] - shot.centre[0]) * 180 / Pi + 360, 180);
