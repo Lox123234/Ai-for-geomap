@@ -822,6 +822,10 @@ QString ProcessingService::buildTrueOrthophoto(const QString &requested)
                 options.pointCloudPath = cloud;
                 options.surfacePath = surfacePartial;   // the 3D view drapes the orthophoto over it
             }
+            // Where its pixels are streaks: the input of «Анализ → Ретушь ИИ».
+            const QString stretch = QDir(dir).filePath(QStringLiteral("geomap/true_orthophoto_stretch.tif"));
+            const QString stretchPartial = QDir(dir).filePath(QStringLiteral("geomap/true_orthophoto_stretch.partial.tif"));
+            options.stretchMaskPath = stretchPartial;
             std::atomic_int lastPercent{-1};
             options.progress = [this, cancel, &lastPercent](double v) {
                 const int percent = int(v * 100);
@@ -842,9 +846,12 @@ QString ProcessingService::buildTrueOrthophoto(const QString &requested)
                     QFile::remove(surface);
                     QFile::rename(surfacePartial, surface);
                 }
+                QFile::remove(stretch);
+                if (QFileInfo::exists(stretchPartial)) QFile::rename(stretchPartial, stretch);
             } else {
                 QFile::remove(partial);
                 QFile::remove(surfacePartial);
+                QFile::remove(stretchPartial);
             }
         }
         QMetaObject::invokeMethod(this, [this, id, r, cancel, project] {
@@ -855,9 +862,12 @@ QString ProcessingService::buildTrueOrthophoto(const QString &requested)
                 return;
             }
             const bool ok = r.ok();
-            m_orthoStatus = ok ? QStringLiteral("Истинный ортофотоплан готов: %1×%2 пикс., %3 см/пикс., %4 с")
+            m_orthoStatus = ok ? QStringLiteral("Истинный ортофотоплан готов: %1×%2 пикс., %3 см/пикс., %4 с%5")
                                      .arg(r.width).arg(r.height).arg(QLocale(QLocale::Russian).toString(r.resolution * 100, 'f', 1))
                                      .arg(QLocale(QLocale::Russian).toString(r.seconds, 'f', 0))
+                                     .arg(r.stretched >= 0.0005 ? QStringLiteral("; растянутых участков %1 % (их можно дорисовать: «Анализ → Ретушь ИИ»)")
+                                                                      .arg(QLocale(QLocale::Russian).toString(r.stretched * 100, 'f', 1))
+                                                                : QString())
                                : QStringLiteral("Истинный ортофотоплан не построен: %1").arg(r.error);
             if (ProcessingJob *job = findJob(id)) {
                 job->outputs = m_engine->collectOutputs(jobDirectory(id));

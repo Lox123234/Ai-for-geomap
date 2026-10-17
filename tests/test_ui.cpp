@@ -621,6 +621,9 @@ private slots:
         QObject *ai = s->window->findChild<QObject *>(QStringLiteral("aiPanel"));
         QVERIFY(ai);
         QTRY_VERIFY(ai->property("visible").toBool());
+        // AI retouch: only with a true orthophoto and its streak mask on the map (none here).
+        QVERIFY(!s->enabled(QStringLiteral("analysis.retouch")));
+        QVERIFY(s->map.retouchOrthophoto().contains(QStringLiteral("маской")));
         QVERIFY(s->run(QStringLiteral("analysis.aiModels")));
         QObject *models = s->window->findChild<QObject *>(QStringLiteral("aiModelsDialog"));
         QVERIFY(models);

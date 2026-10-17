@@ -36,8 +36,12 @@ public:
     // is filled in a 512 × 512 window around it, with its surroundings as context; parts that do
     // not fit with their context are filled in a larger window scaled down to 512.
     Result inpaint(const QImage &image, const QImage &mask);
+    // One run of the model on exactly one 512 × 512 window: the masked pixels painted from the
+    // unmasked ones (nothing scaled, nothing else in the window seen as context).
+    Result inpaintWindow(const QImage &image, const QImage &mask);
 
 private:
+    QImage run(const QImage &image512, const QImage &mask512, QString *error);   // the model's output, 512 × 512
     struct Impl;
     std::unique_ptr<Impl> d;
 };

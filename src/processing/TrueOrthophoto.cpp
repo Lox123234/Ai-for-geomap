@@ -353,6 +353,130 @@ void maskedSmooth(std::vector<float> &v, const std::vector<uchar> &mask, int w, 
         if (mask[i] && sm[i] > 1e-9) v[i] = float(sv[i] / sm[i]);
 }
 
+// The streaks of an orthophoto, at half resolution: texture elongated one way (coherence of the
+// structure tensor over ~0.5 m above 0.4) along the direction the photo used looks in (±30° —
+// a photo seen edge-on stretches along its view), where that photo saw the surface obliquely
+// (40° or more from its normal, averaged over ~1 m), in areas wider than 0.5 m and of at least
+// 1000 half-resolution pixels, not within 3 of nodata (the edge of the survey is one edge, not streaks). Kerbs, trunks, cracks and the edge of the
+// survey are thin or across the view; ripples on water and wet patches on a road are seen
+// squarely; foliage, grass and gravel are not elongated.
+std::vector<uchar> findStreaks(GDALDatasetH out, int w, int h, const std::vector<uchar> &viewAt, const std::vector<uchar> &slantAt, int hw,
+                               int hh)
+{
+    std::vector<uchar> rgba(size_t(hw) * hh * 4, 0);
+    {
+        GDALRasterIOExtraArg extra;
+        INIT_RASTERIO_EXTRA_ARG(extra);
+        extra.eResampleAlg = GRIORA_Average;
+        int bands[4] = {1, 2, 3, 4};
+        if (GDALDatasetRasterIOEx(out, GF_Read, 0, 0, w, h, rgba.data(), hw, hh, GDT_Byte, 4, bands, 4, qint64(hw) * 4, 1, &extra) != CE_None)
+            return std::vector<uchar>(size_t(hw) * hh, 0);
+    }
+    const size_t count = size_t(hw) * hh;
+    std::vector<float> grey(count);
+    std::vector<uchar> valid(count), ones(count, 1);
+    for (size_t i = 0; i < count; ++i) {
+        const uchar *p = &rgba[i * 4];
+        grey[i] = 0.299f * p[0] + 0.587f * p[1] + 0.114f * p[2];
+        valid[i] = p[3] == 255;
+    }
+    rgba = {};
+    // The structure tensor; and the gradient itself with its magnitude: across a single edge (a
+    // kerb, a trunk) the gradient keeps its sign, across streaks it alternates — their mean is
+    // short against the mean magnitude.
+    std::vector<float> jxx(count), jyy(count), jxy(count), sgx(count), sgy(count), mag(count);
+    parallelFor(hh, [&](int y) {
+        const int y0 = qMax(0, y - 1), y1 = qMin(hh - 1, y + 1);
+        for (int x = 0; x < hw; ++x) {
+            const int x0 = qMax(0, x - 1), x1 = qMin(hw - 1, x + 1);
+            auto g = [&](int xx, int yy) { return grey[size_t(yy) * hw + xx]; };
+            const float gx = (g(x1, y0) + 2 * g(x1, y) + g(x1, y1)) - (g(x0, y0) + 2 * g(x0, y) + g(x0, y1));
+            const float gy = (g(x0, y1) + 2 * g(x, y1) + g(x1, y1)) - (g(x0, y0) + 2 * g(x, y0) + g(x1, y0));
+            const size_t i = size_t(y) * hw + x;
+            jxx[i] = gx * gx;
+            jyy[i] = gy * gy;
+            jxy[i] = gx * gy;
+            sgx[i] = gx;
+            sgy[i] = gy;
+            mag[i] = std::sqrt(gx * gx + gy * gy);
+        }
+    });
+    grey = {};
+    for (std::vector<float> *v : {&jxx, &jyy, &jxy, &sgx, &sgy, &mag}) maskedSmooth(*v, ones, hw, hh, 6);
+    // The weakest textures (smooth water, shadows) do not count: under the 10th percentile.
+    std::vector<float> sample;
+    for (size_t i = 0; i < count; i += 37)
+        if (valid[i]) sample.push_back(jxx[i] + jyy[i]);
+    float weak = 0;
+    if (!sample.empty()) {
+        std::nth_element(sample.begin(), sample.begin() + sample.size() / 10, sample.end());
+        weak = sample[sample.size() / 10];
+    }
+    const std::vector<float> fromNodata = distanceInside(valid, hw, hh);
+    std::vector<float> slant(count, 0.0f);
+    std::vector<uchar> hasSlant(count);
+    for (size_t i = 0; i < count; ++i) {
+        hasSlant[i] = slantAt[i] != 255;
+        slant[i] = hasSlant[i] ? slantAt[i] : 0.0f;
+    }
+    maskedSmooth(slant, hasSlant, hw, hh, 14);
+    std::vector<uchar> mask(count, 0);
+    for (size_t i = 0; i < count; ++i) {
+        if (!valid[i] || viewAt[i] == 255 || !hasSlant[i] || slant[i] < 40 || fromNodata[i] <= 3) continue;
+        const float tr = jxx[i] + jyy[i];
+        if (tr <= weak) continue;
+        const float det = std::sqrt((jxx[i] - jyy[i]) * (jxx[i] - jyy[i]) + 4 * jxy[i] * jxy[i]);
+        if (det / (tr + 1e-6f) <= 0.4f) continue;
+        if (std::hypot(sgx[i], sgy[i]) > 0.35f * mag[i]) continue;   // one edge, not streaks
+        const double streak = 0.5 * std::atan2(2.0 * jxy[i], double(jxx[i] - jyy[i])) * 180 / Pi + 90;   // across the gradient
+        double d = std::fmod(std::fabs(streak - viewAt[i]), 180.0);
+        d = qMin(d, 180 - d);
+        mask[i] = d < 30;
+    }
+    // Opening by 7 px (thin bands go), parts under 1000 px go, the rest grows by 2. Dilations by
+    // the label propagation: the edge of the image does not grow into the mask.
+    {
+        const std::vector<float> in = distanceInside(mask, hw, hh);
+        std::vector<int> eroded(count);
+        for (size_t i = 0; i < count; ++i) eroded[i] = mask[i] && in[i] > 7 ? 0 : -1;
+        nearestLabel(eroded, hw, hh, 7.0f);   // dilation of the eroded set by 7
+        for (size_t i = 0; i < count; ++i) mask[i] = eroded[i] >= 0;
+    }
+    {
+        std::vector<uchar> seen(count, 0);
+        std::vector<int> stack, members;
+        for (size_t start = 0; start < count; ++start) {
+            if (!mask[start] || seen[start]) continue;
+            members.clear();
+            stack = {int(start)};
+            seen[start] = 1;
+            while (!stack.empty()) {
+                const int p = stack.back();
+                stack.pop_back();
+                members.push_back(p);
+                const int px = p % hw, py = p / hw;
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int nx = px + dx, ny = py + dy;
+                        if (nx < 0 || ny < 0 || nx >= hw || ny >= hh) continue;
+                        const size_t q = size_t(ny) * hw + nx;
+                        if (mask[q] && !seen[q]) {
+                            seen[q] = 1;
+                            stack.push_back(int(q));
+                        }
+                    }
+            }
+            if (members.size() < 1000)
+                for (int p : members) mask[size_t(p)] = 0;
+        }
+    }
+    std::vector<int> grown(count);
+    for (size_t i = 0; i < count; ++i) grown[i] = mask[i] ? 0 : -1;
+    nearestLabel(grown, hw, hh, 2.0f);
+    for (size_t i = 0; i < count; ++i) mask[i] = grown[i] >= 0 && valid[i];
+    return mask;
+}
+
 // Photos decoded on demand, kept while they fit in the budget (least recently used dropped).
 class PhotoCache
 {
@@ -1427,6 +1551,11 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
             GDALSetRasterNoDataValue(GDALGetRasterBand(sources, 1), 255);
         }
     }
+    // For the mask of streaks (see the end): the direction the photo used looks in, at every other
+    // pixel of the orthophoto (degrees 0…179 in image axes, 255 none).
+    const int halfW = (res.width + 1) / 2, halfH = (res.height + 1) / 2;
+    std::vector<uchar> viewAt(opt.stretchMaskPath.isEmpty() ? 0 : size_t(halfW) * halfH, 255);
+    std::vector<uchar> slantAt(viewAt.size(), 255);   // degrees between that view and the surface normal; 255 none
 
     PhotoCache photos(qint64(3) << 30);
     QMutex writeMutex;
@@ -1624,6 +1753,19 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
                 for (int ch = 0; ch < 3; ++ch) p[ch] = uchar(qBound(0.0, rgb[ch] + 0.5, 255.0));
                 p[3] = 255;
                 if (sources && used >= 0) source[size_t(y) * tw + x] = uchar(qMin(used, 254));
+                if (!viewAt.empty() && used >= 0 && ((x0 + x) & 1) == 0 && ((y0 + y) & 1) == 0) {
+                    const Shot &shot = scene.shots[used];
+                    double a = std::atan2(-(P[1] - shot.centre[1]), P[0] - shot.centre[0]) * 180 / Pi;   // image axes: rows go south
+                    a = std::fmod(a + 360, 180);
+                    const size_t hi = size_t((y0 + y) / 2) * halfW + (x0 + x) / 2;
+                    viewAt[hi] = uchar(qMin(179.0, a));
+                    // How obliquely the photo saw the surface; smooth objects (roofs) keep their own
+                    // geometry: no candidates for re-sourcing.
+                    const double dx = shot.centre[0] - P[0], dy = shot.centre[1] - P[1], dz = shot.centre[2] - P[2];
+                    const float *nrm = &normals[cellIndex * 3];
+                    const double slant = std::acos(qBound(-1.0, (dx * nrm[0] + dy * nrm[1] + dz * nrm[2]) / std::sqrt(dx * dx + dy * dy + dz * dz), 1.0));
+                    slantAt[hi] = o >= 0 && rough[cellIndex] < 0.08f ? 255 : uchar(qMin(90.0, slant * 180 / Pi));
+                }
                 ++coloured;
             }
         {
@@ -1644,9 +1786,110 @@ Result build(const Scene &scene, const QString &dsmPath, const QString &outputPa
         res.error = QStringLiteral("Отменено");
         return res;
     }
+    // --- Streaks re-sourced. Where the photo used stretched its pixels along its view, the surface
+    // it was projected on is not what the photos saw: mostly crowns the reconstruction missed at the
+    // edge of a survey (few points there), over a slope that faces away from every camera. No photo
+    // recorded that slope; from above the cameras saw what stands over it. Those pixels are taken
+    // from the most vertical photo over a lid — the highest point of the raw surface within 4 m,
+    // smoothed at 2 m — and cross over to the rest in the first 0.4 m: crisp texture of what was
+    // seen from above, placed within the height of the slope, instead of pixels torn along the view.
+    // (Heights from a plane sweep of the photos were tried: on foliage at the edge of a survey the
+    // matches scatter and the texture swirls.) The streaks are found again afterwards: the mask
+    // keeps what is left, for the AI retouch.
+    if (!viewAt.empty()) {
+        std::vector<uchar> half = findStreaks(out, res.width, res.height, viewAt, slantAt, halfW, halfH);
+        std::vector<int> grown(half.size());
+        for (size_t i = 0; i < half.size(); ++i) grown[i] = half[i] ? 0 : -1;
+        nearestLabel(grown, halfW, halfH, float(0.4 / (2 * res.resolution)));
+        std::vector<uchar> area(half.size());
+        for (size_t i = 0; i < half.size(); ++i) area[i] = grown[i] >= 0;
+        const std::vector<float> depth = distanceInside(area, halfW, halfH);
+        Grid lid = dsm;
+        lid.v = occluder;
+        runningFilter(lid.v, dsm.w, dsm.h, qMax(1, int(std::lround(4.0 / cell))), false);
+        maskedSmooth(lid.v, valid, dsm.w, dsm.h, qMax(1, int(std::lround(2.0 / cell))));
+        const double cross = 0.4;   // metres
+        parallelFor(tilesX * tilesY, [&](int tile) {
+            const int tx = tile % tilesX, ty = tile / tilesX;
+            const int x0 = tx * T, y0 = ty * T, tw = qMin(T, res.width - x0), th = qMin(T, res.height - y0);
+            bool any = false;
+            for (int y = y0; y < y0 + th && !any; y += 2)
+                for (int x = x0; x < x0 + tw && !any; x += 2) any = area[size_t(y / 2) * halfW + x / 2] != 0;
+            if (!any) return;
+            std::vector<uchar> rgba(size_t(tw) * th * 4);
+            int bands[4] = {1, 2, 3, 4};
+            {
+                QMutexLocker lock(&writeMutex);
+                if (GDALDatasetRasterIO(out, GF_Read, x0, y0, tw, th, rgba.data(), tw, th, GDT_Byte, 4, bands, 4, tw * 4, 1) != CE_None) return;
+            }
+            std::map<int, QImage> images;
+            for (int y = 0; y < th; ++y)
+                for (int x = 0; x < tw; ++x) {
+                    const size_t hi = size_t((y0 + y) / 2) * halfW + (x0 + x) / 2;
+                    uchar *p = &rgba[(size_t(y) * tw + x) * 4];
+                    if (!area[hi] || p[3] == 0) continue;
+                    const double meters = depth[hi] * 2 * res.resolution;
+                    const double k = qBound(0.0, meters / cross, 1.0);
+                    const double X = ogt[0] + (x0 + x + 0.5) * res.resolution, Y = ogt[3] - (y0 + y + 0.5) * res.resolution;
+                    const double gx = (X - dsm.gt[0]) / dsm.gt[1] - 0.5, gy = (Y - dsm.gt[3]) / dsm.gt[5] - 0.5;
+                    const float zq = lid.surface(gx, gy, 1);
+                    if (std::isnan(zq)) continue;
+                    const double Q[3] = {X - scene.offsetX, Y - scene.offsetY, zq};
+                    int best = -1;
+                    double bestScore = 1e9, bu = 0, bw = 0;
+                    for (int s = 0; s < n; ++s) {
+                        if (X < views[s].minX || X > views[s].maxX || Y < views[s].minY || Y > views[s].maxY) continue;
+                        const Shot &shot = scene.shots[s];
+                        double u, v, d;
+                        if (!shot.project(Q, &u, &v, &d) || u < 1 || v < 1 || u > shot.camera.width - 2 || v > shot.camera.height - 2) continue;
+                        const double dx = shot.centre[0] - Q[0], dy = shot.centre[1] - Q[1], dz = shot.centre[2] - Q[2];
+                        const double vertical = std::acos(qBound(-1.0, dz / std::sqrt(dx * dx + dy * dy + dz * dz), 1.0));
+                        const double edge = qMin(qMin(u, v), qMin(shot.camera.width - 1 - u, shot.camera.height - 1 - v)) / (0.06 * qMax(shot.camera.width, shot.camera.height));
+                        const double score = vertical + 0.5 * (1 - qBound(0.0, edge, 1.0));
+                        if (score < bestScore) { bestScore = score; best = s; bu = u; bw = v; }
+                    }
+                    if (best < 0) continue;
+                    auto it = images.find(best);
+                    if (it == images.end()) it = images.emplace(best, photos.get(scene.shots[best].image)).first;
+                    double c[3];
+                    sampleCubic(it->second, bu, bw, c);
+                    for (int ch = 0; ch < 3; ++ch) p[ch] = uchar(qBound(0.0, p[ch] * (1 - k) + c[ch] * gain[size_t(best) * 3 + ch] * k + 0.5, 255.0));
+                    if (((x0 + x) & 1) == 0 && ((y0 + y) & 1) == 0) {
+                        const Shot &shot = scene.shots[best];
+                        const double a = std::fmod(std::atan2(-(Q[1] - shot.centre[1]), Q[0] - shot.centre[0]) * 180 / Pi + 360, 180);
+                        viewAt[hi] = uchar(qMin(179.0, a));
+                        slantAt[hi] = 255;   // re-sourced: not a streak of the first pass any more
+                    }
+                }
+            QMutexLocker lock(&writeMutex);
+            GDALDatasetRasterIO(out, GF_Write, x0, y0, tw, th, rgba.data(), tw, th, GDT_Byte, 4, bands, 4, tw * 4, 1);
+        });
+        GDALFlushCache(out);
+    }
     QVector<int> levels;
     for (int f = 2; qMax(res.width, res.height) / f >= 256; f *= 2) levels << f;
     if (!levels.isEmpty()) GDALBuildOverviews(out, "AVERAGE", int(levels.size()), levels.data(), 0, nullptr, nullptr, nullptr);
+    if (!viewAt.empty()) {
+        const std::vector<uchar> half = findStreaks(out, res.width, res.height, viewAt, slantAt, halfW, halfH);
+        const char *small[] = {"TILED=YES", "COMPRESS=DEFLATE", nullptr};
+        GDALDatasetH m = GDALCreate(GDALGetDriverByName("GTiff"), native(opt.stretchMaskPath).constData(), res.width, res.height, 1, GDT_Byte,
+                                    const_cast<char **>(small));
+        if (m) {
+            GDALSetGeoTransform(m, ogt);
+            GDALSetProjection(m, GDALGetProjectionRef(out));
+            std::vector<uchar> row(res.width);
+            qint64 marked = 0;
+            for (int y = 0; y < res.height; ++y) {
+                const uchar *h = &half[size_t(y / 2) * halfW];
+                for (int x = 0; x < res.width; ++x) marked += (row[x] = h[x / 2] ? 255 : 0) != 0;
+                GDALRasterIO(GDALGetRasterBand(m, 1), GF_Write, 0, y, res.width, 1, row.data(), res.width, 1, GDT_Byte, 0, 0);
+            }
+            GDALClose(m);
+            res.stretched = colouredPixels ? double(marked) / colouredPixels : 0;
+        } else {
+            res.notes << QStringLiteral("Не создана маска растянутых участков: %1").arg(QString::fromUtf8(CPLGetLastErrorMsg()));
+        }
+    }
     GDALClose(out);
     res.coverage = validPixels ? double(colouredPixels) / validPixels : 0;
     res.hidden = colouredPixels ? double(hiddenPixels) / colouredPixels : 0;

@@ -8,6 +8,7 @@
 #include "MaskPolygons.h"
 #include "PhotoModel.h"
 #include "RasterEdit.h"
+#include "Retouch.h"
 #include "SamSegmenter.h"
 #include <QCoreApplication>
 #include <QDateTime>
@@ -2211,6 +2212,7 @@ QString MapService::removeFromOrthophoto(double growMeters)
     }
     const ai::ModelCard card = m_ai->inpaintingCard();
     const QString source = ortho.source, layerId = ortho.id, layerName = ortho.name;
+    const QString sourceMask = stretchMaskOf(ortho);   // the copy keeps it, for the retouch
     QVector<QPointF> outlineWgs(rings.first().begin(), rings.first().end());
     CoordinateTransform(m_crs, Crs::wgs84()).transform(outlineWgs);
     const double area = [&] {
@@ -2225,7 +2227,7 @@ QString MapService::removeFromOrthophoto(double growMeters)
     emit aiChanged();
     const QSize rasterSize(info.width, info.height);
     QThreadPool::globalInstance()->start([this, card, source, target, inPlace, pixelRings, growPixels, rasterSize, layerId, layerName,
-                                          fromCandidate, outlineWgs, area] {
+                                          fromCandidate, outlineWgs, area, sourceMask] {
         QString error;
         QRect window;
         QImage before;
@@ -2278,7 +2280,7 @@ QString MapService::removeFromOrthophoto(double growMeters)
         }
         const double seconds = timer.elapsed() / 1000.0;
         QMetaObject::invokeMethod(this, [this, card, target, inPlace, window, before, result, pixels, error, layerId, layerName, fromCandidate,
-                                         outlineWgs, area, seconds] {
+                                         outlineWgs, area, seconds, sourceMask] {
             m_aiBusy = false;
             if (!error.isEmpty()) {
                 m_aiStatus = QStringLiteral("ИИ: %1").arg(error);
@@ -2308,9 +2310,11 @@ QString MapService::removeFromOrthophoto(double growMeters)
             m_undo.push(new RasterPatchCommand(this, target, window, before, result.image));
             // What was painted by the model, for whoever uses the raster later.
             QFile log(target + QStringLiteral(".edits.json"));
-            QJsonArray edits;
-            if (log.open(QIODevice::ReadOnly)) edits = QJsonDocument::fromJson(log.readAll()).object().value(QStringLiteral("edits")).toArray();
+            QJsonObject root;
+            if (log.open(QIODevice::ReadOnly)) root = QJsonDocument::fromJson(log.readAll()).object();
             log.close();
+            QJsonArray edits = root.value(QStringLiteral("edits")).toArray();
+            if (!sourceMask.isEmpty() && !root.contains(QStringLiteral("stretchMask"))) root.insert(QStringLiteral("stretchMask"), sourceMask);
             QJsonArray outline;
             for (const QPointF &p : outlineWgs) outline.append(QJsonArray{p.x(), p.y()});
             edits.append(QJsonObject{{"time", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
@@ -2318,9 +2322,9 @@ QString MapService::removeFromOrthophoto(double growMeters)
                                      {"model", card.id}, {"modelSha256", card.files.value(0).sha256},
                                      {"window", QJsonArray{window.x(), window.y(), window.width(), window.height()}},
                                      {"pixels", pixels}, {"areaM2", std::round(area * 100) / 100}, {"outlineWgs84", outline}});
-            if (log.open(QIODevice::WriteOnly | QIODevice::Truncate))
-                log.write(QJsonDocument(QJsonObject{{"note", QStringLiteral("Пиксели внутри этих контуров дорисованы моделью по окружению; это не съёмка.")},
-                                                    {"edits", edits}}).toJson(QJsonDocument::Indented));
+            root.insert(QStringLiteral("note"), QStringLiteral("Пиксели этих правок дорисованы моделью по окружению; это не съёмка."));
+            root.insert(QStringLiteral("edits"), edits);
+            if (log.open(QIODevice::WriteOnly | QIODevice::Truncate)) log.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
             if (fromCandidate) {
                 m_aiCandidate.clear();
                 m_aiPoints.clear();
@@ -2332,6 +2336,135 @@ QString MapService::removeFromOrthophoto(double growMeters)
             m_aiStatus = QStringLiteral("Объект убран с ортофотоплана: %1 пикс. дорисовано за %2 с%3")
                              .arg(pixels).arg(number(seconds, 1))
                              .arg(result.scaled ? QStringLiteral(" (крупная область — дорисована в уменьшенном окне)") : QString());
+            emit aiChanged();
+            emit aiFinished(true, m_aiStatus);
+            emit repaint();
+        });
+    });
+    return {};
+}
+
+QString MapService::stretchMaskOf(const MapLayer &l) const
+{
+    if (l.type != MapLayer::Raster) return {};
+    const QString next = ai::stretchMaskFor(l.source);
+    if (!next.isEmpty()) return next;
+    QFile log(l.source + QStringLiteral(".edits.json"));
+    if (!log.open(QIODevice::ReadOnly)) return {};
+    const QString recorded = QJsonDocument::fromJson(log.readAll()).object().value(QStringLiteral("stretchMask")).toString();
+    return !recorded.isEmpty() && QFileInfo::exists(recorded) ? recorded : QString();
+}
+
+QString MapService::retouchLayerId() const
+{
+    auto fits = [this](const MapLayer &l) {
+        return l.type == MapLayer::Raster && l.raster && l.raster->isValid() && l.style.mode == RasterStyle::Rgb && !stretchMaskOf(l).isEmpty();
+    };
+    const int selected = indexOf(m_selectedLayer);
+    if (selected >= 0 && fits(m_layers[selected])) return m_layers[selected].id;
+    for (int i = int(m_layers.size()) - 1; i >= 0; --i)
+        if (m_layers[i].visible && fits(m_layers[i])) return m_layers[i].id;
+    return {};
+}
+
+QString MapService::retouchOrthophoto()
+{
+    if (m_project.isEmpty()) return QStringLiteral("Откройте проект с картой.");
+    if (m_aiBusy) return QStringLiteral("ИИ ещё работает.");
+    if (!m_ai) return QStringLiteral("Локальный AI не подключён.");
+    const QString problem = m_ai->inpaintingProblem();
+    if (!problem.isEmpty()) return problem;
+    const int index = indexOf(retouchLayerId());
+    if (index < 0)
+        return QStringLiteral("На карте нет истинного ортофотоплана с маской растянутых участков. Постройте его (Обработка → Истинный ортофотоплан) "
+                              "и покажите на карте: «Вид → Ортофотоплан».");
+    const MapLayer &ortho = m_layers[index];
+    if (ortho.rasterInfo.dataType != QLatin1String("Byte") || ortho.rasterInfo.bands < 3)
+        return QStringLiteral("Ретушь работает с цветным 8-битным растром.");
+    const QString mask = stretchMaskOf(ortho);
+    const QString analysis = QDir(m_project).filePath(QStringLiteral("analysis"));
+    const bool inPlace = QDir::cleanPath(QFileInfo(ortho.source).absolutePath()).compare(QDir::cleanPath(analysis), Qt::CaseInsensitive) == 0
+                         && QFileInfo(ortho.source).completeBaseName().contains(QStringLiteral("_ИИ-"));
+    QString target = ortho.source;
+    if (!inPlace) {
+        const QString base = QFileInfo(ortho.source).completeBaseName() + QStringLiteral("_ИИ-ретушь");
+        target = QDir(analysis).filePath(base + QStringLiteral(".tif"));
+        for (int n = 2; QFileInfo::exists(target); ++n) target = QDir(analysis).filePath(QStringLiteral("%1 (%2).tif").arg(base).arg(n));
+    }
+    const ai::ModelCard card = m_ai->inpaintingCard();
+    const QString source = ortho.source, layerId = ortho.id, layerName = ortho.name;
+    const double pixelArea = std::fabs(ortho.rasterInfo.geoTransform[1] * ortho.rasterInfo.geoTransform[5]);
+    ++m_aiGeneration;
+    m_aiBusy = true;
+    m_aiStatus = QStringLiteral("ИИ-ретушь: подготовка копии ортофотоплана…");
+    emit aiChanged();
+    QThreadPool::globalInstance()->start([this, card, source, target, inPlace, mask, layerId, layerName, pixelArea] {
+        QString error;
+        ai::RetouchResult result;
+        QElapsedTimer timer;
+        timer.start();
+        if (inPlace || rasteredit::makeEditableCopy(source, target, &error)) {
+            std::shared_ptr<ai::Inpainter> inpainter = ai::cachedInpainter(card, &error);
+            if (inpainter) {
+                int last = -1;
+                result = ai::retouch(*inpainter, target, mask, 400, [this, &last](double v) {
+                    const int percent = int(v * 100);
+                    if (percent != last) {
+                        last = percent;
+                        QMetaObject::invokeMethod(this, [this, percent] {
+                            m_aiStatus = QStringLiteral("ИИ-ретушь растянутых участков: %1 %").arg(percent);
+                            emit aiChanged();
+                        });
+                    }
+                    return true;
+                });
+                if (!result.ok()) error = result.error;
+            }
+        }
+        const double seconds = timer.elapsed() / 1000.0;
+        QMetaObject::invokeMethod(this, [this, card, target, inPlace, mask, result, error, layerId, layerName, pixelArea, seconds] {
+            m_aiBusy = false;
+            if (!error.isEmpty()) {
+                if (!inPlace) QFile::remove(target);
+                m_aiStatus = QStringLiteral("ИИ-ретушь: %1").arg(error);
+                emit aiChanged();
+                emit aiFinished(false, m_aiStatus);
+                return;
+            }
+            if (!inPlace) {
+                const QString added = addLayerFromPath(target, false);
+                const QString copyId = layerIdForSource(target);
+                if (!added.isEmpty() || copyId.isEmpty()) {
+                    m_aiStatus = QStringLiteral("ИИ-ретушь сохранена в %1, но слой не добавлен: %2").arg(QDir::toNativeSeparators(target), added);
+                    emit aiChanged();
+                    emit aiFinished(false, m_aiStatus);
+                    return;
+                }
+                if (MapLayer *copy = layer(copyId)) copy->name = QStringLiteral("%1 (ретушь ИИ)").arg(layerName);
+                while (indexOf(copyId) > indexOf(layerId) + 1) moveLayer(copyId, -1);
+                setLayerVisible(layerId, false);
+                selectLayer(copyId);
+                changed(indexOf(copyId));
+                scheduleSave();
+            } else {
+                rasterEdited(target);
+            }
+            QFile log(target + QStringLiteral(".edits.json"));
+            QJsonObject root;
+            if (log.open(QIODevice::ReadOnly)) root = QJsonDocument::fromJson(log.readAll()).object();
+            log.close();
+            QJsonArray edits = root.value(QStringLiteral("edits")).toArray();
+            edits.append(QJsonObject{{"time", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
+                                     {"method", QStringLiteral("ретушь растянутых участков: дорисовано ИИ (%1)").arg(card.name.section(QStringLiteral(" — "), 0, 0))},
+                                     {"model", card.id}, {"modelSha256", card.files.value(0).sha256}, {"mask", QDir::toNativeSeparators(mask)},
+                                     {"pixels", double(result.pixels)}, {"areaM2", std::round(result.pixels * pixelArea * 100) / 100}});
+            root.insert(QStringLiteral("note"), QStringLiteral("Пиксели этих правок дорисованы моделью по окружению; это не съёмка."));
+            root.insert(QStringLiteral("stretchMask"), mask);
+            root.insert(QStringLiteral("edits"), edits);
+            if (log.open(QIODevice::WriteOnly | QIODevice::Truncate)) log.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+            m_aiStatus = result.pixels == 0 ? QStringLiteral("ИИ-ретушь: растянутых участков крупнее 400 пикс. нет — дорисовывать нечего")
+                                            : QStringLiteral("ИИ-ретушь: дорисовано %1 м² (%2 пикс.) за %3 с; исходный ортофотоплан не изменён и скрыт")
+                                                  .arg(number(result.pixels * pixelArea, 1)).arg(result.pixels).arg(number(seconds, 0));
             emit aiChanged();
             emit aiFinished(true, m_aiStatus);
             emit repaint();

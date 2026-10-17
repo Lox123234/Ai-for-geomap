@@ -190,6 +190,7 @@ private slots:
         options.resolution = qEnvironmentVariable("GEOMAP_ORTHO_RESOLUTION").toDouble();
         options.sourceMapPath = QDir(outDir).filePath(QStringLiteral("sources.tif"));   // which photo every pixel came from
         options.surfacePath = QDir(outDir).filePath(QStringLiteral("true_surface.tif"));
+        options.stretchMaskPath = QDir(outDir).filePath(QStringLiteral("true_orthophoto_stretch.tif"));
         const QString dtm = QDir(job).filePath(QStringLiteral("odm_dem/dtm.tif"));
         if (QFileInfo::exists(dtm)) options.groundPath = dtm;
         const QString cloud = QDir(job).filePath(QStringLiteral("odm_filterpoints/point_cloud.ply"));
@@ -198,9 +199,10 @@ private slots:
         QVERIFY2(r.ok(), qPrintable(r.error));
         QStringList gains;
         for (double g : r.gains) gains << QString::number(g, 'f', 3);
-        qInfo("%s: %d photos, %dx%d at %.3f m (GSD %.3f m), %d objects, coverage %.4f (hidden %.4f), surface from points %.3f, %.1f s; gains %s",
-              qPrintable(out), r.photos, r.width, r.height, r.resolution, r.groundSampleDistance, r.objects, r.coverage, r.hidden, r.pointCloudShare,
-              r.seconds, qPrintable(gains.join(' ')));
+        qInfo("%s: %d photos, %dx%d at %.3f m (GSD %.3f m), %d objects, coverage %.4f (hidden %.4f, stretched %.4f), surface from points %.3f, "
+              "%.1f s; gains %s",
+              qPrintable(out), r.photos, r.width, r.height, r.resolution, r.groundSampleDistance, r.objects, r.coverage, r.hidden, r.stretched,
+              r.pointCloudShare, r.seconds, qPrintable(gains.join(' ')));
         for (const QString &note : r.notes) qInfo("note: %s", qUtf8Printable(note));
         QVERIFY(r.coverage > 0.95);
     }

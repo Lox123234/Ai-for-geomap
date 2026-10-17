@@ -251,6 +251,8 @@
      "action": "Разность моделей двух съёмок (изменения: выемки и насыпи); объёмы изменений — инструментом «Объём» с базой «другая поверхность»", "enabledWhen": "CRS карты задана; две модели высот на карте", "handler": "MapService::analyzeTerrain(difference)"},
     {"id": "analysis.ai", "title": "ИИ-выделение объектов", "icon": "ai", "shortcut": "A", "status": "ready",
      "action": "Щелчок по объекту на ортофотоплане — его контур (MobileSAM, локально); Shift/Ctrl — уточнить; Enter — полигон на карту", "enabledWhen": "CRS карты задана; включает режим «Карта»", "handler": "MapService::setTool(aiSelect)"},
+    {"id": "analysis.retouch", "title": "Ретушь ИИ растянутых участков", "status": "ready",
+     "action": "Дорисовать моделью дорисовки (LaMa, локально) участки истинного ортофотоплана, где снимки растянуты в полосы; в копии растра, исходный не меняется; правка записывается в журнал", "enabledWhen": "CRS карты задана, на карте истинный ортофотоплан с маской растянутых участков", "handler": "MapService::retouchOrthophoto"},
     {"id": "analysis.aiModels", "title": "Модели ИИ…", "status": "ready",
      "action": "Карточки локальных моделей: задача, лицензия, источник, SHA-256, ограничения; папка своих моделей", "enabledWhen": "всегда", "handler": "QML: AiModelsDialog"},
     {"id": "analysis.export", "title": "Экспорт аналитических результатов…", "status": "ready",
@@ -295,7 +297,7 @@
       "tool.orthoEditor", "tool.demEditor", "tool.cloudEditor", "tool.textureEditor", "tool.classify", "tool.rasterCalc"]},
     {"title": "&Анализ", "items": ["analysis.terrain", "analysis.slope", "analysis.aspect", "analysis.elevationDiff", "analysis.cutFill", "-",
       "analysis.longProfile", "analysis.crossProfile", "analysis.contours", "analysis.viewshed", "-",
-      "analysis.vegetation", "analysis.ndvi", "analysis.compare", "-", "analysis.ai", "analysis.aiModels", "-", "analysis.export"]},
+      "analysis.vegetation", "analysis.ndvi", "analysis.compare", "-", "analysis.ai", "analysis.retouch", "analysis.aiModels", "-", "analysis.export"]},
     {"title": "&Справка", "items": ["help.docs", "help.shortcuts", "-", "help.environment", "help.gpu", "help.versions", "help.licenses", "-", "help.bugReport", "help.about"]}
   ],
   "toolbar": [

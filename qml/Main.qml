@@ -179,6 +179,7 @@ ApplicationWindow {
         case "analysis.viewshed": case "analysis.ai": case "proc.contours": return map
         case "tool.rasterCalc": case "analysis.vegetation": case "analysis.ndvi": case "analysis.export": return has
         case "analysis.aiModels": return true
+        case "analysis.retouch": return map && !gis.aiBusy && gis.layerCount >= 0 && gis.retouchLayerId().length > 0
         case "edit.mask": return has && projects.photoCount > 0
         case "edit.maskEdit": return has && projects.selectedIndex >= 0 && photoMasks.revision >= 0 && photoMasks.hasMask(projects.selectedPhoto.file || "")
         case "file.saveAs": return has && idle
@@ -495,6 +496,12 @@ ApplicationWindow {
         "analysis.viewshed": function() { window.setTool("viewshed") },
         "analysis.ai": function() { window.setTool("aiSelect") },
         "analysis.aiModels": function() { aiModelsDialog.open() },
+        "analysis.retouch": function() {
+            window.activeView = 3
+            var e = gis.retouchOrthophoto()
+            if (e.length > 0) window.showNotice(e)
+            else window.flash("ИИ-ретушь запущена: растянутые участки дорисовываются в копии ортофотоплана…")
+        },
         "analysis.vegetation": function() { window.activeView = 3; rasterCalcDialog.openFor("exg") },
         "analysis.ndvi": function() { window.activeView = 3; rasterCalcDialog.openFor("ndvi") },
         "analysis.export": function() { analysisExportDialog.open() },
@@ -850,7 +857,7 @@ ApplicationWindow {
             if (ok) window.flash(message)
             else window.showError(message)
         }
-        function onAiFinished(ok, message) { if (!ok) window.flash(message) }
+        function onAiFinished(ok, message) { if (!ok || message.indexOf("ИИ-ретушь") === 0) window.flash(message) }
     }
     Connections {
         target: processing

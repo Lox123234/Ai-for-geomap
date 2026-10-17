@@ -116,6 +116,8 @@ qt_add_library(GeoMapCore STATIC
     src/ai/OrtCommon.h
     src/ai/Inpainter.h
     src/ai/Inpainter.cpp
+    src/ai/Retouch.h
+    src/ai/Retouch.cpp
     src/gis/RasterEdit.h
     src/gis/RasterEdit.cpp
     src/processing/TrueOrthophoto.h

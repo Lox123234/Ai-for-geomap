@@ -56,6 +56,10 @@ struct Options
     double blendDegrees = 3.0;    // ground: two photos whose view angles differ less than this are blended
     QString sourceMapPath;        // optional: Byte GeoTIFF, the photo of every pixel (index; 255 none) — seams at a glance
     QString surfacePath;          // optional: the surface built from the point cloud (Float32 GeoTIFF) for the 3D view
+    // optional: Byte GeoTIFF on the grid of the orthophoto, 255 on its streaks — texture stretched
+    // along the view of the photo used, where it saw the surface almost edge-on: nothing to measure
+    // there. The input of the AI retouch (ai::retouch).
+    QString stretchMaskPath;
     std::function<bool(double)> progress;   // 0..1; false cancels
 };
 
@@ -68,6 +72,7 @@ struct Result
     int photos = 0, objects = 0;
     double coverage = 0;          // share of DSM pixels with colour
     double hidden = 0;            // share of them hidden from every photo by the DSM (taken from the most vertical one)
+    double stretched = 0;         // share of them seen almost edge-on (see Options::stretchMaskPath)
     double seconds = 0;
     QVector<double> gains;        // brightness factor per photo (balanced)
     double pointCloudShare = 0;   // share of the surface taken from the dense point cloud

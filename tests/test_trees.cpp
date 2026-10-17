@@ -592,6 +592,7 @@ private slots:
         ortho::Options options;
         options.groundPath = m_dtm;
         options.pointCloudPath = m_ply;
+        options.stretchMaskPath = m_dir.filePath(QStringLiteral("true_stretch.tif"));   // as the program builds it: streaks re-sourced
         const ortho::Result r = ortho::build(m_scene, m_dsm, out, options);
         QVERIFY2(r.ok(), qPrintable(r.error));
         qInfo("True orthophoto %dx%d at %.3f m, %d objects, coverage %.4f, hidden %.4f, %.1f s", r.width, r.height, r.resolution, r.objects,

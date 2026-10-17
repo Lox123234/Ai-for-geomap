@@ -118,10 +118,7 @@ Inpainter::Result Inpainter::inpaint(const QImage &input, const QImage &maskInpu
     const QVector<QRect> boxes = parts(mask);
     QVector<bool> done(boxes.size(), false);
     const int N = WindowSize;
-    std::vector<float> imageTensor(size_t(3) * N * N), maskTensor(size_t(N) * N);
-    const std::vector<int64_t> imageShape{1, 3, N, N}, maskShape{1, 1, N, N};
-    try {
-        const auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    {
         for (int b = 0; b < boxes.size(); ++b) {
             if (done[b]) continue;
             const QRect box = boxes[b];
@@ -146,35 +143,8 @@ Inpainter::Result Inpainter::inpaint(const QImage &input, const QImage &maskInpu
             }
             const QImage net = scaled ? crop.scaled(N, N, Qt::IgnoreAspectRatio, Qt::SmoothTransformation) : crop;
             const QImage netMask = scaled ? cropMask.scaled(N, N, Qt::IgnoreAspectRatio, Qt::FastTransformation) : cropMask;
-            for (int y = 0; y < N; ++y) {
-                const uchar *c = net.constScanLine(y), *m = netMask.constScanLine(y);
-                for (int x = 0; x < N; ++x) {
-                    for (int ch = 0; ch < 3; ++ch) imageTensor[size_t(ch) * N * N + size_t(y) * N + x] = c[x * 3 + ch] / 255.0f;
-                    maskTensor[size_t(y) * N + x] = m[x] ? 1.0f : 0.0f;
-                }
-            }
-            Ort::Value inputs[2] = {Ort::Value::CreateTensor<float>(memory, imageTensor.data(), imageTensor.size(), imageShape.data(), imageShape.size()),
-                                    Ort::Value::CreateTensor<float>(memory, maskTensor.data(), maskTensor.size(), maskShape.data(), maskShape.size())};
-            const char *inNames[2] = {d->imageName.c_str(), d->maskName.c_str()};
-            const char *outName = d->outputName.c_str();
-            auto out = d->session->Run(Ort::RunOptions{nullptr}, inNames, inputs, 2, &outName, 1);
-            const auto shape = out[0].GetTensorTypeAndShapeInfo().GetShape();
-            if (shape.size() != 4 || shape[1] != 3 || shape[2] != N || shape[3] != N) {
-                r.error = QStringLiteral("Неожиданный размер результата модели дорисовки");
-                return r;
-            }
-            const float *o = out[0].GetTensorData<float>();
-            // LaMa exports return 0..255; others 0..1.
-            float peak = 0;
-            for (size_t i = 0; i < size_t(3) * N * N; i += 97) peak = qMax(peak, o[i]);
-            const float k = peak > 2.0f ? 1.0f : 255.0f;
-            QImage filled(N, N, QImage::Format_RGB888);
-            for (int y = 0; y < N; ++y) {
-                uchar *f = filled.scanLine(y);
-                for (int x = 0; x < N; ++x)
-                    for (int ch = 0; ch < 3; ++ch)
-                        f[x * 3 + ch] = uchar(qBound(0.0f, o[size_t(ch) * N * N + size_t(y) * N + x] * k + 0.5f, 255.0f));
-            }
+            QImage filled = run(net, netMask, &r.error);
+            if (filled.isNull()) return r;
             if (scaled) filled = filled.scaled(window.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
             // Only the masked pixels of the image change; they are no longer holes for later windows.
             for (int y = 0; y < window.height(); ++y) {
@@ -194,11 +164,77 @@ Inpainter::Result Inpainter::inpaint(const QImage &input, const QImage &maskInpu
             ++r.windows;
             r.scaled += scaled;
         }
-    } catch (const Ort::Exception &e) {
-        r.error = ort::error(e);
-        return r;
     }
     r.image = image;
+    return r;
+}
+
+QImage Inpainter::run(const QImage &image, const QImage &mask, QString *error)
+{
+    const int N = WindowSize;
+    if (!isLoaded()) {
+        *error = QStringLiteral("Модель дорисовки не загружена");
+        return {};
+    }
+    const QImage net = image.convertToFormat(QImage::Format_RGB888), netMask = mask.convertToFormat(QImage::Format_Grayscale8);
+    if (net.size() != QSize(N, N) || netMask.size() != QSize(N, N)) {
+        *error = QStringLiteral("Окно модели дорисовки должно быть %1 × %1").arg(N);
+        return {};
+    }
+    std::vector<float> imageTensor(size_t(3) * N * N), maskTensor(size_t(N) * N);
+    const std::vector<int64_t> imageShape{1, 3, N, N}, maskShape{1, 1, N, N};
+    for (int y = 0; y < N; ++y) {
+        const uchar *c = net.constScanLine(y), *m = netMask.constScanLine(y);
+        for (int x = 0; x < N; ++x) {
+            for (int ch = 0; ch < 3; ++ch) imageTensor[size_t(ch) * N * N + size_t(y) * N + x] = c[x * 3 + ch] / 255.0f;
+            maskTensor[size_t(y) * N + x] = m[x] ? 1.0f : 0.0f;
+        }
+    }
+    try {
+        const auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+        Ort::Value inputs[2] = {Ort::Value::CreateTensor<float>(memory, imageTensor.data(), imageTensor.size(), imageShape.data(), imageShape.size()),
+                                Ort::Value::CreateTensor<float>(memory, maskTensor.data(), maskTensor.size(), maskShape.data(), maskShape.size())};
+        const char *inNames[2] = {d->imageName.c_str(), d->maskName.c_str()};
+        const char *outName = d->outputName.c_str();
+        auto out = d->session->Run(Ort::RunOptions{nullptr}, inNames, inputs, 2, &outName, 1);
+        const auto shape = out[0].GetTensorTypeAndShapeInfo().GetShape();
+        if (shape.size() != 4 || shape[1] != 3 || shape[2] != N || shape[3] != N) {
+            *error = QStringLiteral("Неожиданный размер результата модели дорисовки");
+            return {};
+        }
+        const float *o = out[0].GetTensorData<float>();
+        // LaMa exports return 0..255; others 0..1.
+        float peak = 0;
+        for (size_t i = 0; i < size_t(3) * N * N; i += 97) peak = qMax(peak, o[i]);
+        const float k = peak > 2.0f ? 1.0f : 255.0f;
+        QImage filled(N, N, QImage::Format_RGB888);
+        for (int y = 0; y < N; ++y) {
+            uchar *f = filled.scanLine(y);
+            for (int x = 0; x < N; ++x)
+                for (int ch = 0; ch < 3; ++ch)
+                    f[x * 3 + ch] = uchar(qBound(0.0f, o[size_t(ch) * N * N + size_t(y) * N + x] * k + 0.5f, 255.0f));
+        }
+        return filled;
+    } catch (const Ort::Exception &e) {
+        *error = ort::error(e);
+        return {};
+    }
+}
+
+Inpainter::Result Inpainter::inpaintWindow(const QImage &image, const QImage &mask)
+{
+    Result r;
+    r.image = run(image, mask, &r.error);
+    if (r.image.isNull()) return r;
+    // Only the masked pixels come from the model.
+    const QImage src = image.convertToFormat(QImage::Format_RGB888), m = mask.convertToFormat(QImage::Format_Grayscale8);
+    for (int y = 0; y < r.image.height(); ++y) {
+        uchar *f = r.image.scanLine(y);
+        const uchar *s = src.constScanLine(y), *k = m.constScanLine(y);
+        for (int x = 0; x < r.image.width(); ++x)
+            if (!k[x]) std::copy(s + x * 3, s + x * 3 + 3, f + x * 3);
+    }
+    r.windows = 1;
     return r;
 }
 
@@ -233,6 +269,12 @@ Inpainter::Result Inpainter::inpaint(const QImage &, const QImage &)
     Result r;
     r.error = QStringLiteral("Локальный AI недоступен в этой сборке");
     return r;
+}
+Inpainter::Result Inpainter::inpaintWindow(const QImage &image, const QImage &mask) { return inpaint(image, mask); }
+QImage Inpainter::run(const QImage &, const QImage &, QString *error)
+{
+    *error = QStringLiteral("Локальный AI недоступен в этой сборке");
+    return {};
 }
 std::shared_ptr<Inpainter> cachedInpainter(const ModelCard &, QString *error)
 {

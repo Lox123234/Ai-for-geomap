@@ -311,6 +311,12 @@ public:
     // user's file is never written. Undoable; every edit is listed in <copy>.edits.json.
     // "" when started, else the reason.
     Q_INVOKABLE QString removeFromOrthophoto(double growMeters = 0.3);
+    // AI retouch: the streaks of a true orthophoto (its mask <name>_stretch.tif, written when it is
+    // built) repainted by the inpainting model in a copy in <project>/analysis, which replaces it
+    // on the map; the original stays as it is (hidden). Recorded in <copy>.edits.json. The layer:
+    // the selected one if it has a mask, else the top visible one with a mask. "" when started.
+    Q_INVOKABLE QString retouchOrthophoto();
+    Q_INVOKABLE QString retouchLayerId() const;   // the layer retouchOrthophoto() would work on; "" none
     void rasterEdited(const QString &path);   // a raster file changed in place: reload its layers
 
     // Raster calculator and vegetation indices of a raster layer, into <project>/analysis:
@@ -467,6 +473,9 @@ private:
     void computeProfile(const QVector<QPointF> &line);
     void computeVolume(const QVector<QPointF> &ring);
     bool isElevation(const MapLayer &l) const;
+    // The streak mask of a raster: next to it (a true orthophoto) or recorded in its edits log
+    // (an edited copy of one); "" none.
+    QString stretchMaskOf(const MapLayer &l) const;
     // A product of the analysis (slope, viewshed, indices…) in <project>/analysis: a single-band
     // raster, but not heights. Edited copies of a model (_правка, _заполнено) are heights.
     bool isDerived(const MapLayer &l) const;

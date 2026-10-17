@@ -18,6 +18,7 @@
 #include "Inpainter.h"
 #include "MapService.h"
 #include "RasterEdit.h"
+#include "Retouch.h"
 #include "MaskPolygons.h"
 #include "PhotoMasks.h"
 #include "ModelCard.h"
@@ -309,6 +310,90 @@ private slots:
                 if (!mask.constScanLine(y)[x]) QCOMPARE(r.image.pixel(x, y), original.pixel(x, y));
     }
 
+    // Retouch by a mask: streaks (rows of one colour, as a slope seen edge-on stretches a photo)
+    // inside a foliage-like texture are repainted; the rest and the tiny parts stay as they were.
+    void retouchOfStretchedPixels()
+    {
+        if (!ai::runtimeAvailable()) QSKIP("Built without ONNX Runtime");
+        const ai::ModelCard card = ai::AiService().inpaintingCard();
+        if (!card.isValid()) QSKIP(qPrintable(QStringLiteral("No inpainting model: %1").arg(card.error)));
+        const QSize size(700, 600);
+        QImage image(size, QImage::Format_RGB32);
+        QRandomGenerator rng(7);
+        for (int y = 0; y < size.height(); ++y)
+            for (int x = 0; x < size.width(); ++x) {
+                const int v = int(rng.bounded(60));
+                image.setPixel(x, y, qRgb(40 + v / 2, 90 + v, 30 + v / 3));
+            }
+        const QRect streaks(200, 150, 330, 280);
+        for (int y = streaks.top(); y <= streaks.bottom(); ++y) {
+            const QRgb c = image.pixel(streaks.left(), y);
+            for (int x = streaks.left(); x <= streaks.right(); ++x) image.setPixel(x, y, c);
+        }
+        const QImage before = image.convertToFormat(QImage::Format_RGB888);
+        const QString ortho = m_dir.filePath(QStringLiteral("retouch.tif")), maskPath = m_dir.filePath(QStringLiteral("retouch_stretch.tif"));
+        const double gt[6] = {500000, 0.02, 0, 5188000, 0, -0.02};
+        QVERIFY(makeOrthophoto(ortho, image, gt));
+        {
+            GDALDatasetH m = GDALCreate(GDALGetDriverByName("GTiff"), QDir::toNativeSeparators(maskPath).toUtf8().constData(), size.width(),
+                                        size.height(), 1, GDT_Byte, nullptr);
+            QVERIFY(m);
+            std::vector<uchar> v(size_t(size.width()) * size.height(), 0);
+            for (int y = streaks.top(); y <= streaks.bottom(); ++y)
+                for (int x = streaks.left(); x <= streaks.right(); ++x) v[size_t(y) * size.width() + x] = 255;
+            v[size_t(50) * size.width() + 50] = 255;   // a single pixel: too small to repaint
+            QCOMPARE(GDALRasterIO(GDALGetRasterBand(m, 1), GF_Write, 0, 0, size.width(), size.height(), v.data(), size.width(), size.height(),
+                                  GDT_Byte, 0, 0), CE_None);
+            GDALClose(m);
+        }
+        QCOMPARE(ai::stretchMaskFor(ortho), maskPath);
+        ai::Inpainter inpainter;
+        QString error;
+        QVERIFY2(inpainter.load(card, &error), qPrintable(error));
+        const ai::RetouchResult r = ai::retouch(inpainter, ortho, maskPath, 50);
+        QVERIFY2(r.ok(), qPrintable(r.error));
+        QVERIFY(r.tiles >= 4);
+        QCOMPARE(r.skipped, 1);
+        QImage after, alpha;
+        QVERIFY(rasteredit::readRgb(ortho, QRect(QPoint(0, 0), size), &after, &alpha, &error));
+        // Streaks have no change along a row; the repainted area has texture both ways.
+        double alongRow = 0, acrossRows = 0;
+        for (int y = streaks.top() + 10; y < streaks.bottom() - 10; ++y)
+            for (int x = streaks.left() + 10; x < streaks.right() - 10; ++x) {
+                alongRow += std::abs(qGreen(after.pixel(x + 1, y)) - qGreen(after.pixel(x, y)));
+                acrossRows += std::abs(qGreen(after.pixel(x, y + 1)) - qGreen(after.pixel(x, y)));
+            }
+        qInfo("Retouch: %d tiles, %lld px; texture along rows / across %.2f", r.tiles, r.pixels, alongRow / qMax(1.0, acrossRows));
+        QVERIFY2(alongRow > 0.3 * acrossRows, qPrintable(QString::number(alongRow / qMax(1.0, acrossRows))));
+        // Away from the mask (and its 2 px growth) nothing changed, the single pixel included.
+        for (int y = 0; y < size.height(); y += 5)
+            for (int x = 0; x < size.width(); x += 5)
+                if (!streaks.adjusted(-3, -3, 3, 3).contains(x, y)) QCOMPARE(after.pixel(x, y), before.pixel(x, y));
+        QCOMPARE(after.pixel(50, 50), before.pixel(50, 50));
+    }
+
+    // A real orthophoto with its mask (GEOMAP_RETOUCH_ORTHO=<true_orthophoto.tif>): a copy retouched
+    // into GEOMAP_TEST_OUTPUT, for a look at the result.
+    void retouchOfARealOrthophoto()
+    {
+        const QString source = qEnvironmentVariable("GEOMAP_RETOUCH_ORTHO");
+        if (source.isEmpty()) QSKIP("GEOMAP_RETOUCH_ORTHO is not set");
+        const QString mask = ai::stretchMaskFor(source);
+        QVERIFY2(!mask.isEmpty(), "no _stretch.tif next to the orthophoto");
+        const QString target = QDir(qEnvironmentVariable("GEOMAP_TEST_OUTPUT", m_dir.path())).filePath(QStringLiteral("retouched.tif"));
+        QFile::remove(target);
+        QString error;
+        QVERIFY2(rasteredit::makeEditableCopy(source, target, &error), qPrintable(error));
+        ai::Inpainter inpainter;
+        QVERIFY2(inpainter.load(ai::AiService().inpaintingCard(), &error), qPrintable(error));
+        QElapsedTimer timer;
+        timer.start();
+        const ai::RetouchResult r = ai::retouch(inpainter, target, mask, 400);
+        QVERIFY2(r.ok(), qPrintable(r.error));
+        qInfo("Retouched %s: %d tiles, %lld px painted, %lld px left (small parts), %.1f s", qPrintable(target), r.tiles, r.pixels, r.skipped,
+              timer.elapsed() / 1000.0);
+    }
+
     // The map tool: click → contour on the orthophoto → refine → polygon in the drawings.
     void selectionOnTheMap()
     {
@@ -447,6 +532,102 @@ private slots:
 
     // Removal of a car from an orthophoto: click, remove, the copy replaces the original on the
     // map, the user's file is untouched, undo and redo rewrite the window.
+    // «Анализ → Ретушь ИИ» on the map: the streaks of a true orthophoto (its _stretch.tif mask)
+    // repainted in a copy that replaces it on the map; the original file is untouched.
+    void retouchOnTheMap()
+    {
+        const QString project = m_dir.filePath(QStringLiteral("Проект ретуши"));
+        QVERIFY(QDir().mkpath(project));
+        const QSize size(700, 600);
+        QImage image(size, QImage::Format_RGB32);
+        QRandomGenerator rng(11);
+        for (int y = 0; y < size.height(); ++y)
+            for (int x = 0; x < size.width(); ++x) {
+                const int v = int(rng.bounded(60));
+                image.setPixel(x, y, qRgb(40 + v / 2, 90 + v, 30 + v / 3));
+            }
+        const QRect streaks(200, 150, 300, 260);
+        for (int y = streaks.top(); y <= streaks.bottom(); ++y) {
+            const QRgb c = image.pixel(streaks.left(), y);
+            for (int x = streaks.left(); x <= streaks.right(); ++x) image.setPixel(x, y, c);
+        }
+        const QString ortho = m_dir.filePath(QStringLiteral("true_orthophoto.tif"));
+        const double gt[6] = {500000, 0.02, 0, 5188000, 0, -0.02};
+        QVERIFY(makeOrthophoto(ortho, image, gt));
+        auto hash = [](const QString &path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256) : QByteArray();
+        };
+        const QByteArray originalHash = hash(ortho);
+
+        ai::AiService aiService;
+        MapService service;
+        service.setAi(&aiService);
+        service.setViewSize(QSizeF(800, 600));
+        service.setProject(project, nullptr);
+        QCOMPARE(service.addLayerFromPath(ortho), QString());
+        QTRY_VERIFY_WITH_TIMEOUT(!service.layers().last().loading, 30000);
+        const QString originalId = service.layerIdForSource(ortho);
+        // Without the mask there is nothing to retouch.
+        QVERIFY(service.retouchLayerId().isEmpty());
+        QVERIFY(service.retouchOrthophoto().contains(QStringLiteral("маской")));
+        const QString mask = m_dir.filePath(QStringLiteral("true_orthophoto_stretch.tif"));
+        {
+            GDALDatasetH m = GDALCreate(GDALGetDriverByName("GTiff"), QDir::toNativeSeparators(mask).toUtf8().constData(), size.width(),
+                                        size.height(), 1, GDT_Byte, nullptr);
+            QVERIFY(m);
+            std::vector<uchar> v(size_t(size.width()) * size.height(), 0);
+            for (int y = streaks.top(); y <= streaks.bottom(); ++y)
+                for (int x = streaks.left(); x <= streaks.right(); ++x) v[size_t(y) * size.width() + x] = 255;
+            QCOMPARE(GDALRasterIO(GDALGetRasterBand(m, 1), GF_Write, 0, 0, size.width(), size.height(), v.data(), size.width(), size.height(),
+                                  GDT_Byte, 0, 0), CE_None);
+            GDALClose(m);
+        }
+        QCOMPARE(service.retouchLayerId(), originalId);
+        if (!aiService.inpaintingProblem().isEmpty()) QSKIP(qPrintable(aiService.inpaintingProblem()));
+        QSignalSpy finished(&service, &MapService::aiFinished);
+        QCOMPARE(service.retouchOrthophoto(), QString());
+        QVERIFY(service.aiBusy());
+        QVERIFY(finished.wait(300000));
+        QVERIFY2(finished.last().at(0).toBool(), qPrintable(finished.last().at(1).toString()));
+        qInfo("%s", qPrintable(service.aiStatus()));
+        QVERIFY(service.aiStatus().contains(QStringLiteral("дорисовано")));
+        // The copy above the hidden original; the user's file unchanged; the streaks gone in the copy.
+        const QString copy = QDir(project).filePath(QStringLiteral("analysis/true_orthophoto_ИИ-ретушь.tif"));
+        QVERIFY(QFileInfo::exists(copy));
+        QCOMPARE(hash(ortho), originalHash);
+        const QString copyId = service.layerIdForSource(copy);
+        QVERIFY(!copyId.isEmpty());
+        for (const MapLayer &l : service.layers()) {
+            if (l.id == originalId) QVERIFY(!l.visible);
+            if (l.id == copyId) QVERIFY(l.visible && l.name.contains(QStringLiteral("ретушь ИИ")));
+        }
+        QImage after;
+        QString error;
+        QVERIFY(rasteredit::readRgb(copy, streaks.adjusted(10, 10, -10, -10), &after, nullptr, &error));
+        double alongRow = 0, acrossRows = 0;
+        for (int y = 0; y + 1 < after.height(); ++y)
+            for (int x = 0; x + 1 < after.width(); ++x) {
+                alongRow += std::abs(qGreen(after.pixel(x + 1, y)) - qGreen(after.pixel(x, y)));
+                acrossRows += std::abs(qGreen(after.pixel(x, y + 1)) - qGreen(after.pixel(x, y)));
+            }
+        QVERIFY2(alongRow > 0.3 * acrossRows, qPrintable(QString::number(alongRow / qMax(1.0, acrossRows))));
+        // The edit is recorded, with the mask: the copy can be retouched again (in place).
+        QFile log(copy + QStringLiteral(".edits.json"));
+        QVERIFY(log.open(QIODevice::ReadOnly));
+        const QJsonObject root = QJsonDocument::fromJson(log.readAll()).object();
+        log.close();
+        QCOMPARE(QDir::cleanPath(root.value(QStringLiteral("stretchMask")).toString()), QDir::cleanPath(mask));
+        QCOMPARE(root.value(QStringLiteral("edits")).toArray().size(), 1);
+        QCOMPARE(root.value(QStringLiteral("edits")).toArray().first().toObject().value(QStringLiteral("model")).toString(), QStringLiteral("lama"));
+        QCOMPARE(service.retouchLayerId(), copyId);
+        const int layers = service.layerCount();
+        QCOMPARE(service.retouchOrthophoto(), QString());
+        QVERIFY(finished.wait(300000));
+        QVERIFY2(finished.last().at(0).toBool(), qPrintable(finished.last().at(1).toString()));
+        QCOMPARE(service.layerCount(), layers);   // in place, no new copy
+    }
+
     void removalFromTheOrthophoto()
     {
         const QString project = m_dir.filePath(QStringLiteral("Проект правки"));
