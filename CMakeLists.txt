@@ -66,6 +66,8 @@ qt_add_library(GeoMapCore STATIC
     src/processing/ProjectReport.cpp
     src/processing/CameraOptimizer.h
     src/processing/CameraOptimizer.cpp
+    src/processing/ResultNames.h
+    src/processing/ResultNames.cpp
     src/processing/ProcessingService.h
     src/processing/ProcessingService.cpp
     src/gis/GisEnvironment.h

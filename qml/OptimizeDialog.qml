@@ -46,7 +46,7 @@ Dialog {
         Label {
             Layout.fillWidth: true
             wrapMode: Text.Wrap
-            text: survey.controlCount >= 3 ? "Результаты задания будут пересобраны" : "Без опорных точек — уточнение по связующим точкам и GPS. Результаты будут пересобраны"
+            text: survey.controlCount >= 3 ? "Результаты задания будут пересобраны" : "Без опорных точек результат почти не изменится — выравнивание уже уравнено"
             color: Theme.faint; font.pixelSize: 11
         }
         RowLayout {

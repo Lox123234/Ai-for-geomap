@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ProjectReport.h"
+
 #include <QObject>
 #include <QPointer>
 #include <QString>
@@ -21,6 +23,9 @@ public:
     // The newest completed job with a reconstruction when jobId is empty. "" when started.
     Q_INVOKABLE QString build(const QString &jobId = {});
     Q_INVOKABLE QString reportOf(const QString &jobId = {}) const;   // the PDF if written, else ""
+    // What the report of a job shows (job, quality, photos, control points, results); its jobId empty
+    // with the reason in `error` when there is no such job.
+    projectreport::Input inputFor(const QString &jobId, QString *error = nullptr) const;
 
 signals:
     void busyChanged();

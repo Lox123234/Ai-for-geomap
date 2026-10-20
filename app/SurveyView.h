@@ -119,6 +119,7 @@ private:
     bool m_busy = false;
     int m_generation = 0;
     bool m_fitted = false;
+    bool m_autoFit = false;   // the view follows its size (fitted, not moved since)
     struct Point { QString id, name; bool check = false; double x = 0, y = 0; bool solved = false; double dx = 0, dy = 0, dz = 0; int photos = 0; };
     QVector<Point> m_points;
     QVariantList m_pointRows;

@@ -131,6 +131,23 @@ private slots:
 
     // Control values that do not depend on PROJ: UTM is defined with k0 = 0.9996 on the central
     // meridian, the WGS 84 meridian arc to 45° is 4 984 944.378 m; Web Mercator x(180°) = pi * a.
+    // ODM writes its point clouds with a WKT named "unknown" (UTM on WGS 84, no EPSG code): the
+    // program still knows it as EPSG:32615 and names it so.
+    void crsOfAnUnknownNamedWkt()
+    {
+        const QString odm = QStringLiteral(
+            "PROJCS[\"unknown\",GEOGCS[\"unknown\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],"
+            "AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,"
+            "AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],"
+            "PARAMETER[\"central_meridian\",-93],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],"
+            "PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]");
+        const Crs crs = Crs::fromWkt(odm);
+        QVERIFY(crs.isValid());
+        QCOMPARE(crs.epsg(), 32615);
+        QCOMPARE(crs.name(), QStringLiteral("WGS 84 / UTM zone 15N"));
+        QVERIFY(crs.label().contains(QStringLiteral("EPSG:32615")));
+    }
+
     void transformsMatchIndependentControlValues()
     {
         const Crs wgs = Crs::wgs84(), utm = Crs::fromEpsg(32615), merc = Crs::fromEpsg(3857);

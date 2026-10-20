@@ -26,6 +26,14 @@ void connectJournal(AppLog *log, ProjectManager *projects, ProcessingService *pr
         });
         // One entry per state change of a job (stage changes are in the job's own log).
         auto states = std::make_shared<QHash<QString, JobState>>();
+        // The jobs a project opens with are known in their state: only their changes are news.
+        auto project = std::make_shared<QString>();
+        QObject::connect(processing, &ProcessingService::jobsChanged, log, [processing, states, project] {
+            if (processing->projectDirectory() == *project) return;
+            *project = processing->projectDirectory();
+            states->clear();
+            for (const ProcessingJob &j : processing->jobs()) states->insert(j.id, j.state);
+        });
         QObject::connect(processing, &ProcessingService::jobUpdated, log, [log, processing, states](const QString &id) {
             const QVector<ProcessingJob> jobs = processing->jobs();
             for (const ProcessingJob &j : jobs) {

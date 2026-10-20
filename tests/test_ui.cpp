@@ -1386,6 +1386,17 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(s->processing.jobCount() > 0, 10000);
         s->run(QStringLiteral("view.photo"));
         s->shot(QStringLiteral("real-01-photos.png"));
+        // The report of the newest aligned job, page by page (pictures of what the PDF holds).
+        const QString keep = qEnvironmentVariable("GEOMAP_TEST_OUTPUT");
+        QString reportError;
+        const projectreport::Input report = s->reports.inputFor({}, &reportError);
+        if (!keep.isEmpty() && !report.jobId.isEmpty()) {
+            for (double scale : {1.0, 2.0}) {
+                const QVector<QImage> pages = projectreport::pages(report, scale);
+                for (int i = 0; i < pages.size(); ++i) pages[i].save(QDir(keep).filePath(QStringLiteral("real-report-%1-x%2.png").arg(i + 1).arg(scale)));
+            }
+            qInfo("report of %s", qPrintable(report.jobId));
+        }
         for (const QString &kind : {QStringLiteral("orthophoto"), QStringLiteral("dsm"), QStringLiteral("dtm")}) {
             const QVariantMap result = s->tree.result(kind);
             if (result.isEmpty()) continue;

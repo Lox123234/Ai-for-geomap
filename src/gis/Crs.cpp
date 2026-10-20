@@ -34,7 +34,24 @@ Crs Crs::fromSpatialReference(void *handle)
         if (copy.AutoIdentifyEPSG() == OGRERR_NONE && copy.GetAuthorityCode(nullptr))
             crs.m_epsg = QByteArray(copy.GetAuthorityCode(nullptr)).toInt();
     }
+    if (crs.m_epsg == 0) {
+        // WKT named "unknown" with the parameters of a known CRS (ODM's LAZ: UTM on WGS 84): the
+        // EPSG entry PROJ finds equivalent.
+        int count = 0;
+        int *confidence = nullptr;
+        OGRSpatialReferenceH *matches = OSRFindMatches(OGRSpatialReference::ToHandle(srs), nullptr, &count, &confidence);
+        if (matches && count > 0 && confidence && confidence[0] >= 70) {
+            const char *a = OSRGetAuthorityName(matches[0], nullptr), *c = OSRGetAuthorityCode(matches[0], nullptr);
+            if (a && c && QByteArray(a).compare("EPSG", Qt::CaseInsensitive) == 0) crs.m_epsg = QByteArray(c).toInt();
+        }
+        OSRFreeSRSArray(matches);
+        CPLFree(confidence);
+    }
     crs.m_name = QString::fromUtf8(srs->GetName() ? srs->GetName() : "");
+    if ((crs.m_name.isEmpty() || crs.m_name.compare(QLatin1String("unknown"), Qt::CaseInsensitive) == 0) && crs.m_epsg > 0) {
+        OGRSpatialReference known;
+        if (known.importFromEPSG(crs.m_epsg) == OGRERR_NONE && known.GetName()) crs.m_name = QString::fromUtf8(known.GetName());
+    }
     crs.m_geographic = srs->IsGeographic();
     crs.m_projected = srs->IsProjected();
     if (crs.m_projected) {

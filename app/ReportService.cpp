@@ -25,16 +25,18 @@ QString ReportService::reportOf(const QString &jobId) const
     return QFileInfo::exists(pdf) ? pdf : QString();
 }
 
-QString ReportService::build(const QString &jobIdIn)
+projectreport::Input ReportService::inputFor(const QString &jobIdIn, QString *error) const
 {
-    if (m_busy) return QStringLiteral("Отчёт уже строится");
-    if (!m_processing || !m_projects || !m_projects->hasProject()) return QStringLiteral("Проект не открыт");
-    const QString id = jobIdIn.isEmpty() ? m_processing->newestJob(QStringLiteral("aligned")) : jobIdIn;
-    if (id.isEmpty()) return QStringLiteral("Нет завершённого задания с выравниванием");
-    const ProcessingJob job = m_processing->job(id);
-    if (job.id.isEmpty()) return QStringLiteral("Задание не найдено");
-
     projectreport::Input in;
+    auto fail = [&](const QString &why) {
+        if (error) *error = why;
+        return projectreport::Input{};
+    };
+    if (!m_processing || !m_projects || !m_projects->hasProject()) return fail(QStringLiteral("Проект не открыт"));
+    const QString id = jobIdIn.isEmpty() ? m_processing->newestJob(QStringLiteral("aligned")) : jobIdIn;
+    if (id.isEmpty()) return fail(QStringLiteral("Нет завершённого задания с выравниванием"));
+    const ProcessingJob job = m_processing->job(id);
+    if (job.id.isEmpty()) return fail(QStringLiteral("Задание не найдено"));
     in.appVersion = QCoreApplication::applicationVersion();
     in.engine = m_processing->engineName() + QLatin1Char(' ') + m_processing->engineVersion();
     in.project = QFileInfo(m_projects->projectPath()).fileName();
@@ -66,6 +68,17 @@ QString ReportService::build(const QString &jobIdIn)
         photo.longitude = p.longitude;
         in.photos << photo;
     }
+    if (error) error->clear();
+    return in;
+}
+
+QString ReportService::build(const QString &jobIdIn)
+{
+    if (m_busy) return QStringLiteral("Отчёт уже строится");
+    QString error;
+    const projectreport::Input in = inputFor(jobIdIn, &error);
+    if (in.jobId.isEmpty()) return error;
+    const QString id = in.jobId;
     const QString pdf = QDir(in.jobDirectory).filePath(QStringLiteral("geomap/report.pdf"));
     m_busy = true;
     emit busyChanged();

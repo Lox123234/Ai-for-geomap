@@ -330,6 +330,7 @@ void SurveyView::fitAll()
     m_resolution = qMax(e.width() / qMax(1.0, width() - 60), e.height() / qMax(1.0, height() - 60));
     if (!(m_resolution > 0)) m_resolution = 1;
     m_fitted = true;
+    m_autoFit = true;   // follows the size of the view until the user moves it
     updateScaleText();
     update();
 }
@@ -340,6 +341,7 @@ void SurveyView::zoomToRow(int row)
     for (const surveylayout::Camera &c : m_layout->cameras)
         if (c.row == row) {
             m_centre = c.aligned ? QPointF(c.x, c.y) : QPointF(c.gpsX, c.gpsY);
+            m_autoFit = false;
             if (!c.footprint.isEmpty()) {
                 const QRectF r = c.footprint.boundingRect();
                 m_resolution = qMax(r.width() / qMax(1.0, width() * 0.6), r.height() / qMax(1.0, height() * 0.6));
@@ -439,7 +441,7 @@ QString SurveyView::placePointAt(const QPointF &screen)
 void SurveyView::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry)
 {
     QQuickPaintedItem::geometryChange(newGeometry, oldGeometry);
-    if (!m_fitted || oldGeometry.width() < 10) fitAll();
+    if (!m_fitted || m_autoFit || oldGeometry.width() < 10) fitAll();
     update();
 }
 
@@ -456,6 +458,7 @@ void SurveyView::mouseMoveEvent(QMouseEvent *event)
     const QPointF d = event->position() - m_lastPos;
     if (!m_dragged && std::hypot(event->position().x() - m_pressPos.x(), event->position().y() - m_pressPos.y()) > 3) m_dragged = true;
     if (m_dragged) {
+        m_autoFit = false;
         m_centre -= QPointF(d.x() * m_resolution, -d.y() * m_resolution);
         update();
     }
@@ -494,6 +497,7 @@ void SurveyView::wheelEvent(QWheelEvent *event)
     const QPointF at = event->position(), before = toMap(at);
     const double f = std::pow(1.0015, -event->angleDelta().y());
     m_resolution = qBound(1e-4, m_resolution * f, 1e5);
+    m_autoFit = false;
     const QPointF after = toMap(at);
     m_centre += before - after;
     updateScaleText();

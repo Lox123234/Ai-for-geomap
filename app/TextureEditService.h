@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QQuickImageProvider>
+#include <QRectF>
 #include <QVariantList>
 
 class ProcessingService;
@@ -62,6 +63,8 @@ public:
     Q_INVOKABLE QString restoreOriginal();      // the copy made again from ODM's model
     Q_INVOKABLE QString showIn3D();
     Q_INVOKABLE void openFolder();
+    // The part of an atlas its charts take, in [0, 1] (the rest is empty): where the view starts.
+    Q_INVOKABLE QRectF usedRect(int atlas) const;
     QString copyObj() const;                    // the OBJ of the copy
 
     // The atlas reduced to `maxSide`, with the colour settings applied (the preview).

@@ -2,6 +2,7 @@
 
 #include "Crs.h"
 #include "Lidar.h"
+#include "ResultNames.h"
 #include "TrueOrthophoto.h"
 #include "WebTiles.h"
 
@@ -260,7 +261,8 @@ QString Scene3DService::add(const QString &kind, const QString &path, const QStr
     l.kind = kind;
     l.source = QFileInfo(path).absoluteFilePath();
     l.drape = drape;
-    l.name = QFileInfo(path).completeBaseName();
+    const QString title = resultnames::titleOf(QFileInfo(path).absoluteFilePath());
+    l.name = title.isEmpty() ? QFileInfo(path).completeBaseName() : title;
     l.job = jobFolderOf(path);
     l.info = QStringLiteral("Загрузка…");
     l.version = 1;

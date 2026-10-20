@@ -390,6 +390,24 @@ QString TextureEditService::showIn3D()
     return m_scene->addModel(copyObj());
 }
 
+QRectF TextureEditService::usedRect(int atlas) const
+{
+    const QImage img = preview(atlas, 512);   // the colour settings do not move the charts
+    if (img.isNull()) return {};
+    int x0 = img.width(), y0 = img.height(), x1 = -1, y1 = -1;
+    for (int y = 0; y < img.height(); ++y)
+        for (int x = 0; x < img.width(); ++x) {
+            const QRgb p = img.pixel(x, y);
+            if (qAlpha(p) < 8 || qRed(p) + qGreen(p) + qBlue(p) < 12) continue;   // empty: black or transparent
+            x0 = qMin(x0, x); y0 = qMin(y0, y); x1 = qMax(x1, x); y1 = qMax(y1, y);
+        }
+    if (x1 < 0) return QRectF(0, 0, 1, 1);
+    const double m = 4;   // a margin of a few pixels
+    return QRectF(qMax(0.0, x0 - m) / img.width(), qMax(0.0, y0 - m) / img.height(),
+                  (qMin(double(img.width()), x1 + 1 + m) - qMax(0.0, x0 - m)) / img.width(),
+                  (qMin(double(img.height()), y1 + 1 + m) - qMax(0.0, y0 - m)) / img.height());
+}
+
 void TextureEditService::openFolder()
 {
     if (!m_copy.isEmpty()) QDesktopServices::openUrl(QUrl::fromLocalFile(m_copy));

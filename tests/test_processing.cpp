@@ -29,6 +29,7 @@
 #include "TrueOrthophoto.h"
 #include "Overlap.h"
 #include "ProjectReport.h"
+#include "ResultNames.h"
 #include "SurveyLayout.h"
 #include "Crs.h"
 #include <gdal.h>
@@ -1435,6 +1436,20 @@ private slots:
         QVERIFY(missingDone.count() == 1 || missingDone.wait(10000));
         QCOMPARE(missingDone.at(0).at(0).toBool(), false);
         QVERIFY(!QFileInfo::exists(tmp.filePath(QStringLiteral("x.bin.part"))));
+    }
+
+    // Layers of known results are named by what they are, not by their files.
+    void resultTitles()
+    {
+        const QString job = QStringLiteral("C:/Проекты/Съёмка/jobs/20261016-140120/");
+        QCOMPARE(resultnames::titleOf(job + QStringLiteral("odm_orthophoto/odm_orthophoto.tif")), QStringLiteral("Ортофотоплан ODM · 16.10 14:01"));
+        QCOMPARE(resultnames::titleOf(job + QStringLiteral("geomap/true_orthophoto.tif")), QStringLiteral("Истинный ортофотоплан · 16.10 14:01"));
+        QCOMPARE(resultnames::titleOf(job + QStringLiteral("opensfm/reconstruction.ply")), QStringLiteral("Связующие точки · 16.10 14:01"));
+        QCOMPARE(resultnames::titleOf(job + QStringLiteral("odm_texturing_25d/odm_textured_model_geo.obj")), QStringLiteral("2.5D-модель · 16.10 14:01"));
+        QCOMPARE(resultnames::titleOf(QStringLiteral("C:\\Проекты\\Съёмка\\lidar\\scan_dtm.tif")), QStringLiteral("DTM по LiDAR · scan"));
+        QCOMPARE(resultnames::titleOf(QStringLiteral("C:/Проекты/Съёмка/mosaics/orthophoto-20261016-140312.tif")), QStringLiteral("Ортофотоплан блоков · 16.10 14:03"));
+        QVERIFY(resultnames::titleOf(QStringLiteral("D:/data/ortho.tif")).isEmpty());
+        QVERIFY(resultnames::titleOf(job + QStringLiteral("odm_dem/other.tif")).isEmpty());
     }
 
     void odmCollectsAndDescribesOutputs()

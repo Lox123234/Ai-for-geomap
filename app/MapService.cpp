@@ -1,4 +1,5 @@
 #include "MapService.h"
+#include "ResultNames.h"
 #include "WebTiles.h"
 #include "AiService.h"
 #include "Geodesy.h"
@@ -601,6 +602,11 @@ void MapService::loadState()
                    : type == QLatin1String("drawings") ? MapLayer::Drawings : MapLayer::Raster;
             l.name = o.value("name").toString();
             l.source = o.value("source").toString().isEmpty() ? QString() : resolveSource(o.value("source").toString());
+            // Projects of earlier versions named results after their files.
+            if (!l.source.isEmpty() && l.name == QFileInfo(l.source).completeBaseName()) {
+                const QString title = resultnames::titleOf(l.source);
+                if (!title.isEmpty()) l.name = title;
+            }
             l.vectorLayer = o.value("layer").toString();
             l.visible = o.value("visible").toBool(true);
             l.opacity = qBound(0.0, o.value("opacity").toDouble(1.0), 1.0);
@@ -850,7 +856,8 @@ QString MapService::addLayerFromPath(const QString &path, bool zoom)
         MapLayer l;
         l.id = QUuid::createUuid().toString(QUuid::Id128).left(12);
         l.type = MapLayer::Raster;
-        l.name = fi.completeBaseName();
+        const QString title = resultnames::titleOf(fi.absoluteFilePath());   // "Ортофотоплан ODM · 16.10 14:01"
+        l.name = title.isEmpty() ? fi.completeBaseName() : title;
         l.source = fi.absoluteFilePath();
         if (m_useNextStyle) {   // analysis results come with their own colour ramp
             l.style = m_nextStyle;

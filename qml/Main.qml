@@ -336,6 +336,14 @@ ApplicationWindow {
         window.activeView = 3
         if (id.length > 0) { gis.selectedLayer = id; gis.zoomToLayer(id) }
     }
+    // Georeferencing needs something to click on: the project's orthophoto goes on the map when
+    // the map has no raster yet.
+    function georefReference() {
+        if (gis.rasterLayers().length > 0 || gis.hasBasemap) return
+        var ortho = projectTree.result("orthophoto")
+        if (ortho.path !== undefined) gis.addLayerFile(ortho.path)
+        else window.flash("Добавьте подложку или ортофотоплан — по ним ставятся точки на карте")
+    }
     function showOrthophoto() {   // the true orthophoto when built: the tree lists it first
         var ortho = projectTree.result("orthophoto")
         if (ortho.path === undefined) {
@@ -547,6 +555,7 @@ ApplicationWindow {
         "tool.georeference": function() { georefDialog.open() },
         "import.lidar": function() { lidarDialog.open() },
         "tool.georeferencePhoto": function() {
+            window.georefReference()
             var e = georef.openPhoto(projects.selectedIndex)
             if (e.length > 0) window.showNotice(e)
             else window.activeView = 3
@@ -1110,6 +1119,7 @@ ApplicationWindow {
         title: "Изображение для привязки по точкам"
         nameFilters: ["Изображения (*.jpg *.jpeg *.png *.tif *.tiff *.bmp *.gif *.jp2 *.webp)", "Все файлы (*)"]
         onAccepted: {
+            window.georefReference()
             var e = georef.openFile(selectedFile)
             if (e.length > 0) window.showNotice(e)
             else window.activeView = 3
