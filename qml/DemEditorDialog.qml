@@ -17,7 +17,7 @@ Dialog {
     property string resultText: ""
     property bool resultOk: true
     readonly property var operations: [
-        { id: "interpolate", title: "Убрать объект (высоты по окружению)", text: "Машины, люди, краны, кусты и деревья исчезают с DSM: высоты внутри контура восстанавливаются по его краю (обратные расстояния)." },
+        { id: "interpolate", title: "Убрать объект (высоты по окружению)", text: "Машины, кусты, деревья — высоты внутри контура берутся по его краю." },
         { id: "plane", title: "Выровнять по плоскости контура", text: "Плоскость, проведённая через высоты по краю контура (МНК): площадки, дороги, откосы." },
         { id: "level", title: "Задать высоту", text: "Все ячейки внутри контура получают заданную высоту: проектная отметка, зеркало воды." },
         { id: "smooth", title: "Сгладить", text: "Сглаживание шума внутри контура (среднее 5 × 5 ячеек, три прохода)." }
@@ -33,7 +33,7 @@ Dialog {
             Layout.fillWidth: true; wrapMode: Text.Wrap
             text: gis.hasSelection || gis.hasAiCandidate
                   ? "Контур выбран. Модель: " + (gis.layerCount >= 0 ? (gis.terrainLayerId().length > 0 ? gis.layerDetails(gis.terrainLayerId()).name : "нет на карте") : "")
-                  : "Сначала обведите участок: нарисуйте полигон и выберите его (Правка / выбор) или выделите объект ИИ-щелчком."
+                  : "Сначала обведите участок полигоном или выделите объект ИИ"
             color: gis.hasSelection || gis.hasAiCandidate ? Theme.text : Theme.warn; font.pixelSize: 12
         }
         Repeater {

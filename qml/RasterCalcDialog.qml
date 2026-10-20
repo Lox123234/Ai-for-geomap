@@ -23,11 +23,11 @@ Dialog {
     readonly property int bands: current ? current.bands : 0
 
     readonly property var indices: [
-        { id: "exg", title: "ExG — индекс зелени по RGB", text: "2g − r − b в долях яркости: растительность > 0,05, почва и асфальт около 0. Работает на обычном RGB-ортофотоплане." },
+        { id: "exg", title: "ExG — индекс зелени по RGB", text: "Растительность по обычному RGB-ортофотоплану." },
         { id: "vari", title: "VARI — устойчивый к освещению", text: "(G − R) / (G + R − B): меньше зависит от теней и дымки; растительность > 0,05." },
         { id: "gli", title: "GLI — индекс зелёного листа", text: "(2G − R − B) / (2G + R + B): густота зелёной листвы; растительность > 0,05." },
-        { id: "ndvi", title: "NDVI — по ближнему инфракрасному каналу", text: "(NIR − Red) / (NIR + Red): нужен мультиспектральный снимок с каналом NIR. Здоровая растительность > 0,3." },
-        { id: "calc", title: "Своё выражение (растровый калькулятор)", text: "Каналы B1, B2, …; числа; + − * / и скобки; функции sqrt(), abs(), min(a, b), max(a, b). Пример: (B4 − B3) / (B4 + B3)." }
+        { id: "ndvi", title: "NDVI — по ближнему инфракрасному каналу", text: "Нужен ближний инфракрасный канал (мультиспектр)." },
+        { id: "calc", title: "Своё выражение (растровый калькулятор)", text: "Каналы B1, B2…, + − * /, sqrt, abs, min, max. Пример: (B4 − B3) / (B4 + B3)" }
     ]
 
     function openFor(k) {
@@ -62,7 +62,7 @@ Dialog {
             Layout.fillWidth: true
             visible: dialog.layers.length === 0
             wrapMode: Text.Wrap
-            text: "На карте нет растров. Добавьте ортофотоплан: «Вид → Ортофотоплан» из результатов обработки или «Файл → Импорт ортофотоплана»."
+            text: "На карте нет растров — добавьте ортофотоплан"
             color: Theme.warn; font.pixelSize: 12
         }
         Label { text: "Каналов: " + dialog.bands; color: Theme.faint; font.pixelSize: 10; visible: dialog.bands > 0 }

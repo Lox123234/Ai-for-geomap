@@ -81,7 +81,7 @@ Dialog {
                 visible: gis.markers.length === 0
                 width: parent.width - 40
                 wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter
-                text: "Маркеров пока нет. «Поставить маркер» и щелчок по карте — точка с координатами и высотой модели под ней."
+                text: "Маркеров нет — поставьте на карте"
                 color: Theme.faint
             }
         }

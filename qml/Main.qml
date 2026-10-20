@@ -294,7 +294,7 @@ ApplicationWindow {
     function open3DResult(kind) {
         var r = projectTree.result(kind)
         if (r.path === undefined) {
-            window.showNotice("В результатах проекта нет такого слоя. Постройте его (Обработка) или откройте файл: Файл → Импорт облака точек / 3D-модели.")
+            window.showNotice("Такого слоя ещё нет — постройте его или откройте файл")
             return
         }
         window.open3D(kind, r.path)
@@ -332,7 +332,7 @@ ApplicationWindow {
     function showOrthophoto() {   // the true orthophoto when built: the tree lists it first
         var ortho = projectTree.result("orthophoto")
         if (ortho.path === undefined) {
-            window.showNotice("В проекте нет ортофотоплана. Постройте его (Обработка → Построение ортофотоплана) или добавьте файл: Файл → Импорт ортофотоплана.")
+            window.showNotice("Ортофотоплана ещё нет — постройте его или импортируйте файл")
             return
         }
         window.showResultOnMap(ortho.path)
@@ -341,7 +341,7 @@ ApplicationWindow {
         var dem = projectTree.result("dsm")
         if (dem.path === undefined) dem = projectTree.result("dtm")
         if (dem.path === undefined) {
-            window.showNotice("В проекте нет модели высот. Постройте DSM (Обработка → Построение DSM) или добавьте файл: Файл → Импорт DEM/DSM/DTM.")
+            window.showNotice("Модели высот ещё нет — постройте DSM или импортируйте файл")
             return
         }
         window.showResultOnMap(dem.path)
@@ -521,7 +521,7 @@ ApplicationWindow {
         "tool.height": function() { window.setTool("height") },
         "tool.orthoEditor": function() {
             window.setTool("aiSelect")
-            window.flash("Редактор ортофотоплана: щёлкните объект, затем «Убрать с ортофотоплана» (Ctrl+Z — отменить)")
+            window.flash("Щёлкните объект, затем «Убрать с ортофотоплана»")
         },
         "proc.contours": function() { window.activeView = 3; terrainDialog.openFor("contours") },
         "file.saveAs": function() { saveAsDialog.open() },
@@ -559,8 +559,8 @@ ApplicationWindow {
         },
         "edit.selectAll": function() { gis.selectAllDrawings(); window.setTool("edit") },
         "edit.invertSelection": function() { gis.invertDrawingSelection(); window.setTool("edit") },
-        "edit.copy": function() { var e = gis.copySelection(); if (e.length > 0) window.showError(e); else window.flash("Объекты скопированы в буфер обмена (GeoJSON): " + gis.selectionCount) },
-        "edit.paste": function() { var e = gis.pasteDrawings(); if (e.length > 0) window.showError(e); else window.flash("Объекты вставлены (Ctrl+Z — отменить)") },
+        "edit.copy": function() { var e = gis.copySelection(); if (e.length > 0) window.showError(e); else window.flash("Скопировано: " + gis.selectionCount) },
+        "edit.paste": function() { var e = gis.pasteDrawings(); if (e.length > 0) window.showError(e); else window.flash("Вставлено") },
         "view.grid": function() { window.activeView = 3; gis.showGrid = !gis.showGrid },
         "view.legend": function() { window.activeView = 3; window.legendShown = !window.legendShown },
         "view.markers": function() { gis.showMarkers = !gis.showMarkers },
@@ -581,7 +581,7 @@ ApplicationWindow {
         "help.licenses": function() { window.openDoc("DEPENDENCIES.md") },
         "help.bugReport": function() {
             if (appInfo.openLogDirectory())
-                window.showNotice("Открыта папка журналов программы. Приложите файл geomap-<дата>.log к описанию ошибки; при ошибке обработки — также log.txt из папки задания.")
+                window.showNotice("Открыта папка журналов — приложите последний файл к описанию ошибки")
             else window.showError("Не удалось открыть папку журналов: " + appInfo.logDirectory)
         },
         "help.about": function() { aboutDialog.open() }
@@ -950,8 +950,8 @@ ApplicationWindow {
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap
                 text: gis.onlineBasemap.length > 0
-                      ? "Используется только онлайн-подложкой карты, условия которой вы приняли: тайлы загружаются по мере просмотра. Обработка, ИИ и проекты работают без сети."
-                      : "Не используется: обработка, ИИ и проекты работают без сети. Онлайн-подложки выключены, пока вы не примете условия сервера (Вид → Подложка…)."
+                      ? "Только для онлайн-подложки. Обработка и ИИ работают без сети."
+                      : "Не используется: всё работает без сети."
                 color: Theme.text; font.pixelSize: 11
             }
         }
@@ -984,8 +984,7 @@ ApplicationWindow {
             }
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap
-                text: "3D-вид рисуется на видеокарте через тот же API; облака крупнее заданного предела («3D → Отображение → Точек в слое») прореживаются. "
-                      + "OpenDroneMap использует видеокарту NVIDIA только для поиска особых точек (SIFT), остальные этапы — на процессоре. Модели ИИ (MobileSAM, LaMa) работают на процессоре."
+                text: "3D — на видеокарте. Обработка — на процессоре (NVIDIA ускоряет поиск точек). ИИ — на процессоре."
                 color: Theme.faint; font.pixelSize: 11
             }
         }
@@ -1203,7 +1202,7 @@ ApplicationWindow {
         width: 400
         background: Rectangle { color: "#202936"; border.color: "#566176"; radius: 12 }
         contentItem: Label {
-            text: "Копия снимка будет безвозвратно удалена из текущего проекта. Исходный файл останется на месте."
+            text: "Снимок будет удалён из проекта. Исходный файл останется."
             color: window.white
             wrapMode: Text.Wrap
             padding: 22
@@ -1276,7 +1275,7 @@ ApplicationWindow {
         width: 460
         background: Rectangle { color: "#202936"; border.color: "#566176"; radius: 12 }
         contentItem: Label {
-            text: "В текущем проекте выполняется обработка. Остановить её? Задание будет отмечено как прерванное."
+            text: "Идёт обработка. Остановить её?"
             color: window.white
             wrapMode: Text.Wrap
             padding: 22
@@ -2401,7 +2400,7 @@ ApplicationWindow {
                                                     visible: (window.jobInfo.outputs || []).length === 0
                                                     Layout.fillWidth: true; wrapMode: Text.Wrap
                                                     text: window.jobInfo.active ? "Результаты появятся после завершения обработки."
-                                                        : window.jobInfo.partial ? "Это выравнивание без построения результатов. Посмотрите «Качество» и продолжите обработку."
+                                                        : window.jobInfo.partial ? "Только выравнивание. Проверьте «Качество» и продолжите."
                                                         : "Результатов нет."
                                                     color: window.muted; font.pixelSize: 12
                                                 }

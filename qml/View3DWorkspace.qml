@@ -175,8 +175,7 @@ Item {
                 visible: workspace.software
                 wrapMode: Text.Wrap
                 horizontalAlignment: Text.AlignHCenter
-                text: "3D-просмотр требует аппаратной графики (Direct3D, Vulkan, Metal или OpenGL), а интерфейс сейчас рисуется программно. "
-                    + "Слои сцены загружаются и измеряются, но не отображаются. Справка → Графический ускоритель."
+                text: "Для 3D нужна видеокарта — сейчас графика программная.\nСправка → Графический ускоритель"
                 color: Theme.warn; font.pixelSize: 13
             }
 
@@ -195,7 +194,7 @@ Item {
                     Layout.maximumWidth: 520
                     wrapMode: Text.Wrap
                     horizontalAlignment: Text.AlignHCenter
-                    text: "Откройте результаты обработки проекта или файлы: облака точек PLY/LAS, модели OBJ/PLY, модели высот GeoTIFF."
+                    text: "Откройте результаты обработки или файлы PLY, LAS, OBJ, GeoTIFF"
                     color: Theme.muted; font.pixelSize: 12
                 }
                 RowLayout {

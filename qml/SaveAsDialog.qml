@@ -32,7 +32,7 @@ Dialog {
         Label {
             Layout.fillWidth: true; wrapMode: Text.Wrap
             text: "Будет скопировано около " + dialog.sizeMb.toLocaleString(Qt.locale("ru_RU"), 'f', 1)
-                  + " МБ: снимки, задания обработки с результатами, карта, анализ, измерения. Кэш миниатюр и пирамид не копируется."
+                  + " МБ: снимки, результаты, карта, измерения."
             color: Theme.faint; font.pixelSize: 11
         }
         Label { Layout.fillWidth: true; visible: dialog.error.length > 0; text: dialog.error; wrapMode: Text.Wrap; color: Theme.bad; font.pixelSize: 11 }

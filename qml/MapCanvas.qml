@@ -21,8 +21,8 @@ Item {
         "angle": "Три щелчка: первая точка, вершина угла, вторая точка · Esc — отмена",
         "height": "Щелчок — высота точки по моделям высот на карте",
         "viewshed": "Щелчок — точка наблюдения (настройки справа)",
-        "marker": "Щелчок — маркер: координаты и высота модели под ним (список — Проект → Управление маркерами)",
-        "aiSelect": "Щелчок — объект · Shift+щелчок — добавить часть · Ctrl+щелчок — исключить · Enter — на карту · Esc — сброс",
+        "marker": "Щелчок — маркер с координатами и высотой",
+        "aiSelect": "Щелчок — объект · Shift — добавить · Ctrl — исключить · Enter — готово",
         "georef": "Точка на снимке, затем — это место на карте · Esc — отмена" })
     function number(text) { var v = Number(String(text).replace(",", ".").replace(/\s/g, "")); return v }
     readonly property bool profileShown: gis.profile.valid === true && !profileClosed
@@ -144,7 +144,7 @@ Item {
                 // Centred, below the measurement box when both would overlap.
                 anchors.horizontalCenter: parent.horizontalCenter; anchors.top: parent.top
                 anchors.topMargin: measureBox.visible && measureBox.width + 24 > (parent.width - width) / 2 ? measureBox.height + 20 : 12
-                text: canvas.toolHints[gis.tool] || "Щелчок — вершина · двойной щелчок, Enter или правая кнопка — завершить · Backspace — убрать вершину · Esc — отмена"
+                text: canvas.toolHints[gis.tool] || "Щелчок — точка · двойной щелчок — готово · Esc — отмена"
                 color: Theme.text; font.pixelSize: 11
                 padding: 6
                 background: Rectangle { color: "#CC1A1F27"; radius: 5 }
@@ -284,7 +284,7 @@ Item {
                             onClicked: { var e = gis.removeFromOrthophoto(0.3); if (e.length > 0) canvas.host.showError(e) }
                             ToolTip.visible: hovered; ToolTip.delay: 500
                             ToolTip.text: aiModels.inpaintingProblem.length > 0 ? aiModels.inpaintingProblem
-                                          : "Дорисовать место объекта по окружению (LaMa) в копии ортофотоплана; исходный файл не меняется, правку можно отменить"
+                                          : "Дорисовать место объекта по окружению (в копии, можно отменить)"
                         }
                         FlatButton { text: "Сброс"; compact: true; implicitHeight: 26; enabled: gis.hasAiCandidate || gis.aiBusy; onClicked: gis.clearAiCandidate() }
                     }
@@ -431,7 +431,7 @@ Item {
                 width: Math.min(parent.width - 60, 460)
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.Wrap
-                text: "Система координат карты ещё не выбрана.\nДобавьте снимки с GPS или слой с известной CRS (Файл → Импорт геоданных), либо задайте её: Проект → Система координат карты."
+                text: "Система координат не выбрана.\nДобавьте снимки с GPS или геоданные."
                 color: Theme.muted; font.pixelSize: 13
             }
             // On-screen legend of the visible layers (Вид → Показать легенду).

@@ -21,8 +21,7 @@ Dialog {
         spacing: 10
         Label {
             Layout.fillWidth: true; wrapMode: Text.Wrap
-            text: "Модели работают на этом компьютере (" + aiModels.runtimeVersion + "), снимки никуда не отправляются. "
-                  + "Модель используется, только если её карточка полная (лицензия, источник) и файлы совпадают с SHA-256."
+            text: "Модели работают на этом компьютере (" + aiModels.runtimeVersion + "), снимки никуда не уходят."
             color: Theme.muted; font.pixelSize: 11
         }
         ListView {
@@ -89,9 +88,7 @@ Dialog {
         }
         Label {
             Layout.fillWidth: true; wrapMode: Text.Wrap
-            text: "Своя модель: папка в «" + aiModels.userModelsFolder + "» с файлом model.json (как у MobileSAM: название, задача, лицензия, источник, "
-                  + "файлы с ролями и SHA-256) и файлами ONNX. Поддерживаются задачи «interactive-segmentation» (кодировщик и декодер SAM) "
-                  + "и «inpainting» (модель вида LaMa: изображение и маска 512 × 512)."
+            text: "Своя модель: папка с model.json и файлами ONNX в «" + aiModels.userModelsFolder + "»"
             color: Theme.faint; font.pixelSize: 10
         }
     }

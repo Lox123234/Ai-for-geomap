@@ -184,7 +184,7 @@ Dialog {
                     onClicked: {
                         var r = chunks.split(chunks.active, dialog.splitOptions())
                         if (!r.ok) { dialog.host.showError(r.error); return }
-                        dialog.host.flash("Создано блоков: " + r.created.length + ". Обработайте каждый (Обработка → Пакетная обработка — по очереди), затем объедините результаты.")
+                        dialog.host.flash("Создано блоков: " + r.created.length + ". Обработайте их и объедините")
                         dialog.tab = 0
                     }
                 }
@@ -267,8 +267,7 @@ Dialog {
         Label {
             width: 420
             wrapMode: Text.Wrap
-            text: "Блок «" + removeDialog.chunkName + "» будет удалён. Снимки остаются в проекте (снимки, которых нет в других блоках, перейдут в первый блок); "
-                  + "задания и их результаты остаются в списке заданий."
+            text: "Удалить блок «" + removeDialog.chunkName + "»? Снимки и задания останутся в проекте."
             color: Theme.text; font.pixelSize: 12
         }
         onAccepted: {

@@ -137,8 +137,7 @@ Dialog {
                         visible: survey.points.length === 0
                         width: parent.width - 60
                         wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter
-                        text: "Опорных точек пока нет. Импортируйте каталог координат (CSV/TXT: имя, X, Y, Z) или gcp_list.txt OpenDroneMap, "
-                              + "затем отметьте каждую точку на снимках, где видна марка."
+                        text: "Точек нет — импортируйте каталог координат"
                         color: Theme.faint
                     }
                 }
@@ -334,7 +333,7 @@ Dialog {
                         width: parent.width - 60
                         wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter
                         text: gis.markers.length < 2
-                              ? "Поставьте на карте два маркера на концах отрезка, длина которого измерена на местности (рулеткой, тахеометром)."
+                              ? "Поставьте два маркера на концах измеренного отрезка"
                               : "Выберите два маркера и введите расстояние между ними, измеренное на местности."
                         color: Theme.faint
                     }
@@ -354,8 +353,7 @@ Dialog {
             spacing: 8
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap
-                text: "CSV или TXT: имя, X, Y, Z (разделители — запятая, точка с запятой, табуляция или пробелы; строки заголовка "
-                      + "пропускаются). gcp_list.txt OpenDroneMap импортируется вместе с отметками на снимках."
+                text: "CSV или TXT: имя, X, Y, Z — или gcp_list.txt OpenDroneMap"
                 color: Theme.text; font.pixelSize: 11
             }
             RowLayout {
@@ -364,7 +362,7 @@ Dialog {
             }
             CheckBox {
                 id: northFirst
-                text: "Сначала северная координата (X — на север, как в геодезии; для широты/долготы — сначала широта)"
+                text: "Сначала северная координата (как в геодезии)"
                 font.pixelSize: 11
             }
             FlatButton { text: "Выбрать файл…"; emphasis: true; onClicked: pointsFile.open() }

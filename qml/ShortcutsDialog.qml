@@ -20,7 +20,7 @@ Dialog {
         spacing: 8
         Label {
             Layout.fillWidth: true; wrapMode: Text.Wrap
-            text: "Щёлкните поле и нажмите сочетание клавиш. Backspace — убрать сочетание, Esc — отменить ввод. Изменения сохраняются сразу."
+            text: "Щёлкните поле и нажмите сочетание. Backspace — убрать."
             color: Theme.muted; font.pixelSize: 11
         }
         TextField {

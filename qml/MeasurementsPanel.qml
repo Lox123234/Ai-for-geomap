@@ -36,7 +36,7 @@ Item {
             Layout.margins: 10
             visible: gis.measurements.length === 0
             wrapMode: Text.Wrap
-            text: "Сохранённых измерений нет. Измерьте длину, площадь, профиль или объём на карте и нажмите «Сохранить» в табличке результата."
+            text: "Измерений нет — измерьте на карте и нажмите «Сохранить»"
             color: Theme.faint; font.pixelSize: 11
         }
         ListView {
