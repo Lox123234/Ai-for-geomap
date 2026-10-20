@@ -83,6 +83,14 @@ Item {
                     }
                     FlatButton { compact: true; text: "Отметить на снимках"; enabled: survey.controlCount + survey.checkCount > 0
                                  onClicked: workspace.host.runCommand("project.gcpTag") }
+                    FlatButton {
+                        objectName: "surveyGeoref"
+                        compact: true; text: "Привязать снимок"
+                        enabled: projects.selectedIndex >= 0 && gis.crsDefined && !georef.busy
+                        onClicked: workspace.host.runCommand("tool.georeferencePhoto")
+                        ToolTip.visible: hovered; ToolTip.delay: 500
+                        ToolTip.text: projects.selectedIndex >= 0 ? "Выровнять выбранный снимок по точкам на карте" : "Сначала выберите снимок"
+                    }
                     FlatButton { compact: true; text: "Показать всё"; onClicked: view.fitAll() }
                 }
             }
