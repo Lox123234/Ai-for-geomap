@@ -119,8 +119,9 @@ Item {
             }
         }
     }
-    FileDialog {
+    AppFileDialog {
         id: exportDialog
+        kind: "export"
         title: "Сохранить измерения"
         fileMode: FileDialog.SaveFile
         nameFilters: ["CSV (*.csv)"]

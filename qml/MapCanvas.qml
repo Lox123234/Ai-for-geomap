@@ -412,8 +412,9 @@ Item {
                     }
                 }
             }
-            FileDialog {
+            AppFileDialog {
                 id: profileFile
+                kind: "export"
                 title: "Сохранить профиль высот"
                 fileMode: FileDialog.SaveFile
                 nameFilters: ["CSV (*.csv)"]

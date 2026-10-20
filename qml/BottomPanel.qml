@@ -132,13 +132,24 @@ Rectangle {
                     required property int level
                     required property string source
                     required property string text
+                    id: logRow
                     width: logList.width - 12
                     x: 10
-                    height: 20
+                    height: Math.max(20, message.implicitHeight + 6)   // long messages wrap, whole
                     spacing: 8
-                    Label { text: parent.time; color: Theme.faint; font.pixelSize: 11; font.family: "Consolas" }
-                    Label { text: parent.source; color: panel.levelColor(parent.level); font.pixelSize: 11; Layout.preferredWidth: 76; elide: Text.ElideRight }
-                    Label { text: parent.text; color: parent.level === 3 ? Theme.bad : Theme.text; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideRight }
+                    Label { text: logRow.time; color: Theme.faint; font.pixelSize: 11; font.family: "Consolas"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 3 }
+                    Label { text: logRow.source; color: panel.levelColor(logRow.level); font.pixelSize: 11; Layout.preferredWidth: 76; elide: Text.ElideRight
+                            Layout.alignment: Qt.AlignTop; Layout.topMargin: 3 }
+                    Label {
+                        id: message
+                        text: logRow.text
+                        color: logRow.level === 3 ? Theme.bad : Theme.text
+                        font.pixelSize: 11
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignTop
+                        Layout.topMargin: 3
+                        wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                    }
                 }
                 Label {
                     anchors.centerIn: parent

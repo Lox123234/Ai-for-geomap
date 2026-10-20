@@ -57,8 +57,9 @@ Dialog {
         target: exporter
         function onFinished(ok, message, files) { dialog.resultOk = ok; dialog.resultText = message }
     }
-    FolderDialog {
+    AppFolderDialog {
         id: folderDialog
+        kind: "export"
         title: "Папка для экспорта"
         onAccepted: dialog.folder = selectedFolder
     }

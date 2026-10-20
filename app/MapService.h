@@ -499,6 +499,8 @@ private:
     QPointF m_center;
     double m_resolution = 1.0;
     QSizeF m_viewSize = QSizeF(800, 600);
+    bool m_viewSizeKnown = false;   // setViewSize() called by the canvas (or a test)
+    bool m_fitPending = false;      // zoomToAll() asked for before the size was known
     double m_metersPerScreenPixel = 0.0254 / 96.0;
     QString m_cursorText, m_cursorWgs84, m_cursorValue;
     QString m_measurementText, m_measurementDetails;

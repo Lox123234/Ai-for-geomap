@@ -86,8 +86,9 @@ Dialog {
             }
         }
     }
-    FileDialog {
+    AppFileDialog {
         id: markersFile
+        kind: "export"
         title: "Сохранить маркеры"
         fileMode: FileDialog.SaveFile
         nameFilters: ["CSV (*.csv)"]

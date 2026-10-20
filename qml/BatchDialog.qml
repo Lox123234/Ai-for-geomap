@@ -73,8 +73,9 @@ Dialog {
             onClicked: dialog.run()
         }
     }
-    FolderDialog {
+    AppFolderDialog {
         id: folderDialog
+        kind: "export"
         title: "Папка для результатов"
         onAccepted: dialog.folder = selectedFolder
     }

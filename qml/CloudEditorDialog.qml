@@ -116,8 +116,9 @@ Dialog {
             text: dialog.resultText; color: dialog.resultOk ? Theme.good : Theme.bad; font.pixelSize: 12
         }
     }
-    FileDialog {
+    AppFileDialog {
         id: lasFile
+        kind: "import"
         title: "Облако точек LAS"
         nameFilters: ["LAS (*.las)"]
         onAccepted: dialog.cloud = gis.displayPath(selectedFile)

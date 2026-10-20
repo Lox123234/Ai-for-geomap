@@ -4,6 +4,8 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
+#include <QSettings>
+#include <QStandardPaths>
 #include <QUrl>
 
 AppInfo::AppInfo(const QString &logDirectory, QObject *parent) : QObject(parent), m_logDirectory(logDirectory) {}
@@ -50,6 +52,26 @@ bool AppInfo::openLogDirectory() const
 bool AppInfo::fileExists(const QString &path) const
 {
     return !path.isEmpty() && QFileInfo(path).isFile();
+}
+
+QUrl AppInfo::dialogFolder(const QString &projectPath, const QString &kind) const
+{
+    const QString remembered = QSettings().value(QStringLiteral("dialogs/") + kind).toString();
+    if (!kind.isEmpty() && !remembered.isEmpty() && QFileInfo(remembered).isDir()) return QUrl::fromLocalFile(remembered);
+    if (kind != QLatin1String("photos") && kind != QLatin1String("projects") && !projectPath.isEmpty() && QFileInfo(projectPath).isDir())
+        return QUrl::fromLocalFile(projectPath);
+    const QStandardPaths::StandardLocation where = kind == QLatin1String("photos") ? QStandardPaths::PicturesLocation
+                                                                                     : QStandardPaths::DocumentsLocation;
+    const QString folder = QStandardPaths::writableLocation(where);
+    return QUrl::fromLocalFile(QFileInfo(folder).isDir() ? folder : QDir::homePath());
+}
+
+void AppInfo::rememberFolder(const QString &kind, const QUrl &chosen) const
+{
+    if (kind.isEmpty() || !chosen.isLocalFile()) return;
+    const QFileInfo fi(chosen.toLocalFile());
+    const QString folder = fi.isDir() ? fi.absoluteFilePath() : fi.absolutePath();   // a file: its folder
+    if (QFileInfo(folder).isDir()) QSettings().setValue(QStringLiteral("dialogs/") + kind, folder);
 }
 
 QString AppInfo::siblingLas(const QString &path) const

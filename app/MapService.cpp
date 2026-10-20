@@ -1121,7 +1121,8 @@ void MapService::rebuildPhotos()
         l.status = QStringLiteral("У снимков проекта нет GPS-координат.");
         return;
     }
-    if (!m_crs.isValid()) {
+    const bool firstCrs = !m_crs.isValid();
+    if (firstCrs) {
         QPointF c(0, 0);
         for (const QPointF &p : lonLat) c += p;
         c /= double(lonLat.size());
@@ -1140,6 +1141,11 @@ void MapService::rebuildPhotos()
     l.vector.sourceCrs = Crs::wgs84();
     l.vector.crsNote = QStringLiteral("GPS из EXIF снимков");
     l.vector.valid = true;
+    // The first data of a new project: the map shows it, not an empty view at the origin.
+    if (firstCrs && !m_loadingState) {
+        zoomToAll();
+        scheduleSave();
+    }
 }
 
 void MapService::setSelectedPhoto(int index)
@@ -1273,8 +1279,15 @@ void MapService::selectLayer(const QString &id)
 
 void MapService::setViewSize(const QSizeF &size)
 {
-    if (size == m_viewSize || size.isEmpty()) return;
+    if (size.isEmpty()) return;
+    const bool first = !m_viewSizeKnown;
+    m_viewSizeKnown = true;
+    if (size == m_viewSize && !(first && m_fitPending)) return;
     m_viewSize = size;
+    if (m_fitPending) {   // a fit to the data asked for before the map knew its size
+        m_fitPending = false;
+        zoomToAll();
+    }
     updateScale();
     emit repaint();
 }
@@ -1354,14 +1367,18 @@ void MapService::zoomToLayer(const QString &id)
 
 void MapService::zoomToAll()
 {
+    // The data: visible layers (else all), never a basemap — an online basemap spans ±100 km
+    // around where the view was, and the view would centre on that instead.
+    if (!m_viewSizeKnown) m_fitPending = true;   // fitted again when the map's real size arrives
     QRectF all;
     bool any = false;
-    for (const MapLayer &l : m_layers) {
-        QRectF e;
-        if (!layerExtent(l, &e)) continue;
-        all = any ? all.united(e) : e;
-        any = true;
-    }
+    for (int pass = 0; pass < 2 && !any; ++pass)
+        for (const MapLayer &l : m_layers) {
+            QRectF e;
+            if (l.basemap || l.source.startsWith(QLatin1String("web:")) || (pass == 0 && !l.visible) || !layerExtent(l, &e)) continue;
+            all = any ? all.united(e) : e;
+            any = true;
+        }
     if (!any) return;
     if (all.width() < 1e-9 && all.height() < 1e-9) all.adjust(-50, -50, 50, 50);
     const double r = qMax(all.width() / qMax(1.0, m_viewSize.width() - 40), all.height() / qMax(1.0, m_viewSize.height() - 40));

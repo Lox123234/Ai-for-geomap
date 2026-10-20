@@ -45,5 +45,5 @@ Dialog {
             }
         }
     }
-    FolderDialog { id: folderDialog; title: "Куда сохранить копию проекта?"; onAccepted: dialog.folder = selectedFolder }
+    AppFolderDialog { id: folderDialog; kind: "projects"; title: "Куда сохранить копию проекта?"; onAccepted: dialog.folder = selectedFolder }
 }

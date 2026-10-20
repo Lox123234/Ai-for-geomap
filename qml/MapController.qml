@@ -41,8 +41,9 @@ Item {
         function onExportFinished(ok, message) { if (ok) controller.noticeMessage(message); else controller.errorMessage(message) }
     }
 
-    FileDialog {
+    AppFileDialog {
         id: addLayerDialog
+        kind: "import"
         title: "Добавить слой на карту"
         fileMode: FileDialog.OpenFile
         nameFilters: controller.allFilters
@@ -51,8 +52,9 @@ Item {
             if (error.length > 0) controller.errorMessage(error)
         }
     }
-    FileDialog {
+    AppFileDialog {
         id: basemapDialog
+        kind: "import"
         title: "Подложка карты из файла"
         fileMode: FileDialog.OpenFile
         nameFilters: ["Подложки (*.mbtiles *.gpkg *.tif *.tiff *.vrt)", "Все файлы (*)"]
@@ -61,16 +63,18 @@ Item {
             if (error.length > 0) controller.errorMessage(error)
         }
     }
-    FileDialog {
+    AppFileDialog {
         id: exportMapDialog
+        kind: "export"
         title: "Экспорт карты"
         fileMode: FileDialog.SaveFile
         defaultSuffix: "png"
         nameFilters: ["Изображение PNG (*.png)", "Документ PDF (*.pdf)"]
         onAccepted: gis.exportMap(selectedFile)
     }
-    FileDialog {
+    AppFileDialog {
         id: exportDrawingsDialog
+        kind: "export"
         title: "Экспорт нарисованных объектов"
         fileMode: FileDialog.SaveFile
         defaultSuffix: "geojson"

@@ -742,6 +742,18 @@ bool readOdmJob(const QString &job, Scene *scene, QString *error, const QString 
         cameras[it.key()] = c;
     }
     const QString photos = photoFolder.isEmpty() ? QDir(job).filePath(QStringLiteral("images")) : photoFolder;
+    // The names the user knows the photos by: the project's geomap.json two folders up (the job
+    // has them under internal file names).
+    QHash<QString, QString> names;
+    {
+        QFile project(QDir(job).filePath(QStringLiteral("../../geomap.json")));
+        if (project.open(QIODevice::ReadOnly))
+            for (const QJsonValue &v : QJsonDocument::fromJson(project.readAll()).object().value(QStringLiteral("photos")).toArray()) {
+                const QJsonObject p = v.toObject();
+                const QString file = QFileInfo(p.value(QStringLiteral("file")).toString()).fileName(), name = p.value(QStringLiteral("name")).toString();
+                if (!file.isEmpty() && !name.isEmpty()) names.insert(file.toLower(), name);
+            }
+    }
     const QJsonObject shots = rec.value(QStringLiteral("shots")).toObject();
     for (auto it = shots.begin(); it != shots.end(); ++it) {
         const QJsonObject o = it.value().toObject();
@@ -750,6 +762,7 @@ bool readOdmJob(const QString &job, Scene *scene, QString *error, const QString 
         Shot s;
         s.camera = cam->second;
         s.image = QDir(photos).filePath(it.key());
+        s.name = names.value(it.key().toLower(), it.key());
         if (requirePhotos && !QFileInfo::exists(s.image)) return fail(QStringLiteral("Нет снимка %1").arg(QDir::toNativeSeparators(s.image)));
         const QJsonArray r = o.value(QStringLiteral("rotation")).toArray(), t = o.value(QStringLiteral("translation")).toArray();
         const double rv[3] = {r.at(0).toDouble(), r.at(1).toDouble(), r.at(2).toDouble()};

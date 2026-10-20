@@ -443,8 +443,8 @@ ApplicationWindow {
         "view.map": function() { window.activeView = 3 },
         "view.3d": function() { window.activeView = 4 },
         "view.pointCloud": function() { window.open3DResult("pointcloud") },
-        "import.pointCloud": function() { scene3dDialog.kind = "pointcloud"; scene3dDialog.open() },
-        "import.model": function() { scene3dDialog.kind = "mesh"; scene3dDialog.open() },
+        "import.pointCloud": function() { scene3dDialog.what = "pointcloud"; scene3dDialog.open() },
+        "import.model": function() { scene3dDialog.what = "mesh"; scene3dDialog.open() },
         "view.projection": function() { window.activeView = 4; scene3d.orthographic = !scene3d.orthographic },
         "view.axes": function() { window.activeView = 4; scene3d.showAxes = !scene3d.showAxes },
         "view.top": function() { window.activeView = 4; scene3d.setPreset("top") },
@@ -841,8 +841,9 @@ ApplicationWindow {
         function onSaveAsFinished(ok, message) { if (ok) window.flash(message); else window.showError(message) }
     }
     ExportDialog { id: exportDialog; host: window }
-    FolderDialog {
+    AppFolderDialog {
         id: analysisExportDialog
+        kind: "export"
         title: "Куда сохранить результаты анализа?"
         onAccepted: {
             var error = gis.exportAnalysis(selectedFolder)
@@ -932,8 +933,16 @@ ApplicationWindow {
             Label { text: gis.gisVersion; color: Theme.text; font.pixelSize: 12 }
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap
-                text: gis.problems.length > 0 ? "⚠ " + gis.problems.join("\n⚠ ") : "Данные PROJ и GDAL найдены, сеть не используется."
+                text: gis.problems.length > 0 ? "⚠ " + gis.problems.join("\n⚠ ") : "Данные PROJ и GDAL найдены."
                 color: gis.problems.length > 0 ? Theme.bad : Theme.good; font.pixelSize: 11
+            }
+            SectionTitle { text: "СЕТЬ"; Layout.topMargin: 8 }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap
+                text: gis.onlineBasemap.length > 0
+                      ? "Используется только онлайн-подложкой карты, условия которой вы приняли: тайлы загружаются по мере просмотра. Обработка, ИИ и проекты работают без сети."
+                      : "Не используется: обработка, ИИ и проекты работают без сети. Онлайн-подложки выключены, пока вы не примете условия сервера (Вид → Подложка…)."
+                color: Theme.text; font.pixelSize: 11
             }
         }
         standardButtons: Dialog.Close
@@ -965,7 +974,8 @@ ApplicationWindow {
             }
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap
-                text: "Подробная диагностика (VRAM, драйверы) и ограничения памяти — этап F."
+                text: "3D-вид рисуется на видеокарте через тот же API; облака крупнее заданного предела («3D → Отображение → Точек в слое») прореживаются. "
+                      + "OpenDroneMap использует видеокарту NVIDIA только для поиска особых точек (SIFT), остальные этапы — на процессоре. Модели ИИ (MobileSAM, LaMa) работают на процессоре."
                 color: Theme.faint; font.pixelSize: 11
             }
         }
@@ -1030,40 +1040,45 @@ ApplicationWindow {
         onTriggered: window.clockTick++
     }
 
-    FileDialog {
+    AppFileDialog {
         id: photoDialog
+        kind: "photos"
         title: "Добавить фотографии в проект"
         fileMode: FileDialog.OpenFiles
         nameFilters: ["Фотографии (*.jpg *.jpeg *.png *.tif *.tiff)", "Все файлы (*)"]
         onAccepted: projects.importFiles(selectedFiles)
     }
-    FolderDialog {
+    AppFolderDialog {
         id: photoFolderDialog
+        kind: "photos"
         title: "Выберите папку с фотографиями"
         onAccepted: projects.importFolder(selectedFolder)
     }
-    FileDialog {
+    AppFileDialog {
         id: scene3dDialog
-        property string kind: "pointcloud"
-        title: kind === "pointcloud" ? "Импорт облака точек в 3D-сцену" : "Импорт 3D-модели в 3D-сцену"
-        nameFilters: kind === "pointcloud" ? ["Облака точек (*.ply *.las)", "Все файлы (*)"]
+        kind: "import"
+        property string what: "pointcloud"   // or "mesh"
+        title: what === "pointcloud" ? "Импорт облака точек в 3D-сцену" : "Импорт 3D-модели в 3D-сцену"
+        nameFilters: what === "pointcloud" ? ["Облака точек (*.ply *.las)", "Все файлы (*)"]
                                            : ["3D-модели (*.obj *.ply)", "Все файлы (*)"]
         onAccepted: {
-            var error = scene3d.addUrl(selectedFile, kind)
+            var error = scene3d.addUrl(selectedFile, what)
             window.activeView = 4
             if (error.length > 0 && error.indexOf("уже в 3D") < 0) window.showError(error)
         }
     }
-    FolderDialog {
+    AppFolderDialog {
         id: projectLocationDialog
+        kind: "projects"
         title: "Где сохранить новый проект?"
         onAccepted: {
             window.newProjectFolder = selectedFolder
             projectLocation.text = projects.displayPath(selectedFolder)
         }
     }
-    FolderDialog {
+    AppFolderDialog {
         id: openProjectDialog
+        kind: "projects"
         title: "Выберите папку существующего GeoMap AI проекта"
         onAccepted: {
             var folder = selectedFolder

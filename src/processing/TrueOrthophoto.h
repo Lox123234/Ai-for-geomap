@@ -23,6 +23,7 @@ struct Camera
 struct Shot
 {
     QString image;       // path of the photo
+    QString name;        // its name in the project (DJI_0001.JPG), else the file name
     Camera camera;
     double R[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};   // X_camera = R · X_local + t
     double t[3] = {0, 0, 0};

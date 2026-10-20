@@ -25,6 +25,7 @@
 #include "PhotoMasks.h"
 #include "ProcessingService.h"
 #include "SurveyControl.h"
+#include "TestImages.h"
 #include <cmath>
 #include "ProjectManager.h"
 #include "ProjectTreeModel.h"
@@ -79,6 +80,7 @@ struct Session
                          [this] { survey.setProject(projects.projectPath(), projects.photoModel(), &map); });
         QObject::connect(&map, &MapService::markersChanged, &survey, &SurveyControl::changed);
         QObject::connect(&processing, &ProcessingService::releaseDirectory, &map, &MapService::releaseDirectory, Qt::DirectConnection);
+        QObject::connect(&projects, &ProjectManager::photosChanged, &map, &MapService::photosChanged);
         QObject::connect(&processing, &ProcessingService::resultFileReplacing, &map, &MapService::releaseRasterFile, Qt::DirectConnection);
         QObject::connect(&processing, &ProcessingService::resultFileReplaced, &map, &MapService::reopenRasterFile, Qt::DirectConnection);
         connectJournal(&log, &projects, &processing, &map);
@@ -667,6 +669,36 @@ private slots:
             QTRY_VERIFY(!d->property("visible").toBool());
         }
     }
+    // A new project: once photos with GPS are imported, the map shows their points (not an empty
+    // view); «Все слои» brings the view back to them.
+    void newProjectMapShowsThePhotos()
+    {
+        QTemporaryDir tmp;
+        auto s = open();
+        QVERIFY(s->projects.createProject(QUrl::fromLocalFile(tmp.path()), QStringLiteral("Карта нового проекта")));
+        QVERIFY(!s->map.crsDefined());
+        const QString source = tmp.filePath(QStringLiteral("DJI_0001.JPG"));
+        QVERIFY(TestImages::writeJpegWithGps(source, 64, 48));
+        s->projects.importFiles({QUrl::fromLocalFile(source)});
+        QTRY_VERIFY_WITH_TIMEOUT(!s->projects.busy() && s->projects.photoCount() == 1, 10000);
+        QTRY_VERIFY(s->map.crsDefined());
+        QRectF photos;
+        for (const MapLayer &l : s->map.layers())
+            if (l.type == MapLayer::Photos) photos = l.vector.extent;
+        auto centred = [&] {
+            const QPointF c = s->map.center();
+            return std::hypot(c.x() - photos.center().x(), c.y() - photos.center().y()) < 1.0 && s->map.resolution() < 5.0;
+        };
+        QTRY_VERIFY2(centred(), qPrintable(QStringLiteral("centre %1 %2, photos %3 %4, resolution %5")
+                                               .arg(s->map.center().x()).arg(s->map.center().y()).arg(photos.center().x())
+                                               .arg(photos.center().y()).arg(s->map.resolution())));
+        // Pan away, then «Все слои» comes back to the photos.
+        s->map.panBy(QPointF(400, 300));
+        QVERIFY(!centred());
+        s->map.zoomToAll();
+        QVERIFY(centred());
+    }
+
     // Ground control points: the dialog's tabs open from their commands, and in the photo view
     // a click places the selected point where it was clicked.
     void surveyOnThePhotos()

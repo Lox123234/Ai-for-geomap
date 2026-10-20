@@ -161,7 +161,7 @@ Mesh cameraMesh(const ortho::Scene &scene, const Origin &origin, QVector<Scene3D
             return centres[i] + dir * float(depth);
         };
         Scene3DService::CameraMark mark;
-        mark.name = QFileInfo(s.image).fileName();
+        mark.name = s.name.isEmpty() ? QFileInfo(s.image).fileName() : s.name;
         mark.centre = centres[i];
         mark.corners[0] = corner(0, 0);
         mark.corners[1] = corner(c.width, 0);

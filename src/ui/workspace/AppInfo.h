@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QUrl>
 
 // What the Help menu shows and opens: versions, the documentation folder (shipped next to the
 // program, or the source tree in a developer build) and the folder of the operations journal.
@@ -26,6 +27,13 @@ public:
     Q_INVOKABLE bool openLogDirectory() const;                 // creates it first
     Q_INVOKABLE bool fileExists(const QString &path) const;    // a file (not a folder) at the path
     Q_INVOKABLE QString siblingLas(const QString &path) const; // the .las next to a .laz (or the path), "" if none
+    // Where a file dialog of a kind ("photos", "projects", "import", "export", …) opens — never the
+    // program's folder, the working directory of a program started from the Start menu: the folder
+    // last chosen in a dialog of that kind; else the project's folder when one is open; for photos
+    // the Pictures folder, for projects and with no project the Documents folder.
+    Q_INVOKABLE QUrl dialogFolder(const QString &projectPath, const QString &kind = {}) const;
+    // Remembers the folder of what was chosen (a file: its folder) for dialogs of that kind.
+    Q_INVOKABLE void rememberFolder(const QString &kind, const QUrl &chosen) const;
 
 private:
     QString m_logDirectory;

@@ -370,8 +370,9 @@ Dialog {
             FlatButton { text: "Выбрать файл…"; emphasis: true; onClicked: pointsFile.open() }
         }
     }
-    FileDialog {
+    AppFileDialog {
         id: pointsFile
+        kind: "import"
         title: "Файл опорных точек"
         nameFilters: ["Координаты (*.csv *.txt)", "Все файлы (*)"]
         onAccepted: {
@@ -382,8 +383,9 @@ Dialog {
                               + (r.warning ? ". " + r.warning : ""))
         }
     }
-    FileDialog {
+    AppFileDialog {
         id: gcpListFile
+        kind: "export"
         title: "Сохранить gcp_list.txt"
         fileMode: FileDialog.SaveFile
         nameFilters: ["gcp_list (*.txt)"]
@@ -394,8 +396,9 @@ Dialog {
             else dialog.host.flash("Сохранено: " + gis.displayPath(selectedFile))
         }
     }
-    FileDialog {
+    AppFileDialog {
         id: accuracyFile
+        kind: "export"
         title: "Сохранить ведомость точности"
         fileMode: FileDialog.SaveFile
         nameFilters: ["CSV (*.csv)"]
