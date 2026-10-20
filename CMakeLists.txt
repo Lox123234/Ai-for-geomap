@@ -64,6 +64,8 @@ qt_add_library(GeoMapCore STATIC
     src/processing/Lidar.cpp
     src/processing/ProjectReport.h
     src/processing/ProjectReport.cpp
+    src/processing/CameraOptimizer.h
+    src/processing/CameraOptimizer.cpp
     src/processing/ProcessingService.h
     src/processing/ProcessingService.cpp
     src/gis/GisEnvironment.h
@@ -194,6 +196,8 @@ add_custom_target(geomap_ai_files ${geomap_ai_commands} COMMENT "ONNX Runtime an
 add_dependencies(GeoMapCore geomap_ai_files)
 # Menus, toolbar and shortcuts: one list of commands (docs/UI_COMMANDS.md is generated from it).
 qt_add_resources(GeoMapCore "geomap_commands" PREFIX "/geomap" BASE src/ui/commands FILES src/ui/commands/commands.json)
+# Python run by the bundled ODM for GeoMap AI's own steps (camera optimisation).
+qt_add_resources(GeoMapCore "geomap_scripts" PREFIX "/geomap/scripts" BASE src/processing FILES src/processing/optimize_cameras.py)
 
 # The user interface as a QML module in a static library, shared by the application and the UI
 # test. Every QML file and icon sits at the module root (qrc:/qt/qml/GeoMapAI/...).
@@ -205,7 +209,7 @@ set(GEOMAP_QML_FILES
     qml/RasterCalcDialog.qml qml/AiModelsDialog.qml qml/MarkersDialog.qml qml/DemEditorDialog.qml qml/CloudEditorDialog.qml
     qml/ProjectSettingsDialog.qml qml/SaveAsDialog.qml qml/ProjectCheckDialog.qml qml/SurveyDialog.qml qml/BasemapDialog.qml qml/BatchDialog.qml qml/ChunksDialog.qml
     qml/AppFileDialog.qml qml/AppFolderDialog.qml qml/SurveyWorkspace.qml
-    qml/GeorefWorkspace.qml qml/GeorefPanel.qml qml/LidarDialog.qml)
+    qml/GeorefWorkspace.qml qml/GeorefPanel.qml qml/LidarDialog.qml qml/OptimizeDialog.qml qml/TextureEditorDialog.qml)
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 foreach(file IN LISTS GEOMAP_QML_FILES)
     get_filename_component(name ${file} NAME)
@@ -230,6 +234,8 @@ qt_add_library(GeoMapUi STATIC
     app/GeorefService.cpp
     app/GeorefImageView.h
     app/GeorefImageView.cpp
+    app/TextureEditService.h
+    app/TextureEditService.cpp
 )
 # The module directory would otherwise be <build>/GeoMapAI, the path of the Linux executable.
 qt_add_qml_module(GeoMapUi

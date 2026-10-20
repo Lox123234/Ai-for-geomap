@@ -78,6 +78,8 @@ class ProcessingService final : public QObject
     Q_PROPERTY(bool trueOrthoBusy READ trueOrthoBusy NOTIFY trueOrthoChanged)
     Q_PROPERTY(QString trueOrthoStatus READ trueOrthoStatus NOTIFY trueOrthoChanged)
     Q_PROPERTY(bool autoTrueOrthophoto READ autoTrueOrthophoto WRITE setAutoTrueOrthophoto NOTIFY trueOrthoChanged)
+    // Обработка → Оптимизация камер running (the bundle adjustment, before the job is built again).
+    Q_PROPERTY(bool optimizing READ optimizing NOTIFY optimizeChanged)
 public:
     // Takes ownership of the engine.
     explicit ProcessingService(IProcessingEngine *engine, QObject *parent = nullptr);
@@ -154,6 +156,10 @@ public:
     // from the reconstruction into geomap/tie_points.ply; "" if none. An empty id: the newest aligned job.
     Q_INVOKABLE QString sparseCloud(const QString &jobId = {}) const;
     Q_INVOKABLE void cancelJob(const QString &id);
+    // Обработка → Оптимизация камер: the job's cameras bundled again with the project's control points
+    // (cameraoptimizer), then its results built again by the engine from the new poses. "" when started.
+    Q_INVOKABLE QString optimizeCameras(const QString &id, bool refineCalibration = true);
+    bool optimizing() const { return !m_optimizeJob.isEmpty(); }
     // The results of a job read again from its folder (after GeoMap AI wrote one, e.g. the report).
     void refreshOutputs(const QString &id);
     // Removes a finished job and its directory (results included). Callers confirm first.
@@ -182,6 +188,8 @@ signals:
     void errorOccurred(const QString &message);
     void trueOrthoChanged();
     void trueOrthoFinished(const QString &jobId, bool ok, const QString &message);
+    void optimizeChanged();
+    void optimizeFinished(const QString &jobId, bool ok, const QString &message);
     // A result file is about to be replaced by a rebuilt one, and was (or could not be): whoever
     // shows it closes it before and opens it again after (on Windows an open file cannot be replaced).
     void resultFileReplacing(const QString &path);
@@ -241,6 +249,8 @@ private:
     QString m_installStatus;
     qint64 m_diskReserve = 512LL * 1024 * 1024;
     JobListModel m_model;
+    QString m_optimizeJob;                     // job whose cameras are being optimised
+    std::shared_ptr<std::atomic_bool> m_optimizeCancel;
     QString m_orthoJob;                        // job whose true orthophoto is being built
     QString m_orthoStatus;
     std::shared_ptr<std::atomic_bool> m_orthoCancel;

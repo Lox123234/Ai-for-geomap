@@ -210,6 +210,8 @@ ApplicationWindow {
         case "project.removePhoto": return projects.selectedIndex >= 0 && idle
         case "project.crs": case "project.reveal": return has
         case "proc.report": return has && !reports.busy && processing.jobCount >= 0 && processing.newestJob("aligned").length > 0
+        case "proc.optimize": return has && !processing.active && !processing.optimizing && processing.jobCount >= 0 && processing.newestJob("aligned").length > 0
+        case "tool.textureEditor": return has && processing.jobCount >= 0 && textures.models.length > 0
         case "proc.tiePoints": return has && processing.jobCount >= 0 && processing.newestJob("aligned").length > 0
         case "proc.depthMaps": return has && !processing.active && processing.jobCount >= 0 && processing.newestJob("alignedOnly").length > 0
         case "proc.tiled": return has && !processing.active && processing.jobCount >= 0 && processing.newestJob("model").length > 0
@@ -436,6 +438,8 @@ ApplicationWindow {
         "proc.analyze": function() { window.openProcessing("") },
         "proc.align": function() { window.openProcessing("align") },
         "proc.match": function() { window.openProcessing("align") },
+        "proc.optimize": function() { optimizeDialog.open() },
+        "tool.textureEditor": function() { textureEditorDialog.open() },
         "proc.report": function() {
             var e = reports.build("")
             if (e.length > 0) window.showNotice(e)
@@ -1090,6 +1094,8 @@ ApplicationWindow {
         onAccepted: projects.importFolder(selectedFolder)
     }
     LidarDialog { id: lidarDialog; host: window }
+    OptimizeDialog { id: optimizeDialog; host: window }
+    TextureEditorDialog { id: textureEditorDialog; host: window }
     Connections {
         target: reports
         function onFinished(ok, message, path) {

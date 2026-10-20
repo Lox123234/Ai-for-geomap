@@ -1,5 +1,6 @@
 #include <QtTest>
 #include <QSignalSpy>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QJsonDocument>
 #include <QPainter>
@@ -41,6 +42,7 @@
 #include "ThumbnailProvider.h"
 #include "View3DItem.h"
 #include "SurveyView.h"
+#include "TextureEditService.h"
 #include "WorkspaceState.h"
 
 Q_IMPORT_QML_PLUGIN(GeoMapAIPlugin)
@@ -71,6 +73,7 @@ struct Session
     GeorefService georef{&map, &projects, &processing};
     LidarService lidar{&map, &scene3d};
     ReportService reports{&projects, &processing, &survey};
+    TextureEditService textures{&processing, &scene3d, &aiModels};
     QQmlApplicationEngine engine;
     QQuickWindow *window = nullptr;
 
@@ -100,6 +103,7 @@ struct Session
         QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, thumbnails,
                          [thumbnails](const QString &directory) { thumbnails->setProjectDirectory(directory); });
         engine.addImageProvider(QStringLiteral("thumbs"), thumbnails);
+        engine.addImageProvider(QStringLiteral("texture"), new TextureImageProvider(&textures));
         QQmlContext *c = engine.rootContext();
         c->setContextProperty("projects", &projects);
         c->setContextProperty("processing", &processing);
@@ -113,6 +117,7 @@ struct Session
         c->setContextProperty("lidar", &lidar);
         reports.m_openWhenDone = false;
         c->setContextProperty("reports", &reports);
+        c->setContextProperty("textures", &textures);
         c->setContextProperty("chunks", &chunks);
         c->setContextProperty("commands", &commands);
         c->setContextProperty("workspace", &workspace);
@@ -1220,6 +1225,99 @@ private slots:
         QVERIFY(QFileInfo::exists(QDir(s->projects.projectPath()).filePath(QStringLiteral("georef/%1.json").arg(id))));
         s->georef.close();
         QVERIFY(!s->georef.active());
+    }
+
+    // Инструменты → Редактор текстуры: the texture of a job's model edited in a copy — colour of
+    // the atlas, one step back, a red spot painted over by LaMa, the copy in 3D; ODM's files untouched.
+    void textureEditorOnACopy()
+    {
+        QTemporaryDir tmp;
+        QString project;
+        {
+            auto first = open();
+            QVERIFY(first->projects.createProject(QUrl::fromLocalFile(tmp.path()), QStringLiteral("Текстура UI")));
+            project = first->projects.projectPath();
+        }
+        ProcessingJob job;
+        job.id = QStringLiteral("20261021-090000");
+        job.engine = QStringLiteral("mock");
+        job.profile = QStringLiteral("fast");
+        job.state = JobState::Completed;
+        job.createdAt = QDateTime::currentDateTimeUtc();
+        const QDir jobDir(QDir(project).filePath(QStringLiteral("jobs/") + job.id));
+        const QDir model(jobDir.filePath(QStringLiteral("odm_texturing_25d")));
+        QVERIFY(QDir().mkpath(model.path()));
+        auto write = [](const QString &path, const QByteArray &data) {
+            QFile f(path);
+            return f.open(QIODevice::WriteOnly) && f.write(data) == data.size();
+        };
+        QVERIFY(write(model.filePath(QStringLiteral("odm_textured_model_geo.obj")),
+                      "mtllib odm_textured_model_geo.mtl\nv 0 0 0\nv 10 0 0\nv 10 10 0\nv 0 10 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\n"
+                      "usemtl material0000\nf 1/1 2/2 3/3\nf 1/1 3/3 4/4\n"));
+        QVERIFY(write(model.filePath(QStringLiteral("odm_textured_model_geo.mtl")),
+                      "newmtl material0000\nKa 1 1 1\nKd 1 1 1\nmap_Kd odm_textured_model_geo_material0000_map_Kd.png\n"));
+        QImage atlas(512, 512, QImage::Format_RGB32);
+        for (int y = 0; y < 512; ++y)
+            for (int x = 0; x < 512; ++x) atlas.setPixel(x, y, qRgb(110 + (x * 7 + y * 3) % 23, 120 + (x * 5 + y * 11) % 19, 100 + (x + y) % 17));
+        {
+            QPainter p(&atlas);
+            p.fillRect(QRect(240, 240, 24, 24), QColor(230, 20, 20));   // the spot to remove
+        }
+        const QString original = model.filePath(QStringLiteral("odm_textured_model_geo_material0000_map_Kd.png"));
+        QVERIFY(atlas.save(original));
+        const QByteArray originalHash = [&] { QFile f(original); f.open(QIODevice::ReadOnly); return QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256); }();
+        QVERIFY(write(jobDir.filePath(QStringLiteral("job.json")), QJsonDocument(job.toJson()).toJson()));
+        auto s = open();
+        QVERIFY(s->projects.openProject(QUrl::fromLocalFile(project)));
+        QTRY_VERIFY(s->processing.jobCount() == 1);
+
+        QTRY_VERIFY(s->enabled(QStringLiteral("tool.textureEditor")));
+        QVERIFY(s->run(QStringLiteral("tool.textureEditor")));
+        QObject *dialog = s->window->findChild<QObject *>(QStringLiteral("textureEditorDialog"));
+        QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        QTRY_COMPARE(s->textures.jobId(), job.id);   // the only model, opened at once
+        QCOMPARE(s->textures.atlases().size(), 1);
+        const QString copy = jobDir.filePath(QStringLiteral("geomap/texture/odm_textured_model_geo_material0000_map_Kd.png"));
+        QVERIFY(QFileInfo::exists(copy));
+        // Colour: the preview follows the sliders, "Применить" writes the copy, one step back.
+        auto mean = [](const QImage &img) {
+            double sum = 0;
+            for (int y = 0; y < img.height(); y += 9)
+                for (int x = 0; x < img.width(); x += 9) sum += qGray(img.pixel(x, y));
+            return sum / ((img.width() / 9 + 1) * (img.height() / 9 + 1));
+        };
+        const double before = mean(QImage(copy));
+        s->textures.setBrightness(1.0);   // +0,25 of the range: about +64 grey levels
+        QVERIFY(mean(s->textures.preview(0, 256)) > before + 40);
+        QSignalSpy done(&s->textures, &TextureEditService::finished);
+        QCOMPARE(s->textures.applyAdjustments(), QString());
+        QTRY_COMPARE_WITH_TIMEOUT(done.count(), 1, 15000);
+        QVERIFY2(done.first().at(0).toBool(), qPrintable(done.first().at(1).toString()));
+        QVERIFY(mean(QImage(copy)) > before + 40);
+        QCOMPARE(s->textures.brightness(), 0.0);   // applied: the sliders back to neutral
+        QVERIFY(s->textures.canUndo());
+        s->textures.undo();
+        QVERIFY(std::abs(mean(QImage(copy)) - before) < 1);
+        s->shot(QStringLiteral("ui-14-texture.png"));
+        // A spot painted over by the inpainting model (when it is installed).
+        if (s->aiModels.inpaintingProblem().isEmpty()) {
+            done.clear();
+            QVariantList stroke{QVariantMap{{"x", 0.47}, {"y", 0.5}}, QVariantMap{{"x", 0.53}, {"y", 0.5}}};
+            QCOMPARE(s->textures.retouch(0, stroke, 0.04), QString());
+            QTRY_COMPARE_WITH_TIMEOUT(done.count(), 1, 60000);
+            QVERIFY2(done.first().at(0).toBool(), qPrintable(done.first().at(1).toString()));
+            const QRgb c = QImage(copy).pixel(252, 252);
+            QVERIFY2(qRed(c) < 180, qPrintable(QStringLiteral("%1 %2 %3").arg(qRed(c)).arg(qGreen(c)).arg(qBlue(c))));   // no longer red
+        }
+        // The copy in 3D; ODM's files as they were.
+        const QString e = s->textures.showIn3D();
+        QVERIFY2(e.isEmpty(), qPrintable(e));
+        QTRY_VERIFY(!s->scene3d.layerIdForSource(jobDir.filePath(QStringLiteral("geomap/texture/odm_textured_model_geo.obj"))).isEmpty());
+        QFile f(original);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256), originalHash);
+        QMetaObject::invokeMethod(dialog, "close");
     }
 
     // Файл → Импорт LiDAR (PDAL of the bundled ODM: GEOMAP_ODM_HOME, else skipped): the cloud in the

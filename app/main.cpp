@@ -35,6 +35,7 @@
 #include "ThumbnailProvider.h"
 #include "View3DItem.h"
 #include "SurveyView.h"
+#include "TextureEditService.h"
 #include "WebTiles.h"
 #include "WorkspaceState.h"
 
@@ -122,6 +123,8 @@ int main(int argc, char *argv[])
     qmlRegisterType<View3DItem>("GeoMapAI.View3D", 1, 0, "View3DItem");
     // LiDAR clouds of the project (lidar.json): PDAL of the bundled ODM.
     LidarService lidar(&map, &scene3d);
+    // Инструменты → Редактор текстуры (a copy of a job's model).
+    TextureEditService textures(&processing, &scene3d, &aiModels);
     QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &lidar, &LidarService::setProject);
     qmlRegisterType<SurveyView>("GeoMapAI.Survey", 1, 0, "SurveyView");
     // Georeferencing of an image by links (Инструменты → Привязка изображения по точкам).
@@ -160,6 +163,7 @@ int main(int argc, char *argv[])
     QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, thumbnails,
                      [thumbnails](const QString &directory) { thumbnails->setProjectDirectory(directory); });
     engine.addImageProvider(QStringLiteral("thumbs"), thumbnails);
+    engine.addImageProvider(QStringLiteral("texture"), new TextureImageProvider(&textures));   // owned by the engine
     engine.rootContext()->setContextProperty("projects", &projects);
     engine.rootContext()->setContextProperty("processing", &processing);
     engine.rootContext()->setContextProperty("gis", &map);
@@ -171,6 +175,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("georef", &georef);
     engine.rootContext()->setContextProperty("lidar", &lidar);
     engine.rootContext()->setContextProperty("reports", &reports);
+    engine.rootContext()->setContextProperty("textures", &textures);
     engine.rootContext()->setContextProperty("chunks", &chunks);
     engine.rootContext()->setContextProperty("commands", &commands);
     engine.rootContext()->setContextProperty("workspace", &workspace);

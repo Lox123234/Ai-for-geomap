@@ -167,3 +167,13 @@ GeoMap AI выполняет модели сам, в своём процессе
 
 | LASzip или PDAL (чтение LAZ) | D+ | LASzip: Apache-2.0 (с 3.x; проверить), PDAL: BSD | Размер, сборка через vcpkg, лицензии зависимостей |
 | Провайдеры GPU для ONNX Runtime (DirectML, CUDA) | E+ | MIT (DirectML); CUDA — лицензия NVIDIA | Размер, распространение библиотек NVIDIA |
+
+## Программы из состава OpenDroneMap, которые запускает GeoMap AI
+
+Все — из той же поставки ODM 3.6.2 (`engines\odm`), отдельными процессами, как их запускает сам ODM; в GeoMap AI ничего не встраивается и не скачивается.
+
+| Программа | Лицензия | Для чего |
+| --- | --- | --- |
+| PDAL 2.9 (`pdal.exe`) | BSD (PDAL) | импорт LiDAR: сведения об облаке, распаковка LAZ, DSM и DTM (SMRF) |
+| OpenSfM (форк ODM, Python ODM) | AGPL-3.0 (`SuperBuild\install\bin\opensfm\LICENSE`) | оптимизация камер и статистика выравнивания: сценарий GeoMap AI `src/processing/optimize_cameras.py` (MIT, совместима с AGPL) выполняется интерпретатором ODM отдельным процессом; исходники ODM прилагаются к выпуску |
+| Obj2Tiles, entwine | в составе поставки ODM (лицензии — в исходниках ODM 3.6.2, которые прилагаются к выпуску) | 3D-тайлы через этап ODM `odm_postprocess` (`--3d-tiles`) |

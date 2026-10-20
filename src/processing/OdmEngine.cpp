@@ -476,6 +476,13 @@ QStringList OdmEngine::stepArguments(const QString &step, const ProcessingJob &j
         if (endWith != QLatin1String("opensfm")) return fail(QStringLiteral("Нужно задание «Только выравнивание»"));
         return resumeArguments(job.arguments, {}) << QStringLiteral("--end-with") << QStringLiteral("openmvs");
     }
+    if (step == QLatin1String("continue")) {
+        // The job goes on where its outputs end (after the cameras were optimised): no stage is
+        // forced, ODM computes what is missing; an alignment-only job stays one.
+        QStringList args = removeOption(job.arguments, QStringLiteral("--rerun-from"), true);
+        args = removeOption(args, QStringLiteral("--rerun"), true);
+        return removeOption(args, QStringLiteral("--rerun-all"), false);
+    }
     return fail(QStringLiteral("Неизвестный шаг «%1»").arg(step));
 }
 
@@ -1272,6 +1279,7 @@ QVector<Artifact> OdmEngine::collectOutputs(const QString &jobDirectory) const
         {"mesh", "odm_texturing/odm_textured_model_geo.obj"},
         {"mesh", "odm_texturing/odm_textured_model_geo.glb"},
         {"mesh", "odm_texturing_25d/odm_textured_model_geo.obj"},
+        {"mesh", "geomap/texture/odm_textured_model_geo.obj"},   // the texture edited in GeoMap AI
         {"report", "odm_report/report.pdf"},
         {"report", "geomap/report.pdf"},
         {"tiles", "3d_tiles/model/tileset.json"},
@@ -1316,6 +1324,8 @@ QVector<Artifact> OdmEngine::collectOutputs(const QString &jobDirectory) const
             QFile f(info.filePath());
             a.details = f.open(QIODevice::ReadOnly) && f.read(4) == "glTF" ? QStringLiteral("glTF (GLB), 3D-модель с текстурами")
                                                                             : QStringLiteral("повреждён: не GLB");
+        } else if (file.startsWith(QLatin1String("geomap/texture/"))) {
+            a.details = QStringLiteral("OBJ, текстура изменена в GeoMap AI");
         } else if (file.contains(QLatin1String("_25d"))) {
             a.details = QStringLiteral("OBJ, 2.5D-сетка с текстурами");
         } else {

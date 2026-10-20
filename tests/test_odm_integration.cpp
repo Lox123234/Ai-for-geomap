@@ -11,7 +11,9 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QProcess>
 #include <QSettings>
 #include <QSignalSpy>
@@ -25,6 +27,9 @@
 #include "GisEnvironment.h"
 #include "MapService.h"
 #include "OdmEngine.h"
+#include "OdmTools.h"
+#include "SurveyControl.h"
+#include "Crs.h"
 #include "Overlap.h"
 #include "PhotoModel.h"
 #include "ProcessingService.h"
@@ -319,6 +324,98 @@ private slots:
         QVERIFY2(dense.endsWith(QStringLiteral("scene_dense_dense_filtered.ply")), qUtf8Printable(dense));
         QVERIFY(QFileInfo(dense).size() > QFileInfo(sparse).size());
         QVERIFY(job.arguments.contains(QStringLiteral("openmvs")));   // it stops after the dense cloud
+    }
+
+    // Обработка → Оптимизация камер: control points taken from the reconstruction itself but
+    // "surveyed" 2 m further east are placed on the photos as a user would; the bundle moves the
+    // cameras onto them (the points' error drops from 2 m to centimetres) and the job is built again.
+    void optimizeCamerasWithControlPoints()
+    {
+        const QString id = m_service->newestJob(QStringLiteral("aligned"));
+        QVERIFY2(!id.isEmpty(), "no aligned job (alignmentThenDepthMaps first)");
+        const QString opensfm = QDir(m_service->jobDirectory(id)).filePath(QStringLiteral("opensfm"));
+        // The points and where the photos see them, from OpenSfM itself.
+        QTemporaryDir work;
+        const QString helper = work.filePath(QStringLiteral("points.py"));
+        {
+            QFile f(helper);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(R"PY(
+import sys, json
+sys.path.insert(0, sys.argv[3])
+import numpy as np
+from opensfm import dataset, features
+data = dataset.DataSet(sys.argv[1])
+rec = data.load_reconstruction()[0]
+tm = data.load_tracks_manager()
+ref = data.load_reference()
+best = []
+for pid, p in rec.points.items():
+    obs = tm.get_track_observations(pid)
+    shots = [s for s in obs if s in rec.shots]
+    if len(shots) >= 4:
+        best.append((len(shots), pid, p, shots, obs))
+best.sort(key=lambda b: -b[0])
+out = []
+for n, (k, pid, p, shots, obs) in enumerate(best[::max(1, len(best) // 6)][:6]):
+    lat, lon, alt = ref.to_lla(*p.coordinates)
+    o = []
+    for s in shots:
+        cam = rec.shots[s].camera
+        px = features.denormalized_image_coordinates(np.array([obs[s].point]), cam.width, cam.height)[0]
+        o.append({"image": s, "x": float(px[0]) / cam.width, "y": float(px[1]) / cam.height})
+    out.append({"lat": lat, "lon": lon, "alt": alt, "obs": o})
+open(sys.argv[2], "w").write(json.dumps(out))
+)PY");
+        }
+        const QString pointsJson = work.filePath(QStringLiteral("points.json"));
+        const odmtools::Result made = odmtools::run(OdmEngine::nativePython(odmtools::root()),
+                                                    {QStringLiteral("-X"), QStringLiteral("utf8"), QDir::toNativeSeparators(helper),
+                                                     odmtools::toolPath(opensfm), QDir::toNativeSeparators(pointsJson),
+                                                     QDir::toNativeSeparators(QDir(odmtools::binDirectory()).filePath(QStringLiteral("opensfm")))});
+        QVERIFY2(made.ok(), qUtf8Printable(made.error + made.output.right(600)));
+        QFile pf(pointsJson);
+        QVERIFY(pf.open(QIODevice::ReadOnly));
+        const QJsonArray points = QJsonDocument::fromJson(pf.readAll()).array();
+        QVERIFY(points.size() >= 3);
+        SurveyControl survey;
+        survey.setProject(m_project, m_projects->photoModel());
+        QCOMPARE(survey.setCrs(QStringLiteral("EPSG:32615")), QString());
+        CoordinateTransform toUtm(Crs::wgs84(), Crs::fromEpsg(32615));
+        int n = 0;
+        for (const QJsonValue &v : points) {
+            const QJsonObject p = v.toObject();
+            QPointF e(p.value(QStringLiteral("lon")).toDouble(), p.value(QStringLiteral("lat")).toDouble());
+            QVERIFY(toUtm.transform(e));
+            const QString pid = survey.addPoint(QStringLiteral("ОП-%1").arg(++n), e.x() + 2.0, e.y(), p.value(QStringLiteral("alt")).toDouble());
+            for (const QJsonValue &o : p.value(QStringLiteral("obs")).toArray())
+                survey.setObservation(pid, QStringLiteral("photos/") + o.toObject().value(QStringLiteral("image")).toString(),
+                                      o.toObject().value(QStringLiteral("x")).toDouble(), o.toObject().value(QStringLiteral("y")).toDouble());
+        }
+        QCOMPARE(survey.controlCount(), int(points.size()));
+
+        QSignalSpy optimized(m_service.get(), &ProcessingService::optimizeFinished);
+        QSignalSpy finished(m_service.get(), &ProcessingService::jobFinished);
+        QElapsedTimer timer;
+        timer.start();
+        QCOMPARE(m_service->optimizeCameras(id, true), QString());
+        QVERIFY(optimized.wait(1800 * 1000));
+        const QString summary = optimized.first().at(2).toString();
+        qInfo("Optimised in %lld s: %s", timer.elapsed() / 1000, qUtf8Printable(summary));
+        QVERIFY2(optimized.first().at(1).toBool(), qUtf8Printable(summary));
+        // "опорные точки 2,000 → 0,0xx м": the cameras followed the control points.
+        const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("опорные точки ([0-9,]+) → ([0-9,]+) м")).match(summary);
+        QVERIFY2(m.hasMatch(), qUtf8Printable(summary));
+        const double before = QLocale(QLocale::Russian).toDouble(m.captured(1)), after = QLocale(QLocale::Russian).toDouble(m.captured(2));
+        QVERIFY2(before > 1.5 && after < 0.2, qUtf8Printable(summary));
+        QVERIFY(QFileInfo::exists(QDir(m_service->jobDirectory(id)).filePath(QStringLiteral("geomap/optimize/reconstruction.json"))));   // the old poses kept
+        // The job is built again from the new poses.
+        QVERIFY(finished.wait(3600 * 1000));
+        const ProcessingJob job = m_service->job(id);
+        qInfo("Rebuilt %s: %s in %lld s", qUtf8Printable(id), qUtf8Printable(jobStateText(job.state)), timer.elapsed() / 1000);
+        QVERIFY2(job.state == JobState::Completed, qUtf8Printable(job.message));
+        QVERIFY(QFileInfo::exists(QDir(m_service->jobDirectory(id)).filePath(QStringLiteral("opensfm/reconstruction.topocentric.json"))));
+        QVERIFY(!output(id, QStringLiteral("pointcloud")).isEmpty());
     }
 
     // Dense cloud, textured model, DSM, DTM (with ground classification), orthophoto and report,

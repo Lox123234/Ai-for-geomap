@@ -1,4 +1,5 @@
 #include "ProcessingService.h"
+#include "CameraOptimizer.h"
 #include "PhotoModel.h"
 #include "SurveyControl.h"
 #include "TrueOrthophoto.h"
@@ -315,6 +316,7 @@ void ProcessingService::adoptJobs(const QString &chunk)
 
 void ProcessingService::stopAll(const QString &reason)
 {
+    if (m_optimizeCancel) m_optimizeCancel->store(true);   // the bundle stops; the reconstruction is restored
     if (m_prepareThread) {
         if (m_prepareCancel) *m_prepareCancel = true;
         m_prepareThread->wait();
@@ -706,6 +708,73 @@ QString ProcessingService::runStep(const QString &id, const QString &step)
     setState(*job, JobState::Queued, step == QLatin1String("tiles") ? QStringLiteral("Ожидает: 3D-тайлы")
                                                                     : QStringLiteral("Ожидает: карты глубины и плотное облако"));
     runNext();
+    return {};
+}
+
+QString ProcessingService::optimizeCameras(const QString &id, bool refineCalibration)
+{
+    ProcessingJob *job = findJob(id);
+    if (!job) return QStringLiteral("Задание не найдено");
+    if (!m_optimizeJob.isEmpty()) return QStringLiteral("Оптимизация уже идёт");
+    if (isActive(job->state) || id == m_current) return QStringLiteral("Задание выполняется — дождитесь его");
+    if (job->state != JobState::Completed) return QStringLiteral("Задание не завершено");
+    if (m_orthoJob == id) return QStringLiteral("Строится истинный ортофотоплан — дождитесь его");
+    if (m_engine->capabilities().id != QLatin1String("odm")) return QStringLiteral("Оптимизация камер работает с OpenDroneMap");
+    if (!m_env.available) {
+        if (!m_env.checked && !m_checking) checkEnvironment();
+        return m_env.checked ? QStringLiteral("Движок обработки недоступен: проверьте окружение")
+                             : QStringLiteral("Идёт проверка движка — повторите через несколько секунд");
+    }
+    const QString dir = jobDirectory(id);
+    if (!QFileInfo::exists(QDir(dir).filePath(QStringLiteral("opensfm/reconstruction.json")))) return QStringLiteral("В задании нет выравнивания");
+    m_optimizeJob = id;
+    m_optimizeCancel = std::make_shared<std::atomic_bool>(false);
+    const auto cancel = m_optimizeCancel;
+    emit optimizeChanged();
+    setState(*job, job->state, QStringLiteral("Оптимизация камер…"));
+    const QString project = m_project;
+    const QStringList images = job->images;
+    QThreadPool::globalInstance()->start([this, id, dir, project, images, refineCalibration, cancel] {
+        // The project's control points as the job takes them (on ≥ 3 of its photos), then the bundle.
+        const SurveyControl::JobInputs control = SurveyControl::prepareJob(project, dir, images);
+        const cameraoptimizer::Result r = control.error.isEmpty() ? cameraoptimizer::run(dir, refineCalibration, cancel.get())
+                                                                  : cameraoptimizer::Result{control.error, {}, {}, 0};
+        QMetaObject::invokeMethod(this, [this, id, dir, r] {
+            m_optimizeJob.clear();
+            emit optimizeChanged();
+            ProcessingJob *job = findJob(id);
+            if (!job) return;
+            if (!r.ok()) {
+                setState(*job, job->state, QStringLiteral("Оптимизация камер не выполнена: %1").arg(r.error));
+                emit optimizeFinished(id, false, r.error);
+                return;
+            }
+            // The results of the old poses go (whoever shows them closes them first); the job
+            // continues from the undistortion of the photos.
+            emit releaseDirectory(dir);
+            const QString busy = cameraoptimizer::removeStale(dir);
+            QString error;
+            const QStringList args = busy.isEmpty() ? m_engine->stepArguments(QStringLiteral("continue"), *job, &error) : QStringList();
+            const QString summary = r.summary() + (r.controlPoints > 0 ? QStringLiteral(" · опорных точек %1").arg(r.controlPoints) : QString());
+            if (args.isEmpty()) {
+                const QString why = busy.isEmpty() ? error : QStringLiteral("файл занят: %1").arg(busy);
+                setState(*job, job->state, QStringLiteral("Камеры оптимизированы (%1), но задание не продолжено: %2").arg(summary, why));
+                emit optimizeFinished(id, false, why);
+                return;
+            }
+            job->arguments = args;
+            job->notes << QStringLiteral("[GeoMap] Оптимизация камер: %1").arg(summary);
+            m_failedStage[id] = QString();
+            m_autoRetries[id] = 0;
+            job->exitCode = 0;
+            job->finishedAt = {};
+            m_resumed << id;
+            m_queue.append(id);
+            setState(*job, JobState::Queued, QStringLiteral("Камеры оптимизированы: %1. Ожидает пересборки результатов.").arg(summary));
+            runNext();
+            emit optimizeFinished(id, true, summary);
+        }, Qt::QueuedConnection);
+    });
     return {};
 }
 
