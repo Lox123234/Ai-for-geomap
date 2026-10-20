@@ -28,6 +28,7 @@
 #include "TestImages.h"
 #include "TrueOrthophoto.h"
 #include "Overlap.h"
+#include "ProjectReport.h"
 #include "SurveyLayout.h"
 #include "Crs.h"
 #include <gdal.h>
@@ -687,6 +688,46 @@ private slots:
         QCOMPARE(before.summary.aligned + before.summary.notAligned, 0);
         QCOMPARE(Crs::fromWkt(before.crsWkt).epsg(), 32632);
         QCOMPARE(surveylayout::heightAt(job, 500010, 5000010), 100.0);
+
+        // GeoMap AI's report of the job: the scheme drawn, the elevation model previewed, a PDF written.
+        const QImage scheme = projectreport::renderScheme(l, QSize(800, 520));
+        QCOMPARE(scheme.size(), QSize(800, 520));
+        QSet<QRgb> colours;
+        for (int y = 0; y < scheme.height(); y += 7)
+            for (int x = 0; x < scheme.width(); x += 7) colours.insert(scheme.pixel(x, y));
+        QVERIFY2(colours.size() > 4, qPrintable(QString::number(colours.size())));   // footprints, path, cameras on the paper
+        double lo = 0, hi = 0;
+        QVERIFY(!projectreport::elevationPreview(job + QStringLiteral("/odm_dem/dsm.tif"), 300, &lo, &hi).isNull());
+        QCOMPARE(lo, 100.0);
+        projectreport::Input in;
+        in.appVersion = QStringLiteral("0.5.4");
+        in.engine = QStringLiteral("OpenDroneMap 3.6.2");
+        in.project = QStringLiteral("Схема");
+        in.jobId = QStringLiteral("20261020-100000");
+        in.jobDirectory = job;
+        in.profile = QStringLiteral("Сбалансированный");
+        in.started = QDateTime(QDate(2026, 10, 20), QTime(10, 0));
+        in.finished = in.started.addSecs(1260);
+        in.arguments = {QStringLiteral("--dsm"), QStringLiteral("--orthophoto-resolution"), QStringLiteral("5")};
+        in.quality = QVariantMap{{"rows", QVariantList{QVariantMap{{"label", "Выровнено снимков"}, {"value", "4 из 5"}},
+                                                       QVariantMap{{"label", "Средний GSD"}, {"value", "1,64 см/пикс"}}}},
+                                 {"warnings", QStringList{QStringLiteral("Не выровнено снимков: 1.")}},
+                                 {"steps", QVariantList{QVariantMap{{"title", "Reconstruction"}, {"seconds", 6.5}}}}};
+        in.photos = photos;
+        in.outputs << Artifact{QStringLiteral("dsm"), QStringLiteral("odm_dem/dsm.tif"), 160000, QStringLiteral("EPSG:32632, 100 см/пикс")};
+        const QString pdf = tmp.filePath(QStringLiteral("Отчёт/report.pdf"));
+        QCOMPARE(projectreport::write(in, pdf), QString());
+        QFile f(pdf);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.read(4), QByteArray("%PDF"));
+        QVERIFY2(f.size() > 20000, qPrintable(QString::number(f.size())));   // with the scheme and the elevation model
+        const QString keep = qEnvironmentVariable("GEOMAP_TEST_OUTPUT");
+        if (!keep.isEmpty() && QDir().mkpath(keep)) {
+            QFile::remove(QDir(keep).filePath(QStringLiteral("report-test.pdf")));
+            QFile::copy(pdf, QDir(keep).filePath(QStringLiteral("report-test.pdf")));
+            const QVector<QImage> shots = projectreport::pages(in, 1.0);
+            for (int i = 0; i < shots.size(); ++i) shots[i].save(QDir(keep).filePath(QStringLiteral("report-page-%1.png").arg(i + 1)));
+        }
     }
 
     // A failed ODM run is explained in plain words: which program failed on which stage, what to do.
@@ -1155,7 +1196,22 @@ private slots:
         QCOMPARE(odm.resumeArguments({QStringLiteral("--dsm"), QStringLiteral("--rerun-from"), QStringLiteral("opensfm")}, QStringLiteral("odm_georeferencing")),
                  (QStringList{QStringLiteral("--dsm"), QStringLiteral("--rerun-from"), QStringLiteral("odm_georeferencing")}));
         QCOMPARE(odm.resumeArguments({QStringLiteral("--dsm")}, QStringLiteral("unknown")), QStringList{QStringLiteral("--dsm")});
-        QCOMPARE(odm.previousStage(QStringLiteral("odm_dem")), QStringLiteral("odm_georeferencing"));
+        // Steps on a finished job: 3D Tiles run ODM's last stage again with --3d-tiles; the depth maps
+        // continue an aligned job to OpenMVS without computing the alignment again.
+        ProcessingJob done;
+        done.arguments = {QStringLiteral("--dsm"), QStringLiteral("--max-concurrency"), QStringLiteral("4")};
+        QString stepError;
+        QCOMPARE(odm.stepArguments(QStringLiteral("tiles"), done, &stepError),
+                 (QStringList{QStringLiteral("--dsm"), QStringLiteral("--max-concurrency"), QStringLiteral("4"), QStringLiteral("--3d-tiles"),
+                              QStringLiteral("--rerun-from"), QStringLiteral("odm_postprocess")}));
+        QVERIFY(odm.stepArguments(QStringLiteral("dense"), done, &stepError).isEmpty());
+        QVERIFY(stepError.contains(QStringLiteral("выравнивание")));
+        ProcessingJob aligned;
+        aligned.arguments = {QStringLiteral("--feature-quality"), QStringLiteral("high"), QStringLiteral("--end-with"), QStringLiteral("opensfm")};
+        QCOMPARE(odm.stepArguments(QStringLiteral("dense"), aligned, &stepError),
+                 (QStringList{QStringLiteral("--feature-quality"), QStringLiteral("high"), QStringLiteral("--end-with"), QStringLiteral("openmvs")}));
+        QVERIFY(odm.stepArguments(QStringLiteral("tiles"), aligned, &stepError).isEmpty());
+        QVERIFY(odm.stepArguments(QStringLiteral("other"), done, &stepError).isEmpty());        QCOMPARE(odm.previousStage(QStringLiteral("odm_dem")), QStringLiteral("odm_georeferencing"));
         QVERIFY(odm.previousStage(QStringLiteral("dataset")).isEmpty());
         QVERIFY(odm.retryable(1, QStringLiteral("Сбой на этапе «Геопривязка»: PDAL при классификации точек земли (нужна для DTM) завершилась аварийно.")));
         QVERIFY(!odm.retryable(137, QStringLiteral("OpenDroneMap остановлен из-за нехватки памяти.")));
@@ -1171,6 +1227,7 @@ private slots:
                                         "average_track_length": 3.04, "reprojection_error_pixels": 1.0827},
           "gps_errors": {"error": {"x": 0.1637, "y": 0.6004, "z": 0.1641}, "ce90": 0.9057, "le90": 0.2428},
           "gcp_errors": {},
+          "features_statistics": {"detected_features": {"median": 2282}, "reconstructed_features": {"median": 372}},
           "odm_processing_statistics": {"average_gsd": 1.644},
           "point_cloud_statistics": {"dense": false, "stats": {"statistic": [{"count": 3237, "name": "X"}]}}
         })";
@@ -1184,6 +1241,7 @@ private slots:
         QVERIFY2(all.contains(QStringLiteral("Выровнено снимков: 16 из 18")), qPrintable(all));
         QVERIFY(all.contains(QStringLiteral("Ошибка репроекции (RMS): 1,08 пикс")));
         QVERIFY(all.contains(QStringLiteral("Средний GSD: 1,64 см/пикс")));
+        QVERIFY(QString(all).remove(QChar(0x00A0)).remove(QChar(0x202F)).contains(QStringLiteral("Точек на снимке (медиана): найдено 2282, сопоставлено 372")));
         QVERIFY(QString(all).remove(QChar(0x00A0)).remove(QChar(0x202F)).contains(QStringLiteral("Площадь съёмки: 7055 м²")));
         QVERIFY(all.contains(QStringLiteral("Расхождение с GPS, RMSE X / Y / Z: 0,164 / 0,600 / 0,164 м")));
         QVERIFY(!all.contains(QStringLiteral("опорным")));   // no GCPs
@@ -1408,6 +1466,19 @@ private slots:
         QCOMPARE(outputs[0].file, QStringLiteral("geomap/true_orthophoto.tif"));
         QVERIFY2(outputs[0].details.startsWith(QStringLiteral("истинный (GeoMap AI), EPSG:32630, 2,0 см/пикс")), qPrintable(outputs[0].details));
         QCOMPARE(outputs[1].file, QStringLiteral("odm_orthophoto/odm_orthophoto.tif"));
+        // 3D Tiles: the folder is the result; the dense cloud of an aligned job; GeoMap AI's report.
+        QVERIFY(writeFile(dir.filePath(QStringLiteral("3d_tiles/model/tileset.json")), "{\"asset\":{\"version\":\"1.0\"}}"));
+        QVERIFY(writeFile(dir.filePath(QStringLiteral("3d_tiles/model/0/a.b3dm")), QByteArray(1000, 'x')));
+        QVERIFY(writeFile(dir.filePath(QStringLiteral("opensfm/undistorted/openmvs/scene_dense_dense_filtered.ply")), "ply\n"));
+        QVERIFY(writeFile(dir.filePath(QStringLiteral("geomap/report.pdf")), "%PDF-1.4\n"));
+        outputs = odm.collectOutputs(tmp.path());
+        QStringList kinds;
+        for (const Artifact &a : outputs) kinds << a.kind + QLatin1Char(':') + a.details;
+        QVERIFY2(kinds.contains(QStringLiteral("tiles:OGC 3D Tiles, модель: 2 файлов")), qPrintable(kinds.join('\n')));
+        QVERIFY(kinds.contains(QStringLiteral("pointcloud:PLY, плотное облако OpenMVS")));
+        QVERIFY(kinds.contains(QStringLiteral("report:PDF-отчёт GeoMap AI")));
+        for (const Artifact &a : outputs)
+            if (a.kind == QLatin1String("tiles")) QVERIFY(a.bytes > 1000);   // the whole folder
     }
 
     // ----------------------------------------------------------- GeoTiffInfo
@@ -1477,5 +1548,6 @@ private slots:
     }
 };
 
-QTEST_GUILESS_MAIN(ProcessingTest)
+// QGuiApplication: the report (fonts, PDF) of surveyLayoutOfAJob.
+QTEST_MAIN(ProcessingTest)
 #include "test_processing.moc"

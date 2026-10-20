@@ -10,6 +10,8 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcess>
 #include <QSettings>
 #include <QSignalSpy>
@@ -258,6 +260,65 @@ private slots:
         qInfo("Quality: %d of %d images aligned, reprojection %.2f px, GSD %.2f cm",
               quality.value(QStringLiteral("alignedImages")).toInt(), quality.value(QStringLiteral("totalImages")).toInt(),
               quality.value(QStringLiteral("reprojectionPx")).toDouble(), quality.value(QStringLiteral("gsdCm")).toDouble());
+    }
+
+    // Обработка → Построение тайловой модели: OGC 3D Tiles of the finished fast job — ODM's last
+    // stage runs again with --3d-tiles; the tileset is registered as a result of the job.
+    void tilesOfAFinishedJob()
+    {
+        const QString id = m_service->newestJob(QStringLiteral("model"));
+        QVERIFY2(!id.isEmpty(), "no finished job with a model (fastProfileProducesAGeoreferencedOrthophoto first)");
+        QSignalSpy finished(m_service.get(), &ProcessingService::jobFinished);
+        QElapsedTimer timer;
+        timer.start();
+        QCOMPARE(m_service->runStep(id, QStringLiteral("tiles")), QString());
+        QVERIFY(finished.wait(3600 * 1000));
+        const ProcessingJob job = m_service->job(id);
+        qInfo("3D Tiles of %s: %s in %lld s", qUtf8Printable(id), qUtf8Printable(jobStateText(job.state)), timer.elapsed() / 1000);
+        QVERIFY2(job.state == JobState::Completed, qUtf8Printable(job.message));
+        const QString tiles = output(id, QStringLiteral("tiles"));
+        QVERIFY2(tiles.endsWith(QStringLiteral("3d_tiles/model/tileset.json")), qUtf8Printable(tiles));
+        QFile f(tiles);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        const QJsonObject tileset = QJsonDocument::fromJson(f.readAll()).object();
+        QVERIFY(tileset.contains(QStringLiteral("asset")) && tileset.contains(QStringLiteral("root")));
+        for (const Artifact &a : job.outputs)
+            if (a.kind == QLatin1String("tiles")) qInfo("  %s: %s, %lld bytes", qUtf8Printable(a.file), qUtf8Printable(a.details), a.bytes);
+        // The other results are still there.
+        QVERIFY(!output(id, QStringLiteral("orthophoto")).isEmpty());
+    }
+
+    // Обработка → Выравнивание, then → Облако связующих точек and → Генерация карт глубины: the
+    // aligned job goes on to OpenMVS without a new alignment; depth maps and the dense cloud.
+    void alignmentThenDepthMaps()
+    {
+        QStringList stages;
+        const QString id = runToEnd(QStringLiteral("align"), {}, 2, &stages);
+        QVERIFY(!id.isEmpty());
+        QVERIFY2(m_service->job(id).state == JobState::Completed, qUtf8Printable(m_service->job(id).message));
+        QCOMPARE(m_service->newestJob(QStringLiteral("alignedOnly")), id);
+        const QString sparse = m_service->sparseCloud(id);
+        QVERIFY(QFileInfo(sparse).size() > 1000);
+        const QString reconstruction = QDir(m_service->jobDirectory(id)).filePath(QStringLiteral("opensfm/reconstruction.json"));
+        const QDateTime aligned = QFileInfo(reconstruction).lastModified();
+
+        QSignalSpy finished(m_service.get(), &ProcessingService::jobFinished);
+        QElapsedTimer timer;
+        timer.start();
+        QCOMPARE(m_service->runStep(id, QStringLiteral("dense")), QString());
+        QVERIFY(finished.wait(3600 * 1000));
+        const ProcessingJob job = m_service->job(id);
+        qInfo("Depth maps of %s: %s in %lld s", qUtf8Printable(id), qUtf8Printable(jobStateText(job.state)), timer.elapsed() / 1000);
+        QVERIFY2(job.state == JobState::Completed, qUtf8Printable(job.message));
+        QCOMPARE(QFileInfo(reconstruction).lastModified(), aligned);   // the alignment was not computed again
+        const QDir openmvs(QDir(m_service->jobDirectory(id)).filePath(QStringLiteral("opensfm/undistorted/openmvs")));
+        const QStringList maps = QDir(openmvs.filePath(QStringLiteral("depthmaps"))).entryList({QStringLiteral("*.dmap")}, QDir::Files);
+        qInfo("  %lld depth maps", qint64(maps.size()));
+        QVERIFY(maps.size() >= 2);
+        const QString dense = output(id, QStringLiteral("pointcloud"));
+        QVERIFY2(dense.endsWith(QStringLiteral("scene_dense_dense_filtered.ply")), qUtf8Printable(dense));
+        QVERIFY(QFileInfo(dense).size() > QFileInfo(sparse).size());
+        QVERIFY(job.arguments.contains(QStringLiteral("openmvs")));   // it stops after the dense cloud
     }
 
     // Dense cloud, textured model, DSM, DTM (with ground classification), orthophoto and report,

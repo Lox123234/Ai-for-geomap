@@ -35,6 +35,7 @@
 #include <cmath>
 #include "ProjectManager.h"
 #include "ProjectTreeModel.h"
+#include "ReportService.h"
 #include "ResultExporter.h"
 #include "Scene3DService.h"
 #include "ThumbnailProvider.h"
@@ -69,6 +70,7 @@ struct Session
     ProjectTreeFilter treeView;
     GeorefService georef{&map, &projects, &processing};
     LidarService lidar{&map, &scene3d};
+    ReportService reports{&projects, &processing, &survey};
     QQmlApplicationEngine engine;
     QQuickWindow *window = nullptr;
 
@@ -109,6 +111,8 @@ struct Session
         c->setContextProperty("survey", &survey);
         c->setContextProperty("georef", &georef);
         c->setContextProperty("lidar", &lidar);
+        reports.m_openWhenDone = false;
+        c->setContextProperty("reports", &reports);
         c->setContextProperty("chunks", &chunks);
         c->setContextProperty("commands", &commands);
         c->setContextProperty("workspace", &workspace);
@@ -238,11 +242,14 @@ private slots:
             }
         QVERIFY(s->findByCommand(QStringLiteral("file.new"), "ToolIconButton")->property("enabled").toBool());
         QVERIFY(!s->findByCommand(QStringLiteral("file.save"), "ToolIconButton")->property("enabled").toBool());   // no project
-        // Planned commands do not run and say why.
-        QVERIFY(!s->run(QStringLiteral("proc.tiled")));
-        QVERIFY(s->prop("transientMessage").toString().contains(QStringLiteral("после 1.0")));
-        QVERIFY(!s->run(QStringLiteral("proc.optimize")));
-        QVERIFY(s->prop("transientMessage").toString().contains(QStringLiteral("движком")));
+        // Commands that are not ready (planned, or a step the engine does not do) do not run and
+        // say why; ready commands without a project are disabled and do not run either.
+        for (const QString &id : s->commands.ids()) {
+            if (s->commands.isReady(id)) continue;
+            QVERIFY2(!s->run(id), qPrintable(id));
+            QVERIFY2(!s->prop("transientMessage").toString().isEmpty(), qPrintable(id));
+        }
+        QVERIFY(!s->run(QStringLiteral("proc.tiled")));   // no project
         s->shot(QStringLiteral("ui-01-welcome.png"));
         // Menus are built from the registry: open "Обработка" to see ready, planned and engine-blocked items.
         QStringList titles;
@@ -775,6 +782,11 @@ private slots:
             QCOMPARE(GDALRasterIO(GDALGetRasterBand(ds, 1), GF_Write, 0, 0, 200, 200, v.data(), 200, 200, GDT_Float32, 0, 0), CE_None);
             GDALClose(ds);
         }
+        // The tie points of the alignment (ODM: local to coords.txt, colours as diffuse_*).
+        QVERIFY(write(jobDir.filePath(QStringLiteral("opensfm/reconstruction.ply")),
+                      "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+                      "property uchar diffuse_red\nproperty uchar diffuse_green\nproperty uchar diffuse_blue\nend_header\n"
+                      "0 0 100 200 10 10\n5 2 101 10 200 10\n-3 4 99 10 10 200\n"));
         QVERIFY(write(jobDir.filePath(QStringLiteral("job.json")), QJsonDocument(job.toJson()).toJson()));
 
         auto s = open();
@@ -805,6 +817,32 @@ private slots:
         QCOMPARE(s->survey.controlPoints().first().z, 100.0);
         QCOMPARE(s->survey.controlPoints().first().name, QStringLiteral("ОП-1"));
         QTRY_COMPARE(view->property("pointRows").toList().size(), 1);
+
+        // Обработка → Облако связующих точек: the tie points of the alignment in the 3D scene, placed.
+        QVERIFY(!s->enabled(QStringLiteral("proc.tiled")));       // no model in the job
+        QVERIFY(!s->enabled(QStringLiteral("proc.depthMaps")));   // not an alignment-only job
+        QVERIFY(s->enabled(QStringLiteral("proc.tiePoints")));
+        QVERIFY(s->run(QStringLiteral("proc.tiePoints")));
+        QCOMPARE(s->prop("activeView").toInt(), 4);
+        const QString ply = jobDir.filePath(QStringLiteral("opensfm/reconstruction.ply"));
+        QCOMPARE(QDir::cleanPath(s->processing.sparseCloud()), QDir::cleanPath(ply));
+        QTRY_VERIFY(!s->scene3d.layerIdForSource(ply).isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(!s->scene3d.loading(), 15000);
+        QVERIFY(s->scene3d.georeferenced());
+        QCOMPARE(s->processing.runStep(job.id, QStringLiteral("tiles")).isEmpty(), false);   // the mock engine cannot
+
+        // Обработка → Генерация отчёта: GeoMap AI's PDF of the job.
+        QVERIFY(s->enabled(QStringLiteral("proc.report")));
+        QSignalSpy reported(&s->reports, &ReportService::finished);
+        QVERIFY(s->run(QStringLiteral("proc.report")));
+        QTRY_COMPARE_WITH_TIMEOUT(reported.count(), 1, 30000);
+        QVERIFY2(reported.first().at(0).toBool(), qPrintable(reported.first().at(1).toString()));
+        const QString pdf = jobDir.filePath(QStringLiteral("geomap/report.pdf"));
+        QCOMPARE(QDir::cleanPath(reported.first().at(2).toString()), QDir::cleanPath(pdf));
+        QFile report(pdf);
+        QVERIFY(report.open(QIODevice::ReadOnly));
+        QCOMPARE(report.read(4), QByteArray("%PDF"));
+        QCOMPARE(QDir::cleanPath(s->reports.reportOf(job.id)), QDir::cleanPath(pdf));
     }
 
     // Ground control points: the dialog's tabs open from their commands, and in the photo view

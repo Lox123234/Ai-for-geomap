@@ -29,6 +29,7 @@
 #include "ProcessingService.h"
 #include "ProjectManager.h"
 #include "ProjectTreeModel.h"
+#include "ReportService.h"
 #include "ResultExporter.h"
 #include "Scene3DService.h"
 #include "ThumbnailProvider.h"
@@ -108,6 +109,8 @@ int main(int argc, char *argv[])
         survey.setProject(projects.projectPath(), projects.photoModel(), &map);
     });
     QObject::connect(&map, &MapService::markersChanged, &survey, &SurveyControl::changed);
+    // GeoMap AI's PDF report of a job (Обработка → Генерация отчёта).
+    ReportService reports(&projects, &processing, &survey);
     QObject::connect(&projects, &ProjectManager::selectionChanged, &map,
                      [&map, &projects] { map.setSelectedPhoto(projects.selectedIndex()); });
     qmlRegisterType<MapView>("GeoMapAI.Map", 1, 0, "MapView");
@@ -140,6 +143,9 @@ int main(int argc, char *argv[])
                      [&appLog](const QString &message) { appLog.add(AppLog::Error, QStringLiteral("Блоки"), message); });
     QObject::connect(&scene3d, &Scene3DService::errorOccurred, &appLog,
                      [&appLog](const QString &message) { appLog.add(AppLog::Error, QStringLiteral("3D"), message); });
+    QObject::connect(&reports, &ReportService::finished, &appLog, [&appLog](bool ok, const QString &message) {
+        appLog.add(ok ? AppLog::Info : AppLog::Error, QStringLiteral("Отчёт"), message);
+    });
     QObject::connect(&lidar, &LidarService::finished, &appLog, [&appLog](bool ok, const QString &message) {
         appLog.add(ok ? AppLog::Info : AppLog::Error, QStringLiteral("LiDAR"), message);
     });
@@ -164,6 +170,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("survey", &survey);
     engine.rootContext()->setContextProperty("georef", &georef);
     engine.rootContext()->setContextProperty("lidar", &lidar);
+    engine.rootContext()->setContextProperty("reports", &reports);
     engine.rootContext()->setContextProperty("chunks", &chunks);
     engine.rootContext()->setContextProperty("commands", &commands);
     engine.rootContext()->setContextProperty("workspace", &workspace);

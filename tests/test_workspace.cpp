@@ -58,13 +58,20 @@ private slots:
                 QVERIFY2(QFileInfo::exists(QStringLiteral(GEOMAP_SOURCE_DIR "/qml/icons/%1.svg").arg(c.icon)), qPrintable(c.id));
             QVERIFY2(doc.contains(QStringLiteral("`%1`").arg(c.id)), qPrintable(c.id + QStringLiteral(" not in UI_COMMANDS.md")));
         }
-        // Unavailable commands say why, ready ones say what they do.
-        QVERIFY(r.unavailableReason(QStringLiteral("proc.tiled")).contains(QStringLiteral("после 1.0")));
-        QVERIFY(r.unavailableReason(QStringLiteral("analysis.ai")).isEmpty());
-        QVERIFY(r.unavailableReason(QStringLiteral("proc.optimize")).startsWith(QStringLiteral("Не поддерживается выбранным движком")));
-        QVERIFY(r.unavailableReason(QStringLiteral("file.save")).isEmpty());
+        // Unavailable commands say why (planned: their stage, in the tooltip too; a step the engine
+        // does not do: that), ready ones say what they do.
+        for (const CommandRegistry::Command &c : r.commands()) {
+            if (c.status == QLatin1String("planned")) {
+                QVERIFY2(r.unavailableReason(c.id).contains(c.stage), qPrintable(c.id));
+                QVERIFY2(r.tooltip(c.id).contains(QStringLiteral("этап ") + c.stage), qPrintable(c.id));
+            } else if (c.status == QLatin1String("engine")) {
+                QVERIFY2(r.unavailableReason(c.id).startsWith(QStringLiteral("Не поддерживается выбранным движком")), qPrintable(c.id));
+            } else {
+                QVERIFY2(r.unavailableReason(c.id).isEmpty(), qPrintable(c.id));
+                QVERIFY2(!c.action.isEmpty() && !c.handler.isEmpty(), qPrintable(c.id));
+            }
+        }
         QVERIFY(r.tooltip(QStringLiteral("file.save")).contains(QStringLiteral("Ctrl+S")));
-        QVERIFY(r.tooltip(QStringLiteral("proc.tiled")).contains(QStringLiteral("этап после 1.0")));   // planned: the stage in the tooltip
         QVERIFY(r.tooltip(QStringLiteral("tool.slope")).contains(QStringLiteral("уклон")));
         QVERIFY(!r.isReady(QStringLiteral("unknown.command")));
     }
@@ -83,7 +90,11 @@ private slots:
             QVERIFY2(conflict.contains(QStringLiteral("Сохранить")), qPrintable(conflict));
             QCOMPARE(r.shortcut(QStringLiteral("file.open")), QStringLiteral("Ctrl+O"));
             QVERIFY(!r.setShortcut(QStringLiteral("file.open"), QStringLiteral("Ctrl+Нечто")).isEmpty());
-            QVERIFY(!r.setShortcut(QStringLiteral("proc.tiled"), QStringLiteral("F9")).isEmpty());   // planned
+            for (const CommandRegistry::Command &c : r.commands())   // a command that is not ready takes no shortcut
+                if (c.status != QLatin1String("ready")) {
+                    QVERIFY2(!r.setShortcut(c.id, QStringLiteral("F9")).isEmpty(), qPrintable(c.id));
+                    break;
+                }
             // Removing a shortcut.
             QCOMPARE(r.setShortcut(QStringLiteral("tool.pan"), QString()), QString());
             QCOMPARE(r.shortcut(QStringLiteral("tool.pan")), QString());

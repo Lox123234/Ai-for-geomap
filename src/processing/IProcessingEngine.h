@@ -52,6 +52,15 @@ public:
         Q_UNUSED(fromStage)
         return arguments;
     }
+    // Arguments that run one more step on a finished job in its own directory: "tiles" (OGC 3D
+    // Tiles of the model and the cloud), "dense" (depth maps and the dense cloud of an aligned
+    // job). Empty with the reason when the engine cannot.
+    virtual QStringList stepArguments(const QString &step, const ProcessingJob &job, QString *error) const
+    {
+        Q_UNUSED(step) Q_UNUSED(job)
+        if (error) *error = QStringLiteral("Этот шаг движок не выполняет отдельно");
+        return {};
+    }
     // Stage before stage in the engine's order; empty for the first or an unknown one.
     virtual QString previousStage(const QString &stage) const
     {

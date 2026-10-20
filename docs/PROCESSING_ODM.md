@@ -102,7 +102,7 @@ ODM порождает десятки дочерних процессов (Pytho
 | --- | --- |
 | Выравнивание снимков | точность выравнивания (`--feature-quality`), детектор признаков (`--feature-type`: DSP-SIFT, SIFT на GPU, HAHOG, AKAZE, ORB), признаков на снимок (`--min-num-features`), соседей по GPS (`--matcher-neighbors`), алгоритм (`--sfm-algorithm`: инкрементальный, по GPS и углам камеры, плоская сцена), точность GPS (`--gps-accuracy`), rolling shutter (`--rolling-shutter`), гибридная оптимизация (`--use-hybrid-bundle-adjustment`) |
 | Плотное облако | качество карт глубины (`--pc-quality`), фильтр выбросов (`--pc-filter`, σ), прореживание (`--pc-sample`), классификация (`--pc-classify`), LAS (`--pc-las`) |
-| Модель и рельеф | вершин в модели (`--mesh-size`), глубина октодерева (`--mesh-octree-depth`), без 3D-модели (`--skip-3dmodel`), glTF (`--gltf`), DSM, DTM, разрешение ЦМП/ЦМР (`--dem-resolution`) |
+| Модель и рельеф | вершин в модели (`--mesh-size`), глубина октодерева (`--mesh-octree-depth`), без 3D-модели (`--skip-3dmodel`), glTF (`--gltf`), 3D-тайлы (`--3d-tiles`), DSM, DTM, разрешение ЦМП/ЦМР (`--dem-resolution`) |
 | Ортофотоплан | разрешение (`--orthophoto-resolution`), линия реза (`--orthophoto-cutline`), COG (`--cog`), обзорные уровни (`--build-overviews`) |
 | Область и маски | граница по точкам съёмки (`--auto-boundary`), обрезка краёв (`--crop`), удаление неба (`--sky-removal`, экспериментально) |
 | Ресурсы | потоков (`--max-concurrency`), разбиение на подмодели (`--split`), экономия места (`--optimize-disk-space`), без GPU (`--no-gpu`) |
@@ -133,6 +133,9 @@ ODM порождает десятки дочерних процессов (Pytho
 | DSM / DTM | `odm_dem/dsm.tif`, `odm_dem/dtm.tif` | то же |
 | Облако точек | `odm_georeferencing/odm_georeferenced_model.laz` (и `.las` с `--pc-las`) | сигнатура `LASF`, версия, число точек |
 | 3D-модель | `odm_texturing/odm_textured_model_geo.obj` (и `.glb` с `--gltf`) | наличие, размер, сигнатура glTF |
+| 3D-тайлы | `3d_tiles/model/tileset.json`, `3d_tiles/pointcloud/tileset.json` (`--3d-tiles` или «Построение тайловой модели») | наличие; размер и число файлов папки |
+| Плотное облако выровненного задания | `opensfm/undistorted/openmvs/scene_dense_dense_filtered.ply` («Генерация карт глубины»: `--end-with openmvs`) | наличие |
+| Отчёт GeoMap AI | `geomap/report.pdf` («Генерация отчёта») | сигнатура PDF |
 | 2.5D-модель | `odm_texturing_25d/odm_textured_model_geo.obj` | наличие, размер |
 | Отчёт | `odm_report/report.pdf` | сигнатура `%PDF` |
 

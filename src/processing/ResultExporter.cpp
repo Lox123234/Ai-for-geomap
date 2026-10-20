@@ -6,6 +6,8 @@
 #include "ResultExport.h"
 
 #include <QDir>
+#include <QDirIterator>
+#include <QFile>
 #include <QFileInfo>
 #include <QLocale>
 #include <QRegularExpression>
@@ -16,12 +18,37 @@ QString kindTitle(const QString &kind, const QString &file)
     if (kind == QLatin1String("orthophoto")) return QStringLiteral("Ортофотоплан");
     if (kind == QLatin1String("dsm")) return QStringLiteral("Цифровая модель поверхности (DSM)");
     if (kind == QLatin1String("dtm")) return QStringLiteral("Цифровая модель рельефа (DTM)");
-    if (kind == QLatin1String("pointcloud")) return file.endsWith(QLatin1String(".las")) ? QStringLiteral("Облако точек (LAS)") : QStringLiteral("Облако точек (LAZ)");
+    if (kind == QLatin1String("pointcloud"))
+        return file.endsWith(QLatin1String(".las")) ? QStringLiteral("Облако точек (LAS)")
+               : file.endsWith(QLatin1String(".ply")) ? QStringLiteral("Плотное облако (PLY)") : QStringLiteral("Облако точек (LAZ)");
+    if (kind == QLatin1String("tiles")) return file.contains(QLatin1String("pointcloud")) ? QStringLiteral("3D-тайлы облака") : QStringLiteral("3D-тайлы модели");
     if (kind == QLatin1String("mesh")) return file.contains(QLatin1String("25d")) ? QStringLiteral("2.5D-модель с текстурами") : QStringLiteral("3D-модель с текстурами");
-    if (kind == QLatin1String("report")) return QStringLiteral("Отчёт обработки (PDF)");
+    if (kind == QLatin1String("report")) return file.startsWith(QLatin1String("geomap/")) ? QStringLiteral("Отчёт GeoMap AI (PDF)") : QStringLiteral("Отчёт обработки (PDF)");
     return kind;
 }
 bool isRaster(const QString &file) { return file.endsWith(QLatin1String(".tif"), Qt::CaseInsensitive); }
+
+// A folder with everything in it (3D Tiles: tileset.json and the tiles).
+exporting::Result copyFolder(const QString &from, const QString &to, const std::atomic_bool *cancel)
+{
+    exporting::Result r;
+    QDirIterator it(from, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        if (cancel && *cancel) {
+            r.error = QStringLiteral("Отменено");
+            return r;
+        }
+        const QString file = it.next(), target = QDir(to).filePath(QDir(from).relativeFilePath(file));
+        QDir().mkpath(QFileInfo(target).absolutePath());
+        if (!QFile::copy(file, target)) {
+            r.error = QStringLiteral("Не удалось скопировать %1").arg(QDir::toNativeSeparators(file));
+            return r;
+        }
+        r.bytes += it.fileInfo().size();
+    }
+    r.path = to;
+    return r;
+}
 } // namespace
 
 ResultExporter::ResultExporter(ProcessingService *processing, QObject *parent) : QObject(parent), m_processing(processing)
@@ -111,6 +138,9 @@ QString ResultExporter::start(const QString &jobId, const QStringList &files, co
             if (isRaster(file)) {
                 const QString name = QStringLiteral("%1-%2%3%4.tif").arg(jobId, base, crsTag, raster.cog ? QStringLiteral("-cog") : QString());
                 r = exporting::exportRaster(source, exporting::uniqueTarget(target, name), raster, cancel.get());
+            } else if (file.endsWith(QLatin1String("tileset.json"))) {
+                const QString folderName = QStringLiteral("%1-3d_tiles-%2").arg(jobId, QFileInfo(file).dir().dirName());
+                r = copyFolder(QFileInfo(source).absolutePath(), exporting::uniqueTarget(target, folderName), cancel.get());
             } else if (suffix.compare(QLatin1String("obj"), Qt::CaseInsensitive) == 0) {
                 // The model keeps its folder: OBJ, MTL and textures side by side.
                 const QString folderName = QStringLiteral("%1-%2").arg(jobId, QFileInfo(file).dir().dirName());

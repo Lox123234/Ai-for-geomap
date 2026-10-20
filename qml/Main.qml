@@ -209,7 +209,11 @@ ApplicationWindow {
         case "view.projection": case "view.axes": case "view.top": case "view.front": case "view.side": case "view.iso": return has
         case "project.removePhoto": return projects.selectedIndex >= 0 && idle
         case "project.crs": case "project.reveal": return has
-        case "proc.analyze": case "proc.align": case "proc.denseCloud": case "proc.mesh": case "proc.texture":
+        case "proc.report": return has && !reports.busy && processing.jobCount >= 0 && processing.newestJob("aligned").length > 0
+        case "proc.tiePoints": return has && processing.jobCount >= 0 && processing.newestJob("aligned").length > 0
+        case "proc.depthMaps": return has && !processing.active && processing.jobCount >= 0 && processing.newestJob("alignedOnly").length > 0
+        case "proc.tiled": return has && !processing.active && processing.jobCount >= 0 && processing.newestJob("model").length > 0
+        case "proc.analyze": case "proc.align": case "proc.match": case "proc.denseCloud": case "proc.mesh": case "proc.texture":
         case "proc.dsm": case "proc.dtm": case "proc.orthophoto": case "proc.queue": case "proc.setup": case "proc.classify": return has
         case "proc.start": return has && idle && processing.environmentChecked && processing.engineAvailable
         case "proc.stop": return processing.active
@@ -431,6 +435,31 @@ ApplicationWindow {
         "project.reveal": function() { projects.revealProject() },
         "proc.analyze": function() { window.openProcessing("") },
         "proc.align": function() { window.openProcessing("align") },
+        "proc.match": function() { window.openProcessing("align") },
+        "proc.report": function() {
+            var e = reports.build("")
+            if (e.length > 0) window.showNotice(e)
+            else window.flash("Отчёт строится…")
+        },
+        "proc.tiePoints": function() {
+            var p = processing.sparseCloud("")
+            if (p.length === 0) { window.showNotice("Сначала выровняйте снимки"); return }
+            var e = scene3d.addPointCloud(p)
+            if (e.length > 0 && e.indexOf("уже") < 0) window.showError(e)
+            window.activeView = 4
+        },
+        "proc.depthMaps": function() {
+            var id = processing.newestJob("alignedOnly")
+            var e = id.length > 0 ? processing.runStep(id, "dense") : "Нужно задание «Только выравнивание»"
+            if (e.length > 0) window.showNotice(e)
+            else { window.flash("Карты глубины и плотное облако: задание продолжено"); window.activeView = 2 }
+        },
+        "proc.tiled": function() {
+            var id = processing.newestJob("model")
+            var e = id.length > 0 ? processing.runStep(id, "tiles") : "Сначала постройте 3D-модель"
+            if (e.length > 0) window.showNotice(e)
+            else { window.flash("3D-тайлы строятся"); window.activeView = 2 }
+        },
         "proc.denseCloud": function() { window.openProcessing("balanced") },
         "proc.mesh": function() { window.openProcessing("balanced") },
         "proc.texture": function() { window.openProcessing("balanced") },
@@ -1061,6 +1090,14 @@ ApplicationWindow {
         onAccepted: projects.importFolder(selectedFolder)
     }
     LidarDialog { id: lidarDialog; host: window }
+    Connections {
+        target: reports
+        function onFinished(ok, message, path) {
+            if (!ok) { window.showError(message); return }
+            window.flash("Отчёт готов")
+            if (reports.openWhenDone) Qt.openUrlExternally("file:///" + path.replace(/\\/g, "/"))
+        }
+    }
     AppFileDialog {
         id: georefDialog
         kind: "georef"

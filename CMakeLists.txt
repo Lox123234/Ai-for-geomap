@@ -62,6 +62,8 @@ qt_add_library(GeoMapCore STATIC
     src/processing/OdmTools.cpp
     src/processing/Lidar.h
     src/processing/Lidar.cpp
+    src/processing/ProjectReport.h
+    src/processing/ProjectReport.cpp
     src/processing/ProcessingService.h
     src/processing/ProcessingService.cpp
     src/gis/GisEnvironment.h
@@ -111,6 +113,8 @@ qt_add_library(GeoMapCore STATIC
     src/view3d/Scene3DService.cpp
     app/LidarService.h
     app/LidarService.cpp
+    app/ReportService.h
+    app/ReportService.cpp
     src/view3d/LasEdit.h
     src/view3d/LasEdit.cpp
     src/ai/ModelCard.h

@@ -7,7 +7,9 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QImageReader>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcess>
 #include <QSaveFile>
 #include <QSettings>
@@ -16,6 +18,7 @@
 #include <QThreadPool>
 #include <QUrl>
 #include <algorithm>
+#include <cmath>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -61,6 +64,7 @@ QString kindTitle(const QString &kind)
         {QStringLiteral("pointcloud"), QStringLiteral("Облако точек")},
         {QStringLiteral("mesh"), QStringLiteral("Текстурированная модель")},
         {QStringLiteral("report"), QStringLiteral("Отчёт о качестве")},
+        {QStringLiteral("tiles"), QStringLiteral("3D-тайлы")},
     };
     return titles.value(kind, kind);
 }
@@ -676,6 +680,100 @@ bool ProcessingService::resumeJob(const QString &id, const QString &profileId, c
     setState(*job, JobState::Queued, QStringLiteral("Ожидает продолжения."));
     runNext();
     return true;
+}
+
+QString ProcessingService::runStep(const QString &id, const QString &step)
+{
+    ProcessingJob *job = findJob(id);
+    if (!job) return QStringLiteral("Задание не найдено");
+    if (isActive(job->state) || id == m_current) return QStringLiteral("Задание уже выполняется");
+    if (job->state != JobState::Completed) return QStringLiteral("Задание не завершено — сначала продолжите его");
+    if (!m_env.available) {
+        if (!m_env.checked && !m_checking) checkEnvironment();
+        return m_env.checked ? QStringLiteral("Движок обработки недоступен: проверьте окружение")
+                             : QStringLiteral("Идёт проверка движка — повторите через несколько секунд");
+    }
+    QString error;
+    const QStringList args = m_engine->stepArguments(step, *job, &error);
+    if (args.isEmpty()) return error;
+    job->arguments = args;
+    m_failedStage[id] = QString();
+    m_autoRetries[id] = 0;
+    job->exitCode = 0;
+    job->finishedAt = {};
+    m_resumed << id;
+    m_queue.append(id);
+    setState(*job, JobState::Queued, step == QLatin1String("tiles") ? QStringLiteral("Ожидает: 3D-тайлы")
+                                                                    : QStringLiteral("Ожидает: карты глубины и плотное облако"));
+    runNext();
+    return {};
+}
+
+void ProcessingService::refreshOutputs(const QString &id)
+{
+    ProcessingJob *job = findJob(id);
+    if (!job || isActive(job->state)) return;
+    job->outputs = m_engine->collectOutputs(jobDirectory(id));
+    setState(*job, job->state, job->message);
+}
+
+QString ProcessingService::newestJob(const QString &kind) const
+{
+    for (const ProcessingJob &j : m_jobs) {   // newest first
+        if (j.state != JobState::Completed || !jobInChunk(j)) continue;
+        const QDir dir(jobDirectory(j.id));
+        const int end = int(j.arguments.indexOf(QStringLiteral("--end-with")));
+        const QString endWith = end >= 0 && end + 1 < j.arguments.size() ? j.arguments[end + 1] : QString();
+        if (kind == QLatin1String("aligned") && QFileInfo::exists(dir.filePath(QStringLiteral("opensfm/reconstruction.json")))) return j.id;
+        if (kind == QLatin1String("alignedOnly") && endWith == QLatin1String("opensfm")) return j.id;
+        if (kind == QLatin1String("model") && endWith.isEmpty()
+            && (QFileInfo::exists(dir.filePath(QStringLiteral("odm_texturing/odm_textured_model_geo.obj")))
+                || QFileInfo::exists(dir.filePath(QStringLiteral("odm_texturing_25d/odm_textured_model_geo.obj")))))
+            return j.id;
+    }
+    return {};
+}
+
+QString ProcessingService::sparseCloud(const QString &jobId) const
+{
+    const QString id = jobId.isEmpty() ? newestJob(QStringLiteral("aligned")) : jobId;
+    if (id.isEmpty()) return {};
+    const QDir dir(jobDirectory(id));
+    // ODM writes it with the fast orthophoto only; else GeoMap AI writes the points of the
+    // reconstruction (the same coordinates: local to odm_georeferencing/coords.txt).
+    const QString odm = dir.filePath(QStringLiteral("opensfm/reconstruction.ply"));
+    if (QFileInfo::exists(odm)) return odm;
+    const QString json = dir.filePath(QStringLiteral("opensfm/reconstruction.json"));
+    const QString ply = dir.filePath(QStringLiteral("geomap/tie_points.ply"));
+    if (!QFileInfo::exists(json)) return {};
+    if (QFileInfo::exists(ply) && QFileInfo(ply).lastModified() >= QFileInfo(json).lastModified()) return ply;
+    QFile in(json);
+    if (!in.open(QIODevice::ReadOnly)) return {};
+    QByteArray body;
+    int count = 0;
+    for (const QJsonValue &rec : QJsonDocument::fromJson(in.readAll()).array()) {
+        const QJsonObject points = rec.toObject().value(QStringLiteral("points")).toObject();
+        for (auto it = points.begin(); it != points.end(); ++it) {
+            const QJsonObject p = it.value().toObject();
+            const QJsonArray c = p.value(QStringLiteral("coordinates")).toArray(), rgb = p.value(QStringLiteral("color")).toArray();
+            if (c.size() != 3) continue;
+            for (int k = 0; k < 3; ++k) {
+                const float v = float(c[k].toDouble());
+                body.append(reinterpret_cast<const char *>(&v), sizeof v);   // little-endian on every supported platform
+            }
+            for (int k = 0; k < 3; ++k) body.append(char(qBound(0, rgb.size() == 3 ? int(std::lround(rgb[k].toDouble())) : 200, 255)));
+            ++count;
+        }
+    }
+    if (count == 0) return {};
+    QDir().mkpath(QFileInfo(ply).absolutePath());
+    QSaveFile out(ply);
+    if (!out.open(QIODevice::WriteOnly)) return {};
+    out.write("ply\nformat binary_little_endian 1.0\ncomment GeoMap AI: tie points of the OpenSfM reconstruction\nelement vertex "
+              + QByteArray::number(count)
+              + "\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n");
+    out.write(body);
+    return out.commit() ? ply : QString();
 }
 
 void ProcessingService::onStage(const QString &id, const QString &stage, int index, int count)

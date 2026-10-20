@@ -4,6 +4,7 @@
 #include "Platform.h"
 #include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
@@ -120,6 +121,8 @@ const QVector<Option> &options()
                   Option::Integer, {}, {}, 1, 14, {}, QStringLiteral("По умолчанию 11; рекомендуется 8–12.")});
         o.append({QStringLiteral("skip-3dmodel"), model, QStringLiteral("Без полной 3D-модели (только 2D)"), Option::Flag});
         o.append({QStringLiteral("gltf"), model, QStringLiteral("Модель также в glTF (GLB)"), Option::Flag});
+        o.append({QStringLiteral("3d-tiles"), model, QStringLiteral("3D-тайлы (OGC, Cesium)"), Option::Flag, {}, {}, 0, 0, {},
+                  QStringLiteral("Модель и облако тайлами для веб-просмотрщиков.")});
         o.append({QStringLiteral("dsm"), model, QStringLiteral("Цифровая модель поверхности (DSM)"), Option::Flag});
         o.append({QStringLiteral("dtm"), model, QStringLiteral("Цифровая модель рельефа (DTM)"), Option::Flag});
         o.append({QStringLiteral("dem-resolution"), model, QStringLiteral("Разрешение ЦМП/ЦМР"), Option::Number, {}, {}, 0.1, 10000,
@@ -450,6 +453,30 @@ QStringList OdmEngine::resumeArguments(const QStringList &arguments, const QStri
     // stage that failed (or the one given) is computed again with everything after it.
     if (stageIds().contains(fromStage)) args << QStringLiteral("--rerun-from") << fromStage;
     return args;
+}
+
+QStringList OdmEngine::stepArguments(const QString &step, const ProcessingJob &job, QString *error) const
+{
+    const int end = int(job.arguments.indexOf(QStringLiteral("--end-with")));
+    const QString endWith = end >= 0 && end + 1 < job.arguments.size() ? job.arguments[end + 1] : QString();
+    auto fail = [error](const QString &message) {
+        if (error) *error = message;
+        return QStringList();
+    };
+    if (step == QLatin1String("tiles")) {
+        // ODM's last stage builds them (Obj2Tiles for the model, entwine for the cloud); only it runs again.
+        if (!endWith.isEmpty()) return fail(QStringLiteral("Сначала доведите задание до 3D-модели"));
+        QStringList args = job.arguments;
+        if (!args.contains(QStringLiteral("--3d-tiles"))) args << QStringLiteral("--3d-tiles");
+        return resumeArguments(args, QStringLiteral("odm_postprocess"));
+    }
+    if (step == QLatin1String("dense")) {
+        // An aligned job goes on to the depth maps and the dense cloud (OpenMVS) and stops there;
+        // the alignment is not computed again.
+        if (endWith != QLatin1String("opensfm")) return fail(QStringLiteral("Нужно задание «Только выравнивание»"));
+        return resumeArguments(job.arguments, {}) << QStringLiteral("--end-with") << QStringLiteral("openmvs");
+    }
+    return fail(QStringLiteral("Неизвестный шаг «%1»").arg(step));
 }
 
 QString OdmEngine::previousStage(const QString &stage) const
@@ -1241,10 +1268,14 @@ QVector<Artifact> OdmEngine::collectOutputs(const QString &jobDirectory) const
         {"dtm", "odm_dem/dtm.tif"},
         {"pointcloud", "odm_georeferencing/odm_georeferenced_model.laz"},
         {"pointcloud", "odm_georeferencing/odm_georeferenced_model.las"},
+        {"pointcloud", "opensfm/undistorted/openmvs/scene_dense_dense_filtered.ply"},   // dense cloud of an aligned job (depth maps)
         {"mesh", "odm_texturing/odm_textured_model_geo.obj"},
         {"mesh", "odm_texturing/odm_textured_model_geo.glb"},
         {"mesh", "odm_texturing_25d/odm_textured_model_geo.obj"},
         {"report", "odm_report/report.pdf"},
+        {"report", "geomap/report.pdf"},
+        {"tiles", "3d_tiles/model/tileset.json"},
+        {"tiles", "3d_tiles/pointcloud/tileset.json"},
     };
     QVector<Artifact> outputs;
     const QDir dir(jobDirectory);
@@ -1256,16 +1287,30 @@ QVector<Artifact> OdmEngine::collectOutputs(const QString &jobDirectory) const
         a.kind = QLatin1String(k.kind);
         a.file = file;
         a.bytes = info.size();
-        if (file.startsWith(QLatin1String("geomap/"))) {
+        if (file.startsWith(QLatin1String("geomap/")) && file.endsWith(QLatin1String(".tif"))) {
             a.details = QStringLiteral("истинный (GeoMap AI), ") + GeoTiffInfo::read(info.filePath()).describe();
         } else if (file.endsWith(QLatin1String(".tif"))) {
             a.details = GeoTiffInfo::read(info.filePath()).describe();
             if (a.kind == QLatin1String("orthophoto")) a.details = QStringLiteral("ODM, ") + a.details;
         } else if (file.endsWith(QLatin1String(".laz")) || file.endsWith(QLatin1String(".las"))) {
             a.details = describeLas(info.filePath());
+        } else if (file.endsWith(QLatin1String("tileset.json"))) {
+            // The whole folder is the result: tileset.json and its tiles.
+            qint64 bytes = 0;
+            int count = 0;
+            QDirIterator it(info.absolutePath(), QDir::Files, QDirIterator::Subdirectories);
+            while (it.hasNext()) {
+                it.next();
+                bytes += it.fileInfo().size();
+                ++count;
+            }
+            a.bytes = bytes;
+            a.details = QStringLiteral("OGC 3D Tiles, %1: %2 файлов").arg(file.contains(QLatin1String("pointcloud")) ? QStringLiteral("облако") : QStringLiteral("модель")).arg(count);
+        } else if (file.endsWith(QLatin1String(".ply"))) {
+            a.details = QStringLiteral("PLY, плотное облако OpenMVS");
         } else if (file.endsWith(QLatin1String(".pdf"))) {
             QFile f(info.filePath());
-            a.details = f.open(QIODevice::ReadOnly) && f.read(4) == "%PDF" ? QStringLiteral("PDF-отчёт ODM")
+            a.details = f.open(QIODevice::ReadOnly) && f.read(4) == "%PDF" ? (file.startsWith(QLatin1String("geomap/")) ? QStringLiteral("PDF-отчёт GeoMap AI") : QStringLiteral("PDF-отчёт ODM"))
                                                                             : QStringLiteral("повреждён: не PDF");
         } else if (file.endsWith(QLatin1String(".glb"))) {
             QFile f(info.filePath());
@@ -1301,6 +1346,12 @@ QVariantMap OdmEngine::parseQualityStats(const QByteArray &statsJson)
     const int components = rec.value("components").toInt();
     if (components > 1)
         warnings << QStringLiteral("Реконструкция состоит из %1 несвязанных частей: между группами снимков мало перекрытия.").arg(components);
+    // Feature detection and matching (Metashape's "Match Photos"): points found and used per photo.
+    const QJsonObject features = s.value("features_statistics").toObject();
+    const int detected = features.value("detected_features").toObject().value("median").toInt();
+    const int used = features.value("reconstructed_features").toObject().value("median").toInt();
+    if (detected > 0)
+        row(QStringLiteral("Точек на снимке (медиана)"), QStringLiteral("найдено %1, сопоставлено %2").arg(ru().toString(detected), ru().toString(used)));
     if (rec.contains("reconstructed_points_count"))
         row(QStringLiteral("Связующих точек"), ru().toString(rec.value("reconstructed_points_count").toInt()));
     if (rec.contains("reprojection_error_pixels"))

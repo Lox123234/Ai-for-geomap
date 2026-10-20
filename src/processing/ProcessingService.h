@@ -144,7 +144,18 @@ public:
     // stages. With a profile, the job continues with that profile's settings.
     Q_INVOKABLE bool resumeJob(const QString &id, const QString &profileId = {},
                                const QVariantMap &options = {}, const QString &extraOptions = {});
+    // One more step of the engine on a finished job, in its directory: "tiles" (3D Tiles of the
+    // model and the cloud), "dense" (depth maps and the dense cloud of an aligned job). "" when queued.
+    Q_INVOKABLE QString runStep(const QString &id, const QString &step);
+    // The newest completed job of the active chunk that is "aligned" (has a reconstruction),
+    // "alignedOnly" (stopped after the alignment) or has a textured "model"; "" if none.
+    Q_INVOKABLE QString newestJob(const QString &kind) const;
+    // The tie points of a job's alignment as a PLY: ODM's opensfm/reconstruction.ply, else written
+    // from the reconstruction into geomap/tie_points.ply; "" if none. An empty id: the newest aligned job.
+    Q_INVOKABLE QString sparseCloud(const QString &jobId = {}) const;
     Q_INVOKABLE void cancelJob(const QString &id);
+    // The results of a job read again from its folder (after GeoMap AI wrote one, e.g. the report).
+    void refreshOutputs(const QString &id);
     // Removes a finished job and its directory (results included). Callers confirm first.
     Q_INVOKABLE bool deleteJob(const QString &id);
     // Detached snapshot for the details panel: fields, outputs and the log tail.
