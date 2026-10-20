@@ -1,6 +1,7 @@
 #include "Scene3DService.h"
 
 #include "Crs.h"
+#include "Lidar.h"
 #include "TrueOrthophoto.h"
 #include "WebTiles.h"
 
@@ -263,9 +264,10 @@ QString Scene3DService::add(const QString &kind, const QString &path, const QStr
     l.job = jobFolderOf(path);
     l.info = QStringLiteral("Загрузка…");
     l.version = 1;
-    // LAZ is not read yet: an uncompressed LAS beside it (ODM --pc-las: the same georeferenced
-    // points with classes and intensity), else ODM's odm_filterpoints/point_cloud.ply of the job.
-    QString path2 = path;
+    // LAZ: an uncompressed LAS beside it (ODM --pc-las: the same points with classes and
+    // intensity), else the LAZ unpacked by PDAL of the bundled ODM; without ODM, the job's
+    // odm_filterpoints/point_cloud.ply.
+    QString path2 = path, fallback;
     if (kind == QLatin1String("pointcloud") && path.endsWith(QLatin1String(".laz"), Qt::CaseInsensitive)) {
         const QString las = path.left(path.size() - 4) + QStringLiteral(".las");
         const QString coords = odmCoordsFor(path);
@@ -276,10 +278,7 @@ QString Scene3DService::add(const QString &kind, const QString &path, const QStr
             QDir job = QFileInfo(coords).absoluteDir();
             job.cdUp();
             const QString ply = job.filePath(QStringLiteral("odm_filterpoints/point_cloud.ply"));
-            if (QFileInfo(ply).isFile()) {
-                path2 = ply;
-                l.loaded = ply;
-            }
+            if (QFileInfo(ply).isFile()) fallback = ply;
         }
     }
     m_layers << l;
@@ -287,10 +286,15 @@ QString Scene3DService::add(const QString &kind, const QString &path, const QStr
     const int budget = m_pointBudget;
     const Origin origin = m_origin;
     std::weak_ptr<bool> alive = m_alive;
-    m_pool.start([this, alive, id, kind, path = path2, drape, budget, origin, job = l.job] {
+    m_pool.start([this, alive, id, kind, path2, fallback, drape, budget, origin, job = l.job] {
         std::shared_ptr<const PointCloud> cloud;
         std::shared_ptr<const Mesh> mesh;
-        QString error;
+        QString error, path = path2, shown, lazError;
+        if (kind == QLatin1String("pointcloud") && path.endsWith(QLatin1String(".laz"), Qt::CaseInsensitive)) {
+            const QString las = lidar::uncompressed(path, &lazError, [alive] { return !alive.lock(); });
+            if (!las.isEmpty()) path = las;
+            else if (!fallback.isEmpty()) path = shown = fallback;
+        }
         // ODM's local coordinates: the CRS of the job's results (for the basemap).
         auto jobCrs = [&job](bool georeferenced, QString &wkt) {
             if (georeferenced && wkt.isEmpty() && !job.isEmpty()) wkt = ortho::resultCrsWkt(job);
@@ -298,7 +302,7 @@ QString Scene3DService::add(const QString &kind, const QString &path, const QStr
         if (kind == QLatin1String("pointcloud")) {
             auto c = std::make_shared<PointCloud>(readPointCloud(path, budget));
             jobCrs(c->georeferenced, c->crsWkt);
-            error = c->error;
+            error = !c->error.isEmpty() && !lazError.isEmpty() ? QStringLiteral("LAZ не распакован: ") + lazError : c->error;
             cloud = c;
         } else if (kind == QLatin1String("mesh")) {
             const bool ply = path.endsWith(QLatin1String(".ply"), Qt::CaseInsensitive);
@@ -316,8 +320,11 @@ QString Scene3DService::add(const QString &kind, const QString &path, const QStr
             mesh = m;
         }
         if (!alive.lock()) return;
-        QMetaObject::invokeMethod(this, [this, alive, id, cloud, mesh, error] {
-            if (alive.lock()) loaded(id, 1, cloud, mesh, error);
+        QMetaObject::invokeMethod(this, [this, alive, id, cloud, mesh, error, shown] {
+            if (!alive.lock()) return;
+            for (Layer &l : m_layers)
+                if (l.id == id && !shown.isEmpty()) l.loaded = shown;
+            loaded(id, 1, cloud, mesh, error);
         }, Qt::QueuedConnection);
     });
     ++m_revision;
@@ -360,7 +367,7 @@ void Scene3DService::loaded(const QString &id, int, std::shared_ptr<const PointC
             }
             if (!cloud->intensity.isEmpty()) l.info += QStringLiteral(", есть интенсивность");
             if (!l.loaded.isEmpty())
-                l.info += QStringLiteral(". Показан %1 того же задания (сжатый LAZ пока не читается)").arg(QFileInfo(l.loaded).fileName());
+                l.info += QStringLiteral(". Показан %1 того же задания").arg(QFileInfo(l.loaded).fileName());
             l.info += cloud->georeferenced ? (cloud->crs.isEmpty() ? QString() : QStringLiteral(". CRS: ") + cloud->crs)
                                            : QStringLiteral(". Без геопривязки: координаты файла");
         } else if (mesh) {

@@ -58,6 +58,10 @@ qt_add_library(GeoMapCore STATIC
     src/processing/Downloader.cpp
     src/processing/OdmEngine.h
     src/processing/OdmEngine.cpp
+    src/processing/OdmTools.h
+    src/processing/OdmTools.cpp
+    src/processing/Lidar.h
+    src/processing/Lidar.cpp
     src/processing/ProcessingService.h
     src/processing/ProcessingService.cpp
     src/gis/GisEnvironment.h
@@ -105,6 +109,8 @@ qt_add_library(GeoMapCore STATIC
     src/view3d/Camera3D.cpp
     src/view3d/Scene3DService.h
     src/view3d/Scene3DService.cpp
+    app/LidarService.h
+    app/LidarService.cpp
     src/view3d/LasEdit.h
     src/view3d/LasEdit.cpp
     src/ai/ModelCard.h
@@ -195,7 +201,7 @@ set(GEOMAP_QML_FILES
     qml/RasterCalcDialog.qml qml/AiModelsDialog.qml qml/MarkersDialog.qml qml/DemEditorDialog.qml qml/CloudEditorDialog.qml
     qml/ProjectSettingsDialog.qml qml/SaveAsDialog.qml qml/ProjectCheckDialog.qml qml/SurveyDialog.qml qml/BasemapDialog.qml qml/BatchDialog.qml qml/ChunksDialog.qml
     qml/AppFileDialog.qml qml/AppFolderDialog.qml qml/SurveyWorkspace.qml
-    qml/GeorefWorkspace.qml qml/GeorefPanel.qml)
+    qml/GeorefWorkspace.qml qml/GeorefPanel.qml qml/LidarDialog.qml)
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 foreach(file IN LISTS GEOMAP_QML_FILES)
     get_filename_component(name ${file} NAME)

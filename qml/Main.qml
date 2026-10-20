@@ -181,6 +181,7 @@ ApplicationWindow {
         case "analysis.viewshed": case "analysis.ai": case "proc.contours": return map
         case "tool.rasterCalc": case "analysis.vegetation": case "analysis.ndvi": case "analysis.export": return has
         case "tool.georeference": return map && !georef.busy
+        case "import.lidar": return has
         case "tool.georeferencePhoto": return map && !georef.busy && projects.selectedIndex >= 0
         case "analysis.aiModels": return true
         case "analysis.retouch": return map && !gis.aiBusy && gis.layerCount >= 0 && gis.retouchLayerId().length > 0
@@ -511,6 +512,7 @@ ApplicationWindow {
         "analysis.export": function() { analysisExportDialog.open() },
         "tool.rasterCalc": function() { window.activeView = 3; rasterCalcDialog.openFor("calc") },
         "tool.georeference": function() { georefDialog.open() },
+        "import.lidar": function() { lidarDialog.open() },
         "tool.georeferencePhoto": function() {
             var e = georef.openPhoto(projects.selectedIndex)
             if (e.length > 0) window.showNotice(e)
@@ -1058,6 +1060,7 @@ ApplicationWindow {
         title: "Выберите папку с фотографиями"
         onAccepted: projects.importFolder(selectedFolder)
     }
+    LidarDialog { id: lidarDialog; host: window }
     AppFileDialog {
         id: georefDialog
         kind: "georef"

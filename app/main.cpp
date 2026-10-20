@@ -19,6 +19,7 @@
 #include "GeorefService.h"
 #include "GisEnvironment.h"
 #include "Journal.h"
+#include "LidarService.h"
 #include "MapService.h"
 #include "MapView.h"
 #include "OdmEngine.h"
@@ -116,6 +117,9 @@ int main(int argc, char *argv[])
     Scene3DService scene3d;
     QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &scene3d, &Scene3DService::clear);
     qmlRegisterType<View3DItem>("GeoMapAI.View3D", 1, 0, "View3DItem");
+    // LiDAR clouds of the project (lidar.json): PDAL of the bundled ODM.
+    LidarService lidar(&map, &scene3d);
+    QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &lidar, &LidarService::setProject);
     qmlRegisterType<SurveyView>("GeoMapAI.Survey", 1, 0, "SurveyView");
     // Georeferencing of an image by links (Инструменты → Привязка изображения по точкам).
     GeorefService georef(&map, &projects, &processing);
@@ -136,6 +140,9 @@ int main(int argc, char *argv[])
                      [&appLog](const QString &message) { appLog.add(AppLog::Error, QStringLiteral("Блоки"), message); });
     QObject::connect(&scene3d, &Scene3DService::errorOccurred, &appLog,
                      [&appLog](const QString &message) { appLog.add(AppLog::Error, QStringLiteral("3D"), message); });
+    QObject::connect(&lidar, &LidarService::finished, &appLog, [&appLog](bool ok, const QString &message) {
+        appLog.add(ok ? AppLog::Info : AppLog::Error, QStringLiteral("LiDAR"), message);
+    });
     QObject::connect(&georef, &GeorefService::finished, &appLog, [&appLog](bool ok, const QString &message) {
         appLog.add(ok ? AppLog::Info : AppLog::Error, QStringLiteral("Привязка"), message);
     });
@@ -156,6 +163,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("photoMasks", &photoMasks);
     engine.rootContext()->setContextProperty("survey", &survey);
     engine.rootContext()->setContextProperty("georef", &georef);
+    engine.rootContext()->setContextProperty("lidar", &lidar);
     engine.rootContext()->setContextProperty("chunks", &chunks);
     engine.rootContext()->setContextProperty("commands", &commands);
     engine.rootContext()->setContextProperty("workspace", &workspace);

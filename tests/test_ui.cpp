@@ -23,6 +23,8 @@
 #include "GisEnvironment.h"
 #include "ChunkService.h"
 #include "Journal.h"
+#include "LidarService.h"
+#include "OdmTools.h"
 #include "MapService.h"
 #include "MapView.h"
 #include "MockEngine.h"
@@ -66,6 +68,7 @@ struct Session
     ProjectTreeModel tree{&projects, &processing, &map};
     ProjectTreeFilter treeView;
     GeorefService georef{&map, &projects, &processing};
+    LidarService lidar{&map, &scene3d};
     QQmlApplicationEngine engine;
     QQuickWindow *window = nullptr;
 
@@ -77,6 +80,7 @@ struct Session
             if (projects.projectPath() != map.projectDirectory()) map.setProject(projects.projectPath(), projects.photoModel());
         });
         QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &scene3d, &Scene3DService::clear);
+        QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &lidar, &LidarService::setProject);
         treeView.setSourceModel(&tree);
         tree.setSurvey(&survey);
         tree.setChunks(&chunks);
@@ -104,6 +108,7 @@ struct Session
         c->setContextProperty("photoMasks", &photoMasks);
         c->setContextProperty("survey", &survey);
         c->setContextProperty("georef", &georef);
+        c->setContextProperty("lidar", &lidar);
         c->setContextProperty("chunks", &chunks);
         c->setContextProperty("commands", &commands);
         c->setContextProperty("workspace", &workspace);
@@ -1177,6 +1182,61 @@ private slots:
         QVERIFY(QFileInfo::exists(QDir(s->projects.projectPath()).filePath(QStringLiteral("georef/%1.json").arg(id))));
         s->georef.close();
         QVERIFY(!s->georef.active());
+    }
+
+    // Файл → Импорт LiDAR (PDAL of the bundled ODM: GEOMAP_ODM_HOME, else skipped): the cloud in the
+    // project's list, a DSM from it on the map, the list kept in lidar.json.
+    void lidarImportOnTheMap()
+    {
+        QString odmError;
+        if (odmtools::root(&odmError).isEmpty() || odmtools::program(QStringLiteral("pdal")).isEmpty())
+            QSKIP(qPrintable(QStringLiteral("PDAL из OpenDroneMap не найден: %1").arg(odmError)));
+        QTemporaryDir tmp, files;
+        auto s = open();
+        QVERIFY(s->projects.createProject(QUrl::fromLocalFile(tmp.path()), QStringLiteral("LiDAR UI")));
+        // A 30 × 30 m cloud from a text file, through PDAL.
+        QByteArray text = "X,Y,Z\n";
+        for (int j = 0; j <= 60; ++j)
+            for (int i = 0; i <= 60; ++i)
+                text += QByteArray::number(576000 + i * 0.5, 'f', 2) + ',' + QByteArray::number(5188000 + j * 0.5, 'f', 2) + ','
+                        + QByteArray::number(120 + 0.1 * i, 'f', 2) + '\n';
+        QFile csv(files.filePath(QStringLiteral("points.csv")));
+        QVERIFY(csv.open(QIODevice::WriteOnly) && csv.write(text) == text.size());
+        csv.close();
+        const QString las = files.filePath(QStringLiteral("scan.las"));
+        const odmtools::Result made = odmtools::pdal({QStringLiteral("translate"), QDir::toNativeSeparators(csv.fileName()),
+                                                      QDir::toNativeSeparators(las), QStringLiteral("--writers.las.a_srs=EPSG:32615")});
+        QVERIFY2(made.ok(), qPrintable(made.error));
+
+        QVERIFY(s->enabled(QStringLiteral("import.lidar")));
+        QVERIFY(s->run(QStringLiteral("import.lidar")));
+        QObject *dialog = s->window->findChild<QObject *>(QStringLiteral("lidarDialog"));
+        QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        QCOMPARE(s->lidar.importPaths({las}), QString());
+        QTRY_VERIFY_WITH_TIMEOUT(s->lidar.count() == 1 && !s->lidar.busy(), 60000);
+        const QVariantMap c = s->lidar.clouds().first().toMap();
+        QVERIFY2(c.value(QStringLiteral("summary")).toString().contains(QStringLiteral("3 721 точек"))
+                     || c.value(QStringLiteral("summary")).toString().contains(QStringLiteral("3 721 точек")),
+                 qPrintable(c.value(QStringLiteral("summary")).toString()));
+        QVERIFY(c.value(QStringLiteral("crs")).toString().contains(QStringLiteral("32615")));
+        QVERIFY(!s->lidar.importPaths({las}).isEmpty());   // already there
+
+        QSignalSpy finished(&s->lidar, &LidarService::finished);
+        QCOMPARE(s->lidar.buildSurface(0, QStringLiteral("dsm"), 1.0), QString());
+        QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 60000);
+        QVERIFY2(finished.first().at(0).toBool(), qPrintable(finished.first().at(1).toString()));
+        const QString dsm = QDir(s->projects.projectPath()).filePath(QStringLiteral("lidar/scan_dsm.tif"));
+        QCOMPARE(QDir::cleanPath(finished.first().at(2).toString()), QDir::cleanPath(dsm));
+        QTRY_VERIFY(!s->map.layerIdForSource(dsm).isEmpty());
+        s->shot(QStringLiteral("ui-13-lidar.png"));
+
+        // The list comes back with the project.
+        LidarService again(&s->map, &s->scene3d);
+        again.setProject(s->projects.projectPath());
+        QCOMPARE(again.count(), 1);
+        QCOMPARE(QDir::cleanPath(again.clouds().first().toMap().value(QStringLiteral("dsm")).toString()), QDir::cleanPath(dsm));
+        QMetaObject::invokeMethod(dialog, "close");
     }
 
     // GEOMAP_UI_PROJECT=<project with processing results>: the real project in the window,

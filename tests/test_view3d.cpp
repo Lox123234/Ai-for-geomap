@@ -19,6 +19,8 @@
 #include "Crs.h"
 #include "GisEnvironment.h"
 #include "LasEdit.h"
+#include "Lidar.h"
+#include "OdmTools.h"
 #include "Scene3D.h"
 #include "Scene3DService.h"
 #include "WebTiles.h"
@@ -961,6 +963,85 @@ private slots:
         QVERIFY(scene.georeferenced());
         QVERIFY(scene.pickText().endsWith(QStringLiteral(" м")));
         QVERIFY(std::abs(scene.lastPickAbsolute(0) - (cloud.origin.x + cloud.bounds.center().x())) < 60);
+    }
+
+    // LiDAR through PDAL of the bundled ODM (GEOMAP_ODM_HOME, else skipped): what a LAS holds, a
+    // DSM with the roof of a building and a DTM with the ground under it (SMRF), the LAZ of the
+    // same cloud unpacked for the 3D view — in folders with Cyrillic names.
+    void lidarCloudToSurfaces()
+    {
+        QString error;
+        if (odmtools::root(&error).isEmpty() || odmtools::program(QStringLiteral("pdal")).isEmpty())
+            QSKIP(qPrintable(QStringLiteral("PDAL из OpenDroneMap не найден: %1").arg(error)));
+        // 40 × 40 m of ground rising 5 cm per metre eastwards, a 10 × 10 m building 8 m high in
+        // the middle; a point every 0.5 m.
+        QVector<QVector3D> pts;
+        QVector<QColor> colors;
+        for (int j = 0; j <= 80; ++j)
+            for (int i = 0; i <= 80; ++i) {
+                const float x = i * 0.5f, y = j * 0.5f;
+                const bool roof = x >= 15 && x <= 25 && y >= 15 && y <= 25;
+                pts << QVector3D(x, y, 100 + 0.05f * x + (roof ? 8 : 0));
+                colors << (roof ? QColor(200, 60, 50) : QColor(90, 140, 70));
+            }
+        const QString folder = m_dir.filePath(QStringLiteral("Облака съёмки"));
+        const QString las = QDir(folder).filePath(QStringLiteral("участок.las"));
+        QByteArray bytes = las12(pts, colors, 576000.0, 5188000.0, 0.01, Crs::fromEpsg(32615).wkt().toUtf8());
+        // No WKT bit in the global encoding: PDAL ignores the record, GeoMap AI reads it itself.
+        QVERIFY(writeFile(las, bytes));
+
+        const lidar::Info info = lidar::inspect(las);
+        QVERIFY2(info.ok(), qPrintable(info.error));
+        QCOMPARE(info.points, quint64(pts.size()));
+        QVERIFY(std::abs(info.extent.left() - 576000) < 0.01 && std::abs(info.extent.right() - 576040) < 0.01);
+        QVERIFY2(std::abs(info.maxZ - 109.25) < 0.01, qPrintable(QStringLiteral("z %1 – %2").arg(info.minZ).arg(info.maxZ)));   // roof at the east edge: 100 + 0.05 · 25 + 8
+        QVERIFY2(Crs::fromWkt(info.crsWkt).isValid(), qPrintable(info.crsWkt));
+        QVERIFY(info.hasColor);
+        QVERIFY(!info.compressed);
+        QCOMPARE(info.classes, QVector<int>{0});
+        QCOMPARE(lidar::suggestedResolution(info), 1.0);   // √(2 · 1600 m² / 6561) ≈ 0,7 m
+
+        auto valueAt = [](const QString &tif, double x, double y) {
+            GDALDatasetH ds = GDALOpen(QDir::toNativeSeparators(tif).toUtf8().constData(), GA_ReadOnly);
+            if (!ds) return -1.0;
+            double gt[6];
+            GDALGetGeoTransform(ds, gt);
+            float v = -1;
+            GDALRasterIO(GDALGetRasterBand(ds, 1), GF_Read, int((x - gt[0]) / gt[1]), int((y - gt[3]) / gt[5]), 1, 1, &v, 1, 1, GDT_Float32, 0, 0);
+            GDALClose(ds);
+            return double(v);
+        };
+        const QString out = m_dir.filePath(QStringLiteral("Проект/lidar"));
+        const lidar::Surface dsm = lidar::buildSurface(info, QStringLiteral("dsm"), 1.0, QDir(out).filePath(QStringLiteral("участок_dsm.tif")));
+        QVERIFY2(dsm.ok(), qPrintable(dsm.error));
+        QCOMPARE(dsm.width, 41);
+        const double roof = valueAt(dsm.path, 576020.2, 5188020.2), field = valueAt(dsm.path, 576005.2, 5188005.2);
+        QVERIFY2(std::abs(roof - 109) < 0.25 && std::abs(field - 100.3) < 0.2, qPrintable(QStringLiteral("%1 %2").arg(roof).arg(field)));
+
+        const lidar::Surface dtm = lidar::buildSurface(info, QStringLiteral("dtm"), 1.0, QDir(out).filePath(QStringLiteral("участок_dtm.tif")));
+        QVERIFY2(dtm.ok(), qPrintable(dtm.error));
+        QVERIFY(!dtm.groundFromFile);
+        const double under = valueAt(dtm.path, 576020.2, 5188020.2);
+        QVERIFY2(std::abs(under - 101) < 0.5, qPrintable(QString::number(under)));   // the ground under the roof
+
+        // The same cloud as LAZ: unpacked once into the cache and read like the LAS.
+        const QString laz = QDir(folder).filePath(QStringLiteral("участок.laz"));
+        QFile::copy(las, m_dir.filePath(QStringLiteral("a.las")));
+        const odmtools::Result packed = odmtools::pdal({QStringLiteral("translate"), QDir::toNativeSeparators(m_dir.filePath(QStringLiteral("a.las"))),
+                                                        QDir::toNativeSeparators(m_dir.filePath(QStringLiteral("a.laz"))),
+                                                        QStringLiteral("--readers.las.default_srs=EPSG:32615")});
+        QVERIFY2(packed.ok(), qPrintable(packed.error));
+        QVERIFY(QFile::rename(m_dir.filePath(QStringLiteral("a.laz")), laz));
+        const lidar::Info zinfo = lidar::inspect(laz);
+        QVERIFY2(zinfo.ok() && zinfo.compressed, qPrintable(zinfo.error));
+        QString unpackError;
+        const QString unpacked = lidar::uncompressed(laz, &unpackError);
+        QVERIFY2(!unpacked.isEmpty(), qPrintable(unpackError));
+        QCOMPARE(lidar::uncompressed(laz, &unpackError), unpacked);   // cached
+        const PointCloud c = readPointCloud(unpacked, 0);
+        QVERIFY2(c.isValid(), qPrintable(c.error));
+        QCOMPARE(c.totalPoints, quint64(pts.size()));
+        QVERIFY(c.georeferenced);
     }
 
 private:
