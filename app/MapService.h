@@ -51,6 +51,15 @@ struct MapLayer
 
 class MapService;
 
+// Something drawn over the layers of the interactive map, under the markers (the georeferencing
+// preview of an image and its links). Not part of exports.
+class MapOverlay
+{
+public:
+    virtual ~MapOverlay() = default;
+    virtual void paintOverlay(QPainter *painter, const MapService &map) const = 0;
+};
+
 // Layers for QML, top of the list = drawn last (on top).
 class LayerListModel final : public QAbstractListModel
 {
@@ -197,6 +206,8 @@ public:
     void setView(const QPointF &center, double resolution);
     // Draws every visible layer, drawings and the current sketch for the given view.
     void paint(QPainter *painter, const QSizeF &size, bool interactive);
+    void setOverlay(const MapOverlay *overlay);   // nullptr: none
+    void requestRepaint() { emit repaint(); }
 
     // Pointer input from the map item (screen coordinates).
     void pointerMoved(const QPointF &screen);
@@ -445,6 +456,10 @@ signals:
     void cloudEditFinished(bool ok, const QString &message, const QString &path);
     void repaint();
     void errorOccurred(const QString &message);
+    // Tool "georef": a click on the map (a point "to" of a georeferencing link, or "from" on the
+    // image shown on the map) and Esc.
+    void georefClicked(const QPointF &mapPoint);
+    void georefCancelled();
 
 private:
     friend class LayerListModel;
@@ -589,6 +604,7 @@ private:
     QSet<qint64> m_multiSelection;             // ids of further selected drawings
     bool m_showGrid = false;
     bool m_showMarkers = true;
+    const MapOverlay *m_overlay = nullptr;
     QVector<Marker> m_markers;
     int m_nextMarker = 1;
     QVariantMap m_overlap;

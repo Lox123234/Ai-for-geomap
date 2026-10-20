@@ -15,6 +15,7 @@
 #include <ogr_srs_api.h>
 #include "Crs.h"
 #include "Geodesy.h"
+#include "Georeference.h"
 #include "GisEnvironment.h"
 #include "MapService.h"
 #include "PhotoModel.h"
@@ -452,6 +453,121 @@ private slots:
         QCOMPARE(value(), 200.0);
         for (const MapLayer &l : service.layers())
             if (l.id == id) QCOMPARE(l.style.red, 3);
+    }
+
+    // Georeferencing by links, as ArcMap does: a known transformation is recovered from its links
+    // with near-zero residuals, a wrong link stands out by its residual, too few links or links on
+    // one line are refused, and the warped GeoTIFF puts every pixel where the transformation says.
+    void georeferenceByLinks()
+    {
+        using namespace georef;
+        // Affine: 0.25 m pixels turned by 30°, at a UTM origin.
+        const double c = std::cos(Pi / 6), s = std::sin(Pi / 6);
+        auto affine = [&](const QPointF &p) {
+            return QPointF(576000 + 0.25 * (c * p.x() + s * p.y()), 5188000 + 0.25 * (s * p.x() - c * p.y()));
+        };
+        QVector<Link> links;
+        for (const QPointF &p : {QPointF(10, 12), QPointF(290, 20), QPointF(150, 100), QPointF(30, 190), QPointF(270, 180), QPointF(80, 60)})
+            links.push_back(Link{p, affine(p)});
+        Fit f = fit(links, Method::Affine);
+        QVERIFY2(f.ok(), qPrintable(f.error));
+        QCOMPARE(f.used, 6);
+        QVERIFY2(f.rmse < 1e-6, qPrintable(QString::number(f.rmse)));
+        QVERIFY(f.inverseRmse < 1e-5);
+        const QPointF probe(222, 33), m = f.forward.map(probe);
+        QVERIFY(std::hypot(m.x() - affine(probe).x(), m.y() - affine(probe).y()) < 1e-6);
+        const QPointF back = f.inverse.map(m);
+        QVERIFY(std::hypot(back.x() - probe.x(), back.y() - probe.y()) < 1e-5);
+
+        // A link put 4 m off: its residual is the largest; disabled, the fit is exact again.
+        links.push_back(Link{QPointF(200, 150), affine(QPointF(200, 150)) + QPointF(4, 0)});
+        f = fit(links, Method::Affine);
+        QVERIFY(f.ok());
+        int worst = 0;
+        for (int i = 1; i < f.residual.size(); ++i)
+            if (f.residual[i] > f.residual[worst]) worst = i;
+        QCOMPARE(worst, int(links.size()) - 1);
+        QVERIFY(f.rmse > 0.5);
+        QVERIFY(f.inverseResidual[worst] > 4);   // pixels: 4 m at 0.25 m per pixel and more
+        links.last().enabled = false;
+        f = fit(links, Method::Affine);
+        QVERIFY(f.rmse < 1e-6);
+        QVERIFY(std::isnan(f.residual.last()));
+
+        // Too few links for the method; links on one line.
+        QVERIFY(!fit(links.mid(0, 2), Method::Affine).ok());
+        QVERIFY(!fit(links.mid(0, 5), Method::Polynomial2).ok());
+        QVERIFY(fit(links.mid(0, 6), Method::Polynomial2).ok());
+        QVector<Link> line;
+        for (int i = 0; i < 5; ++i) line.push_back(Link{QPointF(10 * i, 10 * i), affine(QPointF(10 * i, 10 * i))});
+        QVERIFY(!fit(line, Method::Affine).ok());
+
+        // Projective: an oblique photo of flat ground, recovered from 4 links and from 8.
+        auto homography = [](const QPointF &p) {
+            const double w = 1 + 0.0008 * p.x() + 0.0003 * p.y();
+            return QPointF(576000 + (0.3 * p.x() - 0.05 * p.y() + 2) / w, 5188000 + (0.04 * p.x() - 0.35 * p.y() - 1) / w);
+        };
+        QVector<Link> persp;
+        for (const QPointF &p : {QPointF(0, 0), QPointF(400, 0), QPointF(400, 300), QPointF(0, 300), QPointF(200, 150), QPointF(100, 250),
+                                 QPointF(320, 60), QPointF(50, 120)})
+            persp.push_back(Link{p, homography(p)});
+        for (int n : {4, 8}) {
+            f = fit(persp.mid(0, n), Method::Projective);
+            QVERIFY2(f.ok(), qPrintable(f.error));
+            QVERIFY2(f.rmse < 1e-5, qPrintable(QString::number(f.rmse)));
+            const QPointF q = f.forward.map(QPointF(333, 222)), e = homography(QPointF(333, 222));
+            QVERIFY(std::hypot(q.x() - e.x(), q.y() - e.y()) < 1e-5);
+        }
+        // The affine fit cannot follow the perspective: a residual of metres, as ArcMap shows.
+        QVERIFY(fit(persp, Method::Affine).rmse > 1);
+        const Transform corners = Transform::fromCorners(QSizeF(400, 300), QPolygonF({homography({0, 0}), homography({400, 0}), homography({400, 300}),
+                                                                                       homography({0, 300})}));
+        QVERIFY(corners.isValid());
+        const QPointF q = corners.map(QPointF(100, 100)), e = homography(QPointF(100, 100));
+        QVERIFY(std::hypot(q.x() - e.x(), q.y() - e.y()) < 1e-5);
+
+        // Warp: a red square at pixels 100…120 × 50…70 of a plain photo lands at its map place.
+        QTemporaryDir tmp;
+        QImage img(300, 200, QImage::Format_RGB32);
+        img.fill(QColor(30, 120, 30));
+        QPainter(&img).fillRect(QRect(100, 50, 20, 20), QColor(230, 20, 20));
+        const QString photo = tmp.filePath(QStringLiteral("scan.png"));
+        QVERIFY(img.save(photo));
+        QCOMPARE(imageSize(photo), QSize(300, 200));
+        links.removeLast();
+        f = fit(links, Method::Affine);
+        const QString out = tmp.filePath(QStringLiteral("analysis/scan_привязка.tif"));
+        const WarpResult w = warp(photo, f.forward, Crs::fromEpsg(32615), out);
+        QVERIFY2(w.ok(), qPrintable(w.error));
+        QVERIFY(QFileInfo::exists(out));
+        QVERIFY(!QFileInfo::exists(out + QStringLiteral(".partial.tif")));
+        QVERIFY(std::abs(w.resolution - 0.25) < 1e-6);
+        GDALDatasetH ds = GDALOpen(QDir::toNativeSeparators(out).toUtf8().constData(), GA_ReadOnly);
+        QVERIFY(ds);
+        QCOMPARE(GDALGetRasterCount(ds), 4);
+        QCOMPARE(GDALGetRasterColorInterpretation(GDALGetRasterBand(ds, 4)), GCI_AlphaBand);
+        double gt[6];
+        QCOMPARE(GDALGetGeoTransform(ds, gt), CE_None);
+        QVERIFY(Crs::fromWkt(QString::fromUtf8(GDALGetProjectionRef(ds))).isValid());
+        auto pixel = [&](const QPointF &mapPoint, int band) {
+            const int px = int(std::floor((mapPoint.x() - gt[0]) / gt[1])), py = int(std::floor((mapPoint.y() - gt[3]) / gt[5]));
+            unsigned char v = 0;
+            if (px < 0 || py < 0 || px >= GDALGetRasterXSize(ds) || py >= GDALGetRasterYSize(ds)) return -1;
+            GDALRasterIO(GDALGetRasterBand(ds, band), GF_Read, px, py, 1, 1, &v, 1, 1, GDT_Byte, 0, 0);
+            return int(v);
+        };
+        const QPointF red = affine(QPointF(110, 60)), green = affine(QPointF(220, 150));
+        QVERIFY2(pixel(red, 1) > 200 && pixel(red, 2) < 60, qPrintable(QStringLiteral("%1 %2").arg(pixel(red, 1)).arg(pixel(red, 2))));
+        QVERIFY(pixel(green, 2) > 100 && pixel(green, 1) < 60);
+        QCOMPARE(pixel(red, 4), 255);
+        // The turned image leaves its bounding box's corners empty: transparent there.
+        QCOMPARE(pixel(QPointF(gt[0] + gt[1] * 1.5, gt[3] + gt[5] * 1.5), 4), 0);
+        GDALClose(ds);
+
+        // A preview: the image reduced to 100 px first, three times coarser.
+        const WarpResult p = warp(photo, f.forward, Crs::fromEpsg(32615), tmp.filePath(QStringLiteral("preview.tif")), 0, 100);
+        QVERIFY2(p.ok(), qPrintable(p.error));
+        QVERIFY(std::abs(p.resolution - 0.75) < 1e-6);
     }
 
     // An offline background map from a local MBTiles file (Web Mercator tiles in SQLite): placed

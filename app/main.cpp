@@ -15,6 +15,8 @@
 #include "AppLog.h"
 #include "ChunkService.h"
 #include "CommandRegistry.h"
+#include "GeorefImageView.h"
+#include "GeorefService.h"
 #include "GisEnvironment.h"
 #include "Journal.h"
 #include "MapService.h"
@@ -115,6 +117,9 @@ int main(int argc, char *argv[])
     QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &scene3d, &Scene3DService::clear);
     qmlRegisterType<View3DItem>("GeoMapAI.View3D", 1, 0, "View3DItem");
     qmlRegisterType<SurveyView>("GeoMapAI.Survey", 1, 0, "SurveyView");
+    // Georeferencing of an image by links (Инструменты → Привязка изображения по точкам).
+    GeorefService georef(&map, &projects, &processing);
+    qmlRegisterType<GeorefImageView>("GeoMapAI.Georef", 1, 0, "GeorefImageView");
 
     // Professional workspace: commands, layout, journal, project tree.
     CommandRegistry commands;
@@ -131,6 +136,9 @@ int main(int argc, char *argv[])
                      [&appLog](const QString &message) { appLog.add(AppLog::Error, QStringLiteral("Блоки"), message); });
     QObject::connect(&scene3d, &Scene3DService::errorOccurred, &appLog,
                      [&appLog](const QString &message) { appLog.add(AppLog::Error, QStringLiteral("3D"), message); });
+    QObject::connect(&georef, &GeorefService::finished, &appLog, [&appLog](bool ok, const QString &message) {
+        appLog.add(ok ? AppLog::Info : AppLog::Error, QStringLiteral("Привязка"), message);
+    });
     appLog.add(AppLog::Info, QStringLiteral("Программа"),
                QStringLiteral("GeoMap AI %1 запущена · %2").arg(QCoreApplication::applicationVersion(), map.gisVersion()));
 
@@ -147,6 +155,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("aiModels", &aiModels);
     engine.rootContext()->setContextProperty("photoMasks", &photoMasks);
     engine.rootContext()->setContextProperty("survey", &survey);
+    engine.rootContext()->setContextProperty("georef", &georef);
     engine.rootContext()->setContextProperty("chunks", &chunks);
     engine.rootContext()->setContextProperty("commands", &commands);
     engine.rootContext()->setContextProperty("workspace", &workspace);

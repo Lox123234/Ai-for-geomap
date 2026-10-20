@@ -73,13 +73,13 @@ Item {
                         checkable: true
                         checked: view.placing
                         emphasis: checked
-                        text: checked ? "Щёлкните по схеме…" : "Поставить опорную точку"
+                        text: checked ? "Щёлкните по схеме…" : "Опорная точка"
                         enabled: view.shownJob.length > 0
                         onToggled: view.placing = checked
                         ToolTip.visible: hovered; ToolTip.delay: 500
                         ToolTip.text: view.shownJob.length > 0
-                                      ? "Щелчок по схеме ставит опорную точку: X и Y — место щелчка, Z — модель высот задания. Потом отметьте её на снимках — программа покажет, где она должна быть на каждом."
-                                      : "Нужно выравнивание снимков (обработка): точка встаёт по модели высот задания"
+                                      ? "Щелчок по схеме — опорная точка, высота по модели"
+                                      : "Сначала выровняйте снимки"
                     }
                     FlatButton { compact: true; text: "Отметить на снимках"; enabled: survey.controlCount + survey.checkCount > 0
                                  onClicked: workspace.host.runCommand("project.gcpTag") }
@@ -99,8 +99,7 @@ Item {
                 onPhotoActivated: function(row) { projects.selectPhoto(row); workspace.host.runCommand("view.photo") }
                 onPointPlaced: function(id, name, fromModel) {
                     view.placing = false
-                    workspace.host.flash("Опорная точка " + name + " поставлена" + (fromModel ? " (высота — по модели высот задания)" : " (высота — средняя высота земли)")
-                                         + ". Уточните координаты в «Управление GCP…» и отметьте точку на снимках.")
+                    workspace.host.flash("Точка " + name + " поставлена" + (fromModel ? "" : " (высота примерная)") + ". Отметьте её на снимках")
                 }
                 onMessage: function(text) { view.placing = false; workspace.host.showNotice(text) }
 
@@ -186,7 +185,11 @@ Item {
                 GridLayout {
                     visible: view.summary.rmseXY !== undefined
                     columns: 2; columnSpacing: 12; rowSpacing: 2
-                    Label { text: "Ошибка положения камер (СКО, м):"; color: Theme.muted; font.pixelSize: 11; Layout.columnSpan: 2 }
+                    Label {
+                        text: "Ошибка камер, м"; color: Theme.muted; font.pixelSize: 11; Layout.columnSpan: 2
+                        ToolTip.visible: camHover.hovered; ToolTip.delay: 400; ToolTip.text: "GPS снимков против выравнивания (СКО)"
+                        HoverHandler { id: camHover }
+                    }
                     Label { text: "X / Y"; color: Theme.faint; font.pixelSize: 11 }
                     Label { text: workspace.fmt(view.summary.rmseX) + " / " + workspace.fmt(view.summary.rmseY); color: Theme.text; font.pixelSize: 11 }
                     Label { text: "в плане"; color: Theme.faint; font.pixelSize: 11 }
@@ -195,12 +198,6 @@ Item {
                     Label { text: workspace.fmt(view.summary.rmseZ); color: Theme.text; font.pixelSize: 11 }
                     Label { text: "общая"; color: Theme.faint; font.pixelSize: 11 }
                     Label { text: workspace.fmt(view.summary.rmse); color: Theme.text; font.pixelSize: 11; font.bold: true }
-                }
-                Label {
-                    visible: view.summary.rmseXY !== undefined
-                    Layout.fillWidth: true; wrapMode: Text.Wrap
-                    text: "GPS снимков против положений после выравнивания. Метры GPS дрона — обычно 1–5 м; без опорных точек это и есть точность привязки результата."
-                    color: Theme.faint; font.pixelSize: 10
                 }
                 SectionTitle { text: "КАМЕРЫ"; Layout.topMargin: 6 }
                 RowLayout {
@@ -251,7 +248,7 @@ Item {
                 Label {
                     visible: view.pointRows.length === 0
                     Layout.fillWidth: true; wrapMode: Text.Wrap
-                    text: "Точек нет. Поставьте точку прямо на схеме («Поставить опорную точку») или загрузите каталог координат в «Управление GCP…»."
+                    text: "Точек нет — поставьте на схеме"
                     color: Theme.faint; font.pixelSize: 11
                 }
                 Repeater {

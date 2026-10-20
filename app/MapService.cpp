@@ -1437,6 +1437,11 @@ void MapService::paint(QPainter *painter, const QSizeF &size, bool interactive)
                                          "или снимки с GPS — карта примет их систему координат."));
         return;
     }
+    if (m_overlay) {
+        painter->save();
+        m_overlay->paintOverlay(painter, *this);
+        painter->restore();
+    }
     if (m_showGrid) paintGrid(painter, size);
     paintMarkers(painter);
     // Sketch of the measuring/drawing tool.
@@ -1709,6 +1714,8 @@ void MapService::pointerReleased(const QPointF &screen)
         }
     } else if (m_tool == QLatin1String("marker")) {
         addMarker(map);
+    } else if (m_tool == QLatin1String("georef")) {
+        emit georefClicked(map);
     } else if (m_tool == QLatin1String("point")) {
         VectorFeature f;
         f.kind = VectorFeature::Point;
@@ -1770,6 +1777,7 @@ void MapService::finishSketch()
 bool MapService::keyPressed(int key)
 {
     if (key == Qt::Key_Escape) {
+        if (m_tool == QLatin1String("georef")) emit georefCancelled();
         if (!m_aiCandidate.isEmpty() || m_aiBusy) clearAiCandidate();
         m_sketch.clear();
         m_sketchDone = false;
@@ -1799,6 +1807,12 @@ bool MapService::keyPressed(int key)
         return true;
     }
     return false;
+}
+
+void MapService::setOverlay(const MapOverlay *overlay)
+{
+    m_overlay = overlay;
+    emit repaint();
 }
 
 void MapService::setTool(const QString &tool)

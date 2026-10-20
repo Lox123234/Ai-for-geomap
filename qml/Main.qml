@@ -65,7 +65,9 @@ ApplicationWindow {
     // Map and 3D scene side by side (persisted); shown while one of them is the active view.
     property bool splitView: workspace.value("splitView", false) === true || workspace.value("splitView", false) === "true"
     onSplitViewChanged: workspace.setValue("splitView", splitView)
-    readonly property bool splitShown: splitView && projects.hasProject && (activeView === 3 || activeView === 4)
+    readonly property bool splitShown: splitView && projects.hasProject && (activeView === 3 || activeView === 4) && !georefShown
+    // Georeferencing of an image by links: the image beside the map, the link table on the right.
+    readonly property bool georefShown: projects.hasProject && activeView === 3 && (georef.active || georef.loading)
     property string gcpPoint: ""
     property var gcpMarks: []
     onGcpModeChanged: {
@@ -178,6 +180,8 @@ ApplicationWindow {
         case "tool.slope": case "tool.angle": case "tool.height": case "tool.orthoEditor": case "analysis.crossProfile":
         case "analysis.viewshed": case "analysis.ai": case "proc.contours": return map
         case "tool.rasterCalc": case "analysis.vegetation": case "analysis.ndvi": case "analysis.export": return has
+        case "tool.georeference": return map && !georef.busy
+        case "tool.georeferencePhoto": return map && !georef.busy && projects.selectedIndex >= 0
         case "analysis.aiModels": return true
         case "analysis.retouch": return map && !gis.aiBusy && gis.layerCount >= 0 && gis.retouchLayerId().length > 0
         case "edit.mask": return has && projects.photoCount > 0
@@ -506,6 +510,12 @@ ApplicationWindow {
         "analysis.ndvi": function() { window.activeView = 3; rasterCalcDialog.openFor("ndvi") },
         "analysis.export": function() { analysisExportDialog.open() },
         "tool.rasterCalc": function() { window.activeView = 3; rasterCalcDialog.openFor("calc") },
+        "tool.georeference": function() { georefDialog.open() },
+        "tool.georeferencePhoto": function() {
+            var e = georef.openPhoto(projects.selectedIndex)
+            if (e.length > 0) window.showNotice(e)
+            else window.activeView = 3
+        },
         "tool.slope": function() { window.setTool("slope") },
         "tool.angle": function() { window.setTool("angle") },
         "tool.height": function() { window.setTool("height") },
@@ -1050,6 +1060,17 @@ ApplicationWindow {
         onAccepted: projects.importFolder(selectedFolder)
     }
     AppFileDialog {
+        id: georefDialog
+        kind: "georef"
+        title: "Изображение для привязки по точкам"
+        nameFilters: ["Изображения (*.jpg *.jpeg *.png *.tif *.tiff *.bmp *.gif *.jp2 *.webp)", "Все файлы (*)"]
+        onAccepted: {
+            var e = georef.openFile(selectedFile)
+            if (e.length > 0) window.showNotice(e)
+            else window.activeView = 3
+        }
+    }
+    AppFileDialog {
         id: scene3dDialog
         kind: "import"
         property string what: "pointcloud"   // or "mesh"
@@ -1421,6 +1442,7 @@ ApplicationWindow {
                             Label {
                                 text: !projects.hasProject ? "" : window.activeView === 0 ? (projects.photoCount ? "ПРОСМОТР ФОТОГРАФИЙ" : "ПУСТОЙ ПРОЕКТ")
                                     : window.activeView === 1 ? "СХЕМА СЪЁМКИ · GPS И ВЫРАВНИВАНИЕ"
+                                    : window.activeView === 3 && window.georefShown ? "ПРИВЯЗКА · " + gis.crsLabel.toUpperCase()
                                     : window.activeView === 3 ? "КАРТА · " + (gis.crsDefined ? gis.crsLabel.toUpperCase() : "CRS НЕ ЗАДАН")
                                     : window.activeView === 4 ? "3D-СЦЕНА · " + scene3d.status.toUpperCase()
                                     : "ФОТОГРАММЕТРИЯ · " + processing.engineName.toUpperCase()
@@ -1745,10 +1767,25 @@ ApplicationWindow {
                     // GIS map (MapCanvas.qml); layers and properties are in the right panel.
                     // With the split view (Вид → Разделить рабочую область) the map and the 3D scene
                     // are side by side; a click makes a half the active view (its panels on the right).
+                    // Georeferencing (GeorefWorkspace.qml): the image on the left half, the map on the right.
+                    GeorefWorkspace {
+                        id: georefPane
+                        objectName: "georefPane"
+                        anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
+                        width: Math.round(parent.width / 2) - 1
+                        visible: window.georefShown
+                        host: window
+                    }
+                    Rectangle {
+                        visible: window.georefShown
+                        x: Math.round(parent.width / 2) - 1; width: 2; height: parent.height
+                        color: Theme.line
+                    }
                     MapCanvas {
                         objectName: "mapPane"
-                        anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
-                        width: window.splitShown ? Math.round(parent.width / 2) - 1 : parent.width
+                        anchors.top: parent.top; anchors.bottom: parent.bottom
+                        x: window.georefShown ? Math.round(parent.width / 2) + 1 : 0
+                        width: window.splitShown || window.georefShown ? Math.round(parent.width / 2) - 1 : parent.width
                         visible: projects.hasProject && (window.activeView === 3 || window.splitShown)
                         host: window
                         controller: mapController
@@ -2545,10 +2582,17 @@ ApplicationWindow {
                     visible: !projects.hasProject || window.activeView === 0 || window.activeView === 1
                     host: window
                 }
+                GeorefPanel {
+                    objectName: "georefPanel"
+                    anchors.fill: parent
+                    visible: window.georefShown
+                    host: window
+                    imagePane: georefPane
+                }
                 SplitView {
                     id: mapRightSplit
                     anchors.fill: parent
-                    visible: projects.hasProject && window.activeView === 3
+                    visible: projects.hasProject && window.activeView === 3 && !window.georefShown
                     orientation: Qt.Vertical
                     handle: PanelHandle {}
                     MapLayersPanel {

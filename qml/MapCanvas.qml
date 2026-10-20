@@ -15,14 +15,15 @@ Item {
                                          "point": "Точка", "line": "Линия", "polygon": "Полигон", "edit": "Правка / выбор",
                                          "profile": "Профиль высот", "volume": "Объём", "crossProfile": "Поперечные профили",
                                          "slope": "Уклон", "height": "Высота точки", "angle": "Угол", "viewshed": "Видимость",
-                                         "aiSelect": "ИИ-выделение", "marker": "Маркер" })
+                                         "aiSelect": "ИИ-выделение", "marker": "Маркер", "georef": "Привязка" })
     readonly property var toolHints: ({
         "slope": "Щелчок — первая точка, второй щелчок — уклон между ними · Esc — отмена",
         "angle": "Три щелчка: первая точка, вершина угла, вторая точка · Esc — отмена",
         "height": "Щелчок — высота точки по моделям высот на карте",
         "viewshed": "Щелчок — точка наблюдения (настройки справа)",
         "marker": "Щелчок — маркер: координаты и высота модели под ним (список — Проект → Управление маркерами)",
-        "aiSelect": "Щелчок — объект · Shift+щелчок — добавить часть · Ctrl+щелчок — исключить · Enter — на карту · Esc — сброс" })
+        "aiSelect": "Щелчок — объект · Shift+щелчок — добавить часть · Ctrl+щелчок — исключить · Enter — на карту · Esc — сброс",
+        "georef": "Точка на снимке, затем — это место на карте · Esc — отмена" })
     function number(text) { var v = Number(String(text).replace(",", ".").replace(/\s/g, "")); return v }
     readonly property bool profileShown: gis.profile.valid === true && !profileClosed
     property bool profileClosed: false

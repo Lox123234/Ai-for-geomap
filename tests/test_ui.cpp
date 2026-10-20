@@ -2,6 +2,7 @@
 #include <QSignalSpy>
 #include <QDir>
 #include <QJsonDocument>
+#include <QPainter>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickItem>
@@ -17,6 +18,8 @@
 #include "AppInfo.h"
 #include "AppLog.h"
 #include "CommandRegistry.h"
+#include "GeorefImageView.h"
+#include "GeorefService.h"
 #include "GisEnvironment.h"
 #include "ChunkService.h"
 #include "Journal.h"
@@ -62,6 +65,7 @@ struct Session
     AppInfo info{QString()};
     ProjectTreeModel tree{&projects, &processing, &map};
     ProjectTreeFilter treeView;
+    GeorefService georef{&map, &projects, &processing};
     QQmlApplicationEngine engine;
     QQuickWindow *window = nullptr;
 
@@ -99,6 +103,7 @@ struct Session
         c->setContextProperty("aiModels", &aiModels);
         c->setContextProperty("photoMasks", &photoMasks);
         c->setContextProperty("survey", &survey);
+        c->setContextProperty("georef", &georef);
         c->setContextProperty("chunks", &chunks);
         c->setContextProperty("commands", &commands);
         c->setContextProperty("workspace", &workspace);
@@ -206,6 +211,7 @@ private slots:
         qmlRegisterType<MapView>("GeoMapAI.Map", 1, 0, "MapView");
         qmlRegisterType<View3DItem>("GeoMapAI.View3D", 1, 0, "View3DItem");
         qmlRegisterType<SurveyView>("GeoMapAI.Survey", 1, 0, "SurveyView");
+        qmlRegisterType<GeorefImageView>("GeoMapAI.Georef", 1, 0, "GeorefImageView");
     }
 
     void windowHasMenusToolbarAndHandlers()
@@ -998,6 +1004,179 @@ private slots:
         // Closing the project empties the scene.
         s->projects.closeProject();
         QTRY_COMPARE(s->scene3d.layerCount(), 0);
+    }
+
+    // Инструменты → Привязка изображения по точкам, as ArcMap: the image beside the map, a link by
+    // a click on the image and a click on the map (or first on the image shown on the map), the
+    // RMS error and the worst link, a link switched off and typed in, Esc, the GeoTIFF on the map,
+    // the links back when the image is opened again.
+    void georeferenceAnImageByLinks()
+    {
+        QTemporaryDir tmp;
+        auto s = open();
+        QVERIFY(s->projects.createProject(QUrl::fromLocalFile(tmp.path()), QStringLiteral("Привязка UI")));
+        QVERIFY(!s->enabled(QStringLiteral("tool.georeference")));   // the map has no CRS yet
+        QCOMPARE(s->map.setMapCrs(QStringLiteral("32615")), QString());
+        QVERIFY(s->enabled(QStringLiteral("tool.georeference")));
+        QVERIFY(!s->enabled(QStringLiteral("tool.georeferencePhoto")));   // no photo selected
+        QImage img(400, 300, QImage::Format_RGB32);
+        img.fill(QColor(200, 200, 190));
+        {
+            QPainter p(&img);
+            p.fillRect(QRect(30, 30, 20, 20), Qt::red);
+            p.fillRect(QRect(350, 30, 20, 20), Qt::blue);
+            p.fillRect(QRect(340, 250, 20, 20), Qt::darkGreen);
+            p.fillRect(QRect(50, 240, 20, 20), Qt::black);
+        }
+        QTemporaryDir files;   // the user's image, outside the project
+        const QString scan = files.filePath(QStringLiteral("scan.png"));
+        QVERIFY(img.save(scan));
+        s->window->setProperty("activeView", 3);
+        s->map.setView(QPointF(576020, 5188185), 0.2);
+        QCOMPARE(s->georef.openPath(scan), QString());
+        QTRY_VERIFY(s->georef.active() && !s->georef.loading());
+        QVERIFY(s->prop("georefShown").toBool());
+        QQuickItem *pane = s->findItem(QStringLiteral("georefPane")), *panel = s->findItem(QStringLiteral("georefPanel")),
+                   *image = s->findItem(QStringLiteral("georefImage"));
+        QVERIFY(pane && panel && image);
+        QTRY_VERIFY(pane->isVisible() && panel->isVisible());
+        QCOMPARE(s->map.tool(), QStringLiteral("georef"));
+        QCOMPARE(s->georef.placement(), QStringLiteral("в центре карты"));
+        QCOMPARE(s->georef.imageWidth(), 400);
+
+        // The truth: 0.1 m pixels from 576000, 5188200.
+        auto truth = [](const QPointF &px) { return QPointF(576000 + 0.1 * px.x(), 5188200 - 0.1 * px.y()); };
+        auto mapClick = [&](const QPointF &m) {
+            const QPointF sc = s->map.toScreen(m);
+            s->map.pointerPressed(sc, Qt::LeftButton, {});
+            s->map.pointerReleased(sc);
+        };
+        // The first point "from" by a real click in the image pane, at the red square.
+        QTRY_VERIFY(image->width() > 100 && image->property("zoom").toDouble() > 0);
+        const double zoom = image->property("zoom").toDouble();
+        const QPointF origin = QPointF(200, 150) - QPointF(image->width() / 2, image->height() / 2) / zoom;
+        QTest::mouseClick(s->window, Qt::LeftButton, {}, image->mapToScene((QPointF(40, 40) - origin) * zoom).toPoint());
+        QTRY_VERIFY(s->georef.pending());
+        const QPointF first = *s->georef.pendingPoint();
+        QVERIFY2(std::hypot(first.x() - 40, first.y() - 40) < 2 / zoom + 0.5, qPrintable(QStringLiteral("%1 %2").arg(first.x()).arg(first.y())));
+        mapClick(truth(first));
+        QCOMPARE(s->georef.linkCount(), 1);
+        QVERIFY(!s->georef.pending());
+        // With one link the image is moved so that the point lands where it was put.
+        const QPointF moved = s->georef.displayTransform().map(first);
+        QVERIFY(std::hypot(moved.x() - truth(first).x(), moved.y() - truth(first).y()) < 0.05);
+        for (const QPointF &px : {QPointF(360, 40), QPointF(350, 260), QPointF(60, 250)}) {
+            s->georef.addImagePoint(px.x(), px.y());
+            mapClick(truth(px));
+        }
+        QCOMPARE(s->georef.linkCount(), 4);
+        QVERIFY(s->georef.fitted());
+        QVERIFY2(s->georef.rmse() < 0.02, qPrintable(s->georef.fitText()));   // map clicks are snapped to screen pixels
+        QVERIFY(s->georef.fitText().contains(QStringLiteral("СКО")));
+        // A link 3 m off: the worst; switched off, the error is gone; typed in, it agrees.
+        s->georef.addImagePoint(200, 150);
+        mapClick(truth(QPointF(200, 150)) + QPointF(3, 0));
+        QCOMPARE(s->georef.linkCount(), 5);
+        QVERIFY(s->georef.rmse() > 0.5);
+        QVERIFY(s->georef.links().at(4).toMap().value(QStringLiteral("worst")).toBool());
+        s->georef.setLinkEnabled(4, false);
+        QVERIFY(s->georef.rmse() < 0.02);
+        QCOMPARE(s->georef.setLinkValue(4, QStringLiteral("mx"), QLocale().toString(truth(QPointF(200, 150)).x(), 'f', 3)), QString());
+        QCOMPARE(s->georef.setLinkValue(4, QStringLiteral("my"), QLocale().toString(truth(QPointF(200, 150)).y(), 'f', 3)), QString());
+        s->georef.setLinkEnabled(4, true);
+        QVERIFY2(s->georef.rmse() < 0.02, qPrintable(s->georef.fitText()));
+        QVERIFY(!s->georef.setLinkValue(4, QStringLiteral("mx"), QStringLiteral("abc")).isEmpty());
+        // Esc forgets a point "from".
+        s->georef.addImagePoint(10, 10);
+        QVERIFY(s->georef.pending());
+        s->map.keyPressed(Qt::Key_Escape);
+        QVERIFY(!s->georef.pending());
+        // ArcMap's way: the first click on the image shown on the map, the second where it belongs.
+        mapClick(truth(QPointF(300, 100)));
+        QVERIFY(s->georef.pending());
+        const QPointF onMap = *s->georef.pendingPoint();
+        QVERIFY2(std::hypot(onMap.x() - 300, onMap.y() - 100) < 1, qPrintable(QStringLiteral("%1 %2").arg(onMap.x()).arg(onMap.y())));
+        mapClick(truth(onMap));
+        QCOMPARE(s->georef.linkCount(), 6);
+        // Projective needs 4, the 2nd order polynomial 6, the 3rd 10.
+        s->georef.setMethod(int(georef::Method::Polynomial3));
+        QVERIFY(!s->georef.fitted());
+        QCOMPARE(s->georef.fitText(), QStringLiteral("Нужно ещё 4 связи"));
+        s->georef.setMethod(int(georef::Method::Affine));
+        QVERIFY(s->georef.fitted());
+        s->shot(QStringLiteral("ui-12-georeference.png"));
+
+        // Transform: a GeoTIFF in the project on the map, where the truth puts the image.
+        QSignalSpy finished(&s->georef, &GeorefService::finished);
+        const int layers = s->map.layerCount();
+        QCOMPARE(s->georef.rectify(0), QString());
+        QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 30000);
+        QVERIFY2(finished.first().at(0).toBool(), qPrintable(finished.first().at(1).toString()));
+        const QString out = finished.first().at(2).toString();
+        QCOMPARE(QFileInfo(out).fileName(), QStringLiteral("scan_привязка.tif"));
+        QCOMPARE(QFileInfo(out).absolutePath(), QDir(s->projects.projectPath()).filePath(QStringLiteral("analysis")));
+        QTRY_COMPARE(s->map.layerCount(), layers + 1);
+        QVERIFY(!s->map.layerIdForSource(out).isEmpty());
+        QVERIFY(QFileInfo::exists(out + QStringLiteral(".georef.json")));
+        GDALDatasetH ds = GDALOpen(QDir::toNativeSeparators(out).toUtf8().constData(), GA_ReadOnly);
+        QVERIFY(ds);
+        double gt[6];
+        QCOMPARE(GDALGetGeoTransform(ds, gt), CE_None);
+        QVERIFY2(std::abs(gt[0] - 576000) < 0.2 && std::abs(gt[3] - 5188200) < 0.2 && std::abs(gt[1] - 0.1) < 0.002,
+                 qPrintable(QStringLiteral("%1 %2 %3").arg(gt[0], 0, 'f', 3).arg(gt[3], 0, 'f', 3).arg(gt[1], 0, 'f', 4)));
+        GDALClose(ds);
+        QVERIFY(!s->georef.showImage());   // the result shows instead of the preview
+
+        // "Завершить" closes the georeferencing; the links come back with the image.
+        QQuickItem *close = s->findItem(QStringLiteral("georefClose"));
+        QVERIFY(close);
+        QMetaObject::invokeMethod(close, "clicked");
+        QTRY_VERIFY(!s->georef.active());
+        QVERIFY(!s->prop("georefShown").toBool());
+        QVERIFY(s->map.tool() != QLatin1String("georef"));
+        QCOMPARE(s->georef.openPath(scan), QString());
+        QTRY_VERIFY(s->georef.active() && !s->georef.loading());
+        QCOMPARE(s->georef.linkCount(), 6);
+        QVERIFY(s->georef.fitted());
+        s->georef.close();
+    }
+
+    // Инструменты → Привязать выбранный снимок по точкам: a photo of the project starts where it
+    // was taken (its EXIF has no altitude and focal length: at its GPS position, sized to the view).
+    void georeferenceAProjectPhoto()
+    {
+        QTemporaryDir tmp, files;
+        auto s = open();
+        QVERIFY(s->projects.createProject(QUrl::fromLocalFile(tmp.path()), QStringLiteral("Привязка снимка UI")));
+        const QString photo = files.filePath(QStringLiteral("DJI_0001.JPG"));
+        QVERIFY(TestImages::writeJpegWithGps(photo, 64, 48));
+        s->projects.importFiles({QUrl::fromLocalFile(photo)});
+        QTRY_VERIFY_WITH_TIMEOUT(!s->projects.busy() && s->projects.photoCount() == 1, 10000);
+        QTRY_VERIFY(s->map.crsDefined());
+        s->projects.selectPhoto(0);
+        QVERIFY(s->enabled(QStringLiteral("tool.georeferencePhoto")));
+        QVERIFY(s->run(QStringLiteral("tool.georeferencePhoto")));
+        QTRY_VERIFY(s->georef.active() && !s->georef.loading());
+        QCOMPARE(s->prop("activeView").toInt(), 3);
+        QCOMPARE(s->georef.imageName(), QStringLiteral("DJI_0001.JPG"));
+        QCOMPARE(s->georef.imageWidth(), 64);
+        QVERIFY2(s->georef.placement().contains(QStringLiteral("GPS")), qPrintable(s->georef.placement()));
+        QRectF photos;
+        for (const MapLayer &l : s->map.layers())
+            if (l.type == MapLayer::Photos) photos = l.vector.extent;
+        const QPointF c = s->georef.displayTransform().map(QPointF(32, 24));
+        QVERIFY2(std::hypot(c.x() - photos.center().x(), c.y() - photos.center().y()) < 0.5,
+                 qPrintable(QStringLiteral("%1 %2 vs %3 %4").arg(c.x()).arg(c.y()).arg(photos.center().x()).arg(photos.center().y())));
+        // The links of a project photo are kept by its id.
+        s->georef.addImagePoint(10, 10);
+        const QPointF sc = s->map.toScreen(c);
+        s->map.pointerPressed(sc, Qt::LeftButton, {});
+        s->map.pointerReleased(sc);
+        QCOMPARE(s->georef.linkCount(), 1);
+        const QString id = s->projects.photoModel()->photos().first().id;
+        QVERIFY(QFileInfo::exists(QDir(s->projects.projectPath()).filePath(QStringLiteral("georef/%1.json").arg(id))));
+        s->georef.close();
+        QVERIFY(!s->georef.active());
     }
 
     // GEOMAP_UI_PROJECT=<project with processing results>: the real project in the window,
