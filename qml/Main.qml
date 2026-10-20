@@ -989,22 +989,17 @@ ApplicationWindow {
             window.lastError = message
             errorDialog.open()
         }
-        // The GPS canvas paints on the GUI thread; repaint it only while it is shown
-        // (it repaints itself when it becomes visible).
         function onProjectChanged() {
             window.activeView = 0
             window.imageZoom = 1.0
             window.selectedJobId = ""
             window.jobInfo = ({})
-            if (gpsCanvas.visible) gpsCanvas.requestPaint()
         }
         function onPhotosChanged() {
-            if (gpsCanvas.visible) gpsCanvas.requestPaint()
             preflightTimer.restart()
         }
         function onSelectionChanged() {
             window.imageZoom = 1.0
-            if (gpsCanvas.visible) gpsCanvas.requestPaint()
         }
         function onImportFinished() {
             if (window.closeAfterImport) window.close()
@@ -1425,7 +1420,7 @@ ApplicationWindow {
                             Item { Layout.fillWidth: true }
                             Label {
                                 text: !projects.hasProject ? "" : window.activeView === 0 ? (projects.photoCount ? "ПРОСМОТР ФОТОГРАФИЙ" : "ПУСТОЙ ПРОЕКТ")
-                                    : window.activeView === 1 ? "СХЕМА GPS-ТОЧЕК · НЕ КАРТА"
+                                    : window.activeView === 1 ? "СХЕМА СЪЁМКИ · GPS И ВЫРАВНИВАНИЕ"
                                     : window.activeView === 3 ? "КАРТА · " + (gis.crsDefined ? gis.crsLabel.toUpperCase() : "CRS НЕ ЗАДАН")
                                     : window.activeView === 4 ? "3D-СЦЕНА · " + scene3d.status.toUpperCase()
                                     : "ФОТОГРАММЕТРИЯ · " + processing.engineName.toUpperCase()
@@ -1740,74 +1735,12 @@ ApplicationWindow {
                         }
                     }
 
-                    // GPS overview: truthful point distribution, NOT a basemap.
-                    Item {
+                    // «Схема съёмки» (SurveyWorkspace.qml): GPS, the alignment, footprints, control points.
+                    SurveyWorkspace {
                         id: gpsWorkspace
                         anchors.fill: parent
                         visible: projects.hasProject && window.activeView === 1
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.margins: 18
-                            spacing: 10
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Label { text: "Расположение снимков"; color: window.white; font.bold: true; font.pixelSize: 16 }
-                                Item { Layout.fillWidth: true }
-                                Label { text: projects.gpsCount + " снимков с GPS"; color: window.muted; font.pixelSize: 12 }
-                            }
-                            Rectangle {
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                color: "#111e2a"
-                                radius: 12
-                                border.color: "#294052"
-                                Canvas {
-                                    id: gpsCanvas
-                                    anchors.fill: parent
-                                    anchors.margins: 22
-                                    onWidthChanged: requestPaint()
-                                    onHeightChanged: requestPaint()
-                                    onVisibleChanged: requestPaint()
-                                    onPaint: {
-                                        if (!visible) return
-                                        var ctx = getContext("2d")
-                                        ctx.clearRect(0, 0, width, height)
-                                        ctx.strokeStyle = "#263d4a"
-                                        ctx.lineWidth = 1
-                                        for (var g=0;g<=10;g++) {
-                                            ctx.beginPath(); ctx.moveTo(g * width / 10, 0); ctx.lineTo(g * width / 10, height); ctx.stroke()
-                                            ctx.beginPath(); ctx.moveTo(0, g * height / 10); ctx.lineTo(width, g * height / 10); ctx.stroke()
-                                        }
-                                        var pts = projects.geoPointsSnapshot()   // one O(n) copy, see ProjectManager.h
-                                        if (!pts || pts.length === 0) return
-                                        var minLat = pts[0].latitude, maxLat = minLat
-                                        var minLon = pts[0].longitude, maxLon = minLon
-                                        for (var i=1;i<pts.length;i++) {
-                                            minLat = Math.min(minLat, pts[i].latitude); maxLat = Math.max(maxLat, pts[i].latitude)
-                                            minLon = Math.min(minLon, pts[i].longitude); maxLon = Math.max(maxLon, pts[i].longitude)
-                                        }
-                                        var dLat = Math.max(maxLat-minLat, 0.00000001)
-                                        var dLon = Math.max(maxLon-minLon, 0.00000001)
-                                        for (var j=0;j<pts.length;j++) {
-                                            var x = 30 + (pts[j].longitude-minLon)/dLon * (width-60)
-                                            var y = height-30 - (pts[j].latitude-minLat)/dLat * (height-60)
-                                            if (maxLon === minLon) x = width/2
-                                            if (maxLat === minLat) y = height/2
-                                            ctx.beginPath(); ctx.arc(x, y, pts[j].index === projects.selectedIndex ? 7 : 3, 0, Math.PI*2)
-                                            ctx.fillStyle = pts[j].index === projects.selectedIndex ? "#f5cf7c" : "#56b6f7"
-                                            ctx.fill()
-                                        }
-                                    }
-                                }
-                                ColumnLayout {
-                                    anchors.centerIn: parent
-                                    spacing: 12
-                                    visible: projects.gpsCount === 0
-                                    Label { text: "Нет GPS-координат"; color: window.white; font.pixelSize: 17; font.bold: true; Layout.alignment: Qt.AlignHCenter }
-                                    Label { text: "Добавьте фотографии с геометками, чтобы увидеть схему их расположения"; color: window.muted; font.pixelSize: 12; Layout.alignment: Qt.AlignHCenter }
-                                }
-                            }
-                        }
+                        host: window
                     }
                     // GIS map (MapCanvas.qml); layers and properties are in the right panel.
                     // With the split view (Вид → Разделить рабочую область) the map and the 3D scene

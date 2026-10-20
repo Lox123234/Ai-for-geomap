@@ -28,6 +28,8 @@
 #include "TestImages.h"
 #include "TrueOrthophoto.h"
 #include "Overlap.h"
+#include "SurveyLayout.h"
+#include "Crs.h"
 #include <gdal.h>
 #include <QUrl>
 #include <cmath>
@@ -593,6 +595,98 @@ private slots:
         QCOMPARE(reopened.controlPoints().size(), survey.controlPoints().size());
         QCOMPARE(reopened.crs().epsg(), 32632);
         QCOMPARE(reopened.calibration(), jobId);
+    }
+
+    // «Схема съёмки»: GPS against the alignment of a job — the errors, their RMSE, the photo that
+    // the alignment left out, footprints from the poses on the DSM, the capture order.
+    void surveyLayoutOfAJob()
+    {
+        QTemporaryDir tmp;
+        const QString project = QDir(tmp.path()).filePath(QStringLiteral("Схема"));
+        const QString job = QDir(project).filePath(QStringLiteral("jobs/20261020-100000"));
+        QVERIFY(QDir().mkpath(job));
+        // Four nadir photos 40 m above flat ground at 100 m, 20 m apart (UTM 32N, offset 500000, 5000000).
+        const QJsonObject camera{{"projection_type", "perspective"}, {"width", 1200}, {"height", 800}, {"focal", 0.9}};
+        QJsonObject shots;
+        const QPointF centres[4] = {{0, 0}, {20, 0}, {20, 20}, {0, 20}};
+        for (int i = 0; i < 4; ++i) {
+            const double C[3] = {centres[i].x(), centres[i].y(), 140};
+            const double R[9] = {1, 0, 0, 0, -1, 0, 0, 0, -1};
+            double t[3];
+            for (int k = 0; k < 3; ++k) t[k] = -(R[k * 3] * C[0] + R[k * 3 + 1] * C[1] + R[k * 3 + 2] * C[2]);
+            shots.insert(QStringLiteral("p%1.jpg").arg(i), QJsonObject{{"camera", "c"}, {"rotation", QJsonArray{3.14159265358979323846, 0, 0}},
+                                                                        {"translation", QJsonArray{t[0], t[1], t[2]}}});
+        }
+        QVERIFY(writeFile(job + QStringLiteral("/opensfm/reconstruction.json"),
+                          QJsonDocument(QJsonArray{QJsonObject{{"cameras", QJsonObject{{"c", camera}}}, {"shots", shots}}}).toJson()));
+        QVERIFY(writeFile(job + QStringLiteral("/odm_georeferencing/coords.txt"), "WGS84 UTM 32N\n500000 5000000\n"));
+        {   // DSM: 100 m everywhere around.
+            QDir().mkpath(job + QStringLiteral("/odm_dem"));
+            GDALDatasetH ds = GDALCreate(GDALGetDriverByName("GTiff"), QDir::toNativeSeparators(job + QStringLiteral("/odm_dem/dsm.tif")).toUtf8().constData(),
+                                         200, 200, 1, GDT_Float32, nullptr);
+            QVERIFY(ds);
+            double gt[6] = {499900, 1, 0, 5000100, 0, -1};
+            GDALSetGeoTransform(ds, gt);
+            GDALSetProjection(ds, Crs::fromEpsg(32632).wkt().toUtf8().constData());
+            std::vector<float> v(200 * 200, 100.f);
+            QCOMPARE(GDALRasterIO(GDALGetRasterBand(ds, 1), GF_Write, 0, 0, 200, 200, v.data(), 200, 200, GDT_Float32, 0, 0), CE_None);
+            GDALClose(ds);
+        }
+        // GPS 2 m west and 1 m north of where the alignment put each photo; a fifth photo the
+        // alignment left out. Taken in the order 2, 0, 1, 3, 4.
+        CoordinateTransform toWgs(Crs::fromEpsg(32632), Crs::wgs84());
+        QVector<surveylayout::PhotoIn> photos;
+        const char *times[5] = {"2026:10:20 10:00:02", "2026:10:20 10:00:03", "2026:10:20 10:00:01", "2026:10:20 10:00:04", "2026:10:20 10:00:05"};
+        for (int i = 0; i < 5; ++i) {
+            surveylayout::PhotoIn p;
+            p.row = i;
+            p.name = QStringLiteral("DJI_%1.JPG").arg(i, 4, 10, QLatin1Char('0'));
+            p.path = QDir(project).filePath(QStringLiteral("photos/p%1.jpg").arg(i));   // internal file name, as in the job
+            p.takenAt = QString::fromLatin1(times[i]);
+            QPointF g = i < 4 ? QPointF(500000 + centres[i].x() - 2, 5000000 + centres[i].y() + 1) : QPointF(500040, 5000040);
+            QVERIFY(toWgs.transform(g));
+            p.hasGps = true;
+            p.longitude = g.x();
+            p.latitude = g.y();
+            photos << p;
+        }
+        const surveylayout::Layout l = surveylayout::compute(photos, job, 256);
+        QVERIFY2(l.ok(), qPrintable(l.error));
+        QCOMPARE(l.job, QStringLiteral("20261020-100000"));
+        QCOMPARE(l.summary.photos, 5);
+        QCOMPARE(l.summary.aligned, 4);
+        QCOMPARE(l.summary.notAligned, 1);
+        QCOMPARE(l.summary.compared, 4);
+        QVERIFY2(std::fabs(l.summary.rmseXY - std::sqrt(5.0)) < 0.01, qPrintable(QString::number(l.summary.rmseXY)));
+        QVERIFY(std::fabs(l.summary.rmseX - 2) < 0.01 && std::fabs(l.summary.rmseY - 1) < 0.01);
+        QVERIFY(!std::isfinite(l.summary.rmseZ));   // no EXIF altitude in these photos
+        QCOMPARE(l.groundZ, 100.0);
+        // Capture order.
+        QStringList order;
+        for (const surveylayout::Camera &c : l.cameras) order << c.name;
+        QCOMPARE(order, (QStringList{"DJI_0002.JPG", "DJI_0000.JPG", "DJI_0001.JPG", "DJI_0003.JPG", "DJI_0004.JPG"}));
+        // Each aligned photo: error (est − GPS) = (+2, −1); footprint 40 m below: 2 · 40 · 0,5 / 0,9 by 2 · 40 · (400/1200) / 0,9.
+        for (const surveylayout::Camera &c : l.cameras) {
+            if (c.name == QLatin1String("DJI_0004.JPG")) {
+                QVERIFY(!c.aligned);
+                QVERIFY(c.hasGps);
+                continue;
+            }
+            QVERIFY(c.aligned);
+            QVERIFY2(std::fabs(c.dx() - 2) < 0.01 && std::fabs(c.dy() + 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(c.dx()).arg(c.dy())));
+            QVERIFY(c.footprintAligned);
+            const QRectF r = c.footprint.boundingRect();
+            QVERIFY2(std::fabs(r.width() - 44.44) < 0.1 && std::fabs(r.height() - 29.63) < 0.1, qPrintable(QStringLiteral("%1 × %2").arg(r.width()).arg(r.height())));
+            QVERIFY(r.contains(QPointF(c.x, c.y)));
+        }
+        QVERIFY(l.extent.contains(QPointF(500040, 5000040)));
+        // Before any alignment: GPS only, in the UTM zone of the photos.
+        const surveylayout::Layout before = surveylayout::compute(photos, {}, 0);
+        QVERIFY(before.ok());
+        QVERIFY(before.job.isEmpty());
+        QCOMPARE(before.summary.aligned + before.summary.notAligned, 0);
+        QCOMPARE(Crs::fromWkt(before.crsWkt).epsg(), 32632);
+        QCOMPARE(surveylayout::heightAt(job, 500010, 5000010), 100.0);
     }
 
     // A failed ODM run is explained in plain words: which program failed on which stage, what to do.

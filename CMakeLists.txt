@@ -124,6 +124,8 @@ qt_add_library(GeoMapCore STATIC
     src/processing/TrueOrthophoto.cpp
     src/processing/Overlap.h
     src/processing/Overlap.cpp
+    src/processing/SurveyLayout.h
+    src/processing/SurveyLayout.cpp
     src/processing/Mosaic.h
     src/processing/Mosaic.cpp
 )
@@ -190,7 +192,7 @@ set(GEOMAP_QML_FILES
     qml/MapLayerProperties.qml qml/MapCanvas.qml qml/ShortcutsDialog.qml qml/View3DWorkspace.qml qml/View3DPanel.qml qml/TerrainDialog.qml qml/MeasurementsPanel.qml qml/ExportDialog.qml
     qml/RasterCalcDialog.qml qml/AiModelsDialog.qml qml/MarkersDialog.qml qml/DemEditorDialog.qml qml/CloudEditorDialog.qml
     qml/ProjectSettingsDialog.qml qml/SaveAsDialog.qml qml/ProjectCheckDialog.qml qml/SurveyDialog.qml qml/BasemapDialog.qml qml/BatchDialog.qml qml/ChunksDialog.qml
-    qml/AppFileDialog.qml qml/AppFolderDialog.qml)
+    qml/AppFileDialog.qml qml/AppFolderDialog.qml qml/SurveyWorkspace.qml)
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 foreach(file IN LISTS GEOMAP_QML_FILES)
     get_filename_component(name ${file} NAME)
@@ -209,6 +211,8 @@ qt_add_library(GeoMapUi STATIC
     app/MapView.cpp
     app/View3DItem.h
     app/View3DItem.cpp
+    app/SurveyView.h
+    app/SurveyView.cpp
 )
 # The module directory would otherwise be <build>/GeoMapAI, the path of the Linux executable.
 qt_add_qml_module(GeoMapUi

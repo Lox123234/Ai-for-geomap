@@ -11,6 +11,7 @@
 #include <QTemporaryDir>
 #include <QtQml/qqmlextensionplugin.h>
 #include <gdal.h>
+#include "Crs.h"
 #include <ogr_srs_api.h>
 #include "AiService.h"
 #include "AppInfo.h"
@@ -33,6 +34,7 @@
 #include "Scene3DService.h"
 #include "ThumbnailProvider.h"
 #include "View3DItem.h"
+#include "SurveyView.h"
 #include "WorkspaceState.h"
 
 Q_IMPORT_QML_PLUGIN(GeoMapAIPlugin)
@@ -203,6 +205,7 @@ private slots:
         GisEnvironment::initialize(QCoreApplication::applicationDirPath());
         qmlRegisterType<MapView>("GeoMapAI.Map", 1, 0, "MapView");
         qmlRegisterType<View3DItem>("GeoMapAI.View3D", 1, 0, "View3DItem");
+        qmlRegisterType<SurveyView>("GeoMapAI.Survey", 1, 0, "SurveyView");
     }
 
     void windowHasMenusToolbarAndHandlers()
@@ -697,6 +700,100 @@ private slots:
         QVERIFY(!centred());
         s->map.zoomToAll();
         QVERIFY(centred());
+    }
+
+    // «Схема съёмки» on the GPS tab: the photos of a project with an aligned job — the errors of
+    // GPS against the alignment, a click selects the photo, a click in the placing mode puts a
+    // control point with its height from the job's DSM.
+    void surveySchemeOnTheGpsTab()
+    {
+        QTemporaryDir tmp;
+        QString project;
+        QStringList files;
+        {
+            auto first = open();
+            QVERIFY(first->projects.createProject(QUrl::fromLocalFile(tmp.path()), QStringLiteral("Схема съёмки UI")));
+            project = first->projects.projectPath();
+            QList<QUrl> urls;
+            for (int i = 0; i < 2; ++i) {
+                const QString source = tmp.filePath(QStringLiteral("DJI_000%1.JPG").arg(i + 1));
+                QVERIFY(TestImages::writeJpegWithGps(source, 64, 48));   // 43°14'N 76°56'E
+                urls << QUrl::fromLocalFile(source);
+            }
+            first->projects.importFiles(urls);
+            QTRY_VERIFY_WITH_TIMEOUT(!first->projects.busy() && first->projects.photoCount() == 2, 10000);
+            for (const Photo &p : first->projects.photoModel()->photos()) files << QFileInfo(p.file).fileName();
+        }
+        // An aligned job: the two cameras 3 and 13 m east of their GPS, 40 m above a DSM at 100 m (UTM 43N).
+        QPointF gps(76.0 + 56.0 / 60, 43.0 + 14.0 / 60);
+        QVERIFY(CoordinateTransform(Crs::wgs84(), Crs::fromEpsg(32643)).transform(gps));
+        const double offX = std::round(gps.x()), offY = std::round(gps.y());
+        ProcessingJob job;
+        job.id = QStringLiteral("20261020-120000");
+        job.engine = QStringLiteral("mock");
+        job.profile = QStringLiteral("balanced");
+        job.state = JobState::Completed;
+        job.createdAt = QDateTime::currentDateTimeUtc();
+        const QDir jobDir(QDir(project).filePath(QStringLiteral("jobs/") + job.id));
+        QVERIFY(QDir().mkpath(jobDir.filePath(QStringLiteral("odm_georeferencing"))));
+        QVERIFY(QDir().mkpath(jobDir.filePath(QStringLiteral("opensfm"))));
+        QVERIFY(QDir().mkpath(jobDir.filePath(QStringLiteral("odm_dem"))));
+        const auto write = [](const QString &path, const QByteArray &data) {
+            QFile f(path);
+            return f.open(QIODevice::WriteOnly) && f.write(data) == data.size();
+        };
+        QVERIFY(write(jobDir.filePath(QStringLiteral("odm_georeferencing/coords.txt")),
+                      QStringLiteral("WGS84 UTM 43N\n%1 %2\n").arg(offX, 0, 'f', 0).arg(offY, 0, 'f', 0).toUtf8()));
+        QJsonObject shots;
+        for (int i = 0; i < 2; ++i) {
+            const double C[3] = {gps.x() - offX + 3 + 10 * i, gps.y() - offY, 140};
+            const double t[3] = {-C[0], C[1], C[2]};   // R = diag(1, −1, −1): t = −R·C
+            shots.insert(files[i], QJsonObject{{"camera", "c"}, {"rotation", QJsonArray{3.14159265358979323846, 0, 0}}, {"translation", QJsonArray{t[0], t[1], t[2]}}});
+        }
+        const QJsonObject camera{{"projection_type", "perspective"}, {"width", 64}, {"height", 48}, {"focal", 0.9}};
+        QVERIFY(write(jobDir.filePath(QStringLiteral("opensfm/reconstruction.json")),
+                      QJsonDocument(QJsonArray{QJsonObject{{"cameras", QJsonObject{{"c", camera}}}, {"shots", shots}}}).toJson()));
+        {
+            GDALDatasetH ds = GDALCreate(GDALGetDriverByName("GTiff"), QDir::toNativeSeparators(jobDir.filePath(QStringLiteral("odm_dem/dsm.tif"))).toUtf8().constData(),
+                                         200, 200, 1, GDT_Float32, nullptr);
+            QVERIFY(ds);
+            double gt[6] = {offX - 100, 1, 0, offY + 100, 0, -1};
+            GDALSetGeoTransform(ds, gt);
+            GDALSetProjection(ds, Crs::fromEpsg(32643).wkt().toUtf8().constData());
+            std::vector<float> v(200 * 200, 100.f);
+            QCOMPARE(GDALRasterIO(GDALGetRasterBand(ds, 1), GF_Write, 0, 0, 200, 200, v.data(), 200, 200, GDT_Float32, 0, 0), CE_None);
+            GDALClose(ds);
+        }
+        QVERIFY(write(jobDir.filePath(QStringLiteral("job.json")), QJsonDocument(job.toJson()).toJson()));
+
+        auto s = open();
+        QVERIFY(s->projects.openProject(QUrl::fromLocalFile(project)));
+        QVERIFY(s->run(QStringLiteral("view.gps")));
+        QCOMPARE(s->prop("activeView").toInt(), 1);
+        QQuickItem *view = nullptr;
+        QTRY_VERIFY((view = s->findItem(QStringLiteral("surveyView"))) != nullptr);
+        QTRY_VERIFY_WITH_TIMEOUT(view->property("summary").toMap().value(QStringLiteral("aligned")).toInt() == 2, 15000);
+        QCOMPARE(view->property("shownJob").toString(), job.id);
+        const QVariantMap summary = view->property("summary").toMap();
+        QVERIFY2(std::fabs(summary.value(QStringLiteral("rmseXY")).toDouble() - std::sqrt((9.0 + 169.0) / 2)) < 0.05,
+                 qPrintable(summary.value(QStringLiteral("rmseXY")).toString()));
+        QCOMPARE(view->property("cameraRows").toList().size(), 2);
+        s->shot(QStringLiteral("ui-survey-scheme.png"));
+        // A click on the second photo selects it.
+        QPointF at;
+        QMetaObject::invokeMethod(view, "screenPositionOf", Q_RETURN_ARG(QPointF, at), Q_ARG(int, 1));
+        QVERIFY(at.x() >= 0);
+        QTest::mouseClick(s->window, Qt::LeftButton, Qt::NoModifier, view->mapToScene(at).toPoint());
+        QTRY_COMPARE(s->projects.selectedIndex(), 1);
+        // A control point placed on the scheme: the job's CRS for the points, Z from the DSM.
+        QString id;
+        QMetaObject::invokeMethod(view, "placePointAt", Q_RETURN_ARG(QString, id), Q_ARG(QPointF, at + QPointF(20, 0)));
+        QVERIFY(!id.isEmpty());
+        QCOMPARE(s->survey.controlPoints().size(), 1);
+        QCOMPARE(s->survey.crs().epsg(), 32643);
+        QCOMPARE(s->survey.controlPoints().first().z, 100.0);
+        QCOMPARE(s->survey.controlPoints().first().name, QStringLiteral("ОП-1"));
+        QTRY_COMPARE(view->property("pointRows").toList().size(), 1);
     }
 
     // Ground control points: the dialog's tabs open from their commands, and in the photo view

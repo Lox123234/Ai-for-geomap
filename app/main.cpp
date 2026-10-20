@@ -30,6 +30,7 @@
 #include "Scene3DService.h"
 #include "ThumbnailProvider.h"
 #include "View3DItem.h"
+#include "SurveyView.h"
 #include "WebTiles.h"
 #include "WorkspaceState.h"
 
@@ -113,6 +114,7 @@ int main(int argc, char *argv[])
     Scene3DService scene3d;
     QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &scene3d, &Scene3DService::clear);
     qmlRegisterType<View3DItem>("GeoMapAI.View3D", 1, 0, "View3DItem");
+    qmlRegisterType<SurveyView>("GeoMapAI.Survey", 1, 0, "SurveyView");
 
     // Professional workspace: commands, layout, journal, project tree.
     CommandRegistry commands;
