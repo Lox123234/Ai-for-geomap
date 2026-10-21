@@ -2,20 +2,21 @@
 
 **Open-source desktop workspace for UAV photography and geospatial projects.**
 
-`v0.5.4` — Qt 6/QML desktop application written in **C++17**, with no Python runtime, embedded website, accounts or subscription. Photos and projects stay on your computer.
+`v0.7.0` — Qt 6/QML desktop application written in **C++17**, with no Python runtime, embedded website, accounts or subscription. Photos and projects stay on your computer.
 
 > Reconstruction (orthophoto, point cloud, elevation models, textured model) is done by **OpenDroneMap built into GeoMap AI**: its official Windows build ships unmodified inside the program folder (`engines\odm`, AGPL-3.0) and runs as a separate process — no Docker, no WSL, nothing to install separately, no administrator rights. The **map** (GDAL/PROJ, bundled) shows results and other geodata in a real coordinate system, the **3D view** shows point clouds, textured models and terrain on the GPU, and **local AI** (ONNX Runtime, in the program's own process) selects and removes objects. What it covers, feature by feature, is listed in [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md).
 
-## Available in v0.5.4
+## Available in v0.7.0
 
-- Professional workspace (Russian interface): main menu and toolbar built from one list of 147 commands ([docs/UI_COMMANDS.md](docs/UI_COMMANDS.md)); project tree with chunks, results, layers and jobs; photo, map, 3D, split map + 3D and processing views; journal; saved layout
-- Local, portable **projects**: photos copied into the project, relative paths, atomic manifest, background import of files and folders, EXIF/XMP (camera, time, GPS, DJI altitude and attitude), thumbnail cache, photo masks
-- **Processing** with the built-in OpenDroneMap 3.6.2: profiles from fast orthophoto to high quality (DSM, DTM, point cloud, textured model, report), pre-flight check, job queue, live stages and log, cancel, resume and automatic retry of a crashed stage, batch processing, overlap check, quality report; works in folders with spaces and non-Latin names
+- Professional workspace (Russian interface): main menu and toolbar built from one list of 152 commands ([docs/UI_COMMANDS.md](docs/UI_COMMANDS.md)); project tree with chunks, results, layers and jobs; photo, map, 3D, split map + 3D and processing views; journal; saved layout
+- Local, portable **projects**: photos copied into the project, relative paths, atomic manifest, background import of files and folders, EXIF/XMP (camera, time, GPS, DJI altitude, gimbal and drone attitude, RTK status and accuracy), thumbnail cache, photo masks (AI selection, rectangles, one mask on every photo), **image quality** (sharpness of each photo; blurred ones switched off in the chunk)
+- **Processing** with the built-in OpenDroneMap 3.6.2: profiles from fast orthophoto to high quality (DSM, DTM, point cloud, textured model, report), pre-flight check, job queue, live stages and log, cancel, resume and automatic retry of a crashed stage, batch processing, overlap check, quality report; steps one by one (alignment, tie points, depth maps, 3D Tiles), camera optimisation with control points, GeoMap AI's own PDF report; works in folders with spaces and non-Latin names
 - **Chunks**: split a large survey by a grid over the photo positions or by flights, process the parts separately, merge their orthophotos, DSM or DTM into one seamless mosaic
 - **True orthophoto** of GeoMap AI built from the original photos and the dense point cloud: trees and roofs without smearing or "ghosts" (tested on a synthetic forest with a known answer)
-- **Survey control**: ground control and check points marked on the photos, accuracy report (RMSE), camera calibrations, scale bars, markers
+- **Survey control**: the survey scheme (GPS against the alignment, footprints, flight path, RTK summary), ground control and check points marked on the photos, accuracy report (RMSE), camera calibrations, scale bars, markers
+- **Georeferencing by links**: an image, a scanned map or a project photo beside the map, links by two clicks, affine/projective/polynomial fit with residuals, a GeoTIFF on the map; **LiDAR**: LAS/LAZ clouds in the project, in 3D, DSM and DTM from them
 - **Map** (GDAL 3.12.4, PROJ 9.8.1): rasters and vectors in one map CRS with on-the-fly reprojection, styles, legend, grid, drawing and editing, measurements (geodesic length and area, profiles, volumes, slope, viewshed), terrain analysis (slope, aspect, contours, differences), vegetation indices and a raster calculator, DEM editor, export of the map and of results; **basemaps**: local MBTiles/GeoPackage/GeoTIFF or online servers (OpenStreetMap, Esri World Imagery, Sentinel-2 cloudless, OpenTopoMap, your own XYZ) — off by default, used only after you accept the server's terms, with its attribution shown
-- **3D view** (Qt RHI: Direct3D/Vulkan/Metal/OpenGL): point clouds (PLY, LAS with classes and intensity), OBJ/PLY models, DSM/DTM terrain; the map's basemap under the scene and the job's photos at their camera positions; measurements, point cloud editing and classification
+- **3D view** (Qt RHI: Direct3D/Vulkan/Metal/OpenGL): point clouds (PLY, LAS with classes and intensity), OBJ/PLY models, DSM/DTM terrain; the map's basemap under the scene and the job's photos at their camera positions; measurements, point cloud editing and classification, a texture editor working on a copy of the model
 - **Local AI** (ONNX Runtime 1.30.0, CPU): MobileSAM object selection by a click and LaMa object removal on orthophotos (both Apache-2.0); every model has a card with its license and checksums
 ## Requirements
 

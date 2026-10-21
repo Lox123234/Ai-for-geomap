@@ -701,7 +701,7 @@ private slots:
         QVERIFY(!projectreport::elevationPreview(job + QStringLiteral("/odm_dem/dsm.tif"), 300, &lo, &hi).isNull());
         QCOMPARE(lo, 100.0);
         projectreport::Input in;
-        in.appVersion = QStringLiteral("0.5.4");
+        in.appVersion = QStringLiteral("0.7.0");
         in.engine = QStringLiteral("OpenDroneMap 3.6.2");
         in.project = QStringLiteral("Схема");
         in.jobId = QStringLiteral("20261020-100000");

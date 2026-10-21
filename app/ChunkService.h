@@ -35,7 +35,7 @@ private:
 
 // Chunks of the project (chunks.json): named sets of the project's photos, each
 // processed by its own jobs. One chunk holding every photo when the file is absent (projects
-// before 0.5.4). A photo may be in several chunks (a split keeps overlaps); every photo is in at
+// before 0.7.0). A photo may be in several chunks (a split keeps overlaps); every photo is in at
 // least one, new photos go to the active chunk. Split: a grid over the photo positions with
 // overlap, or by flights (pauses between shots). Merge: the photos into a new chunk, and the
 // newest orthophotos/DSM/DTM of the chunks into one mosaic (mosaic::build) under mosaics/.

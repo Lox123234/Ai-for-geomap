@@ -16,7 +16,7 @@ namespace projectreport {
 
 struct Input
 {
-    QString appVersion, engine;              // "0.5.4", "OpenDroneMap 3.6.2"
+    QString appVersion, engine;              // "0.7.0", "OpenDroneMap 3.6.2"
     QString project, chunk;                  // names
     QString jobId, jobDirectory, profile;    // profile: its title
     QDateTime started, finished;

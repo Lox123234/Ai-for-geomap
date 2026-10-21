@@ -125,7 +125,7 @@ struct ProcessingJob
     QDateTime startedAt;
     QDateTime finishedAt;
     QStringList images;         // project photo files ("photos/<id>.jpg") used as input
-    QString chunk;              // id of the project's chunk the job processes ("" in jobs before 0.5.4: the first chunk)
+    QString chunk;              // id of the project's chunk the job processes ("" in jobs before 0.7.0: the first chunk)
     int exitCode = 0;
     QVector<Artifact> outputs;
 
