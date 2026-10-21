@@ -139,11 +139,16 @@ Layout compute(const QVector<PhotoIn> &photos, const QString &jobDirectory, int 
     }
     const Dsm dsm(aligned ? QDir(jobDirectory).filePath(QStringLiteral("odm_dem/dsm.tif")) : QString());
 
-    struct Exif { double relAlt = qQNaN(), alt = qQNaN(), yaw = qQNaN(), pitch = qQNaN(); int focal35 = 0, width = 0, height = 0; };
+    struct Exif
+    {
+        double relAlt = qQNaN(), alt = qQNaN(), yaw = qQNaN(), pitch = qQNaN();
+        int focal35 = 0, width = 0, height = 0, rtkFlag = -1;
+        double accuracyXy = qQNaN(), accuracyZ = qQNaN();
+    };
     QVector<Exif> exif(photos.size());
     for (int i = 0; i < photos.size(); ++i) {
         const ImageMetadata m = ExifReader::read(photos[i].path);
-        exif[i] = {m.relativeAltitude, m.altitude, m.yaw, m.pitch, m.focal35, m.width, m.height};
+        exif[i] = {m.relativeAltitude, m.altitude, m.yaw, m.pitch, m.focal35, m.width, m.height, m.rtkFlag, m.accuracyXy, m.accuracyZ};
     }
 
     // --- Cameras: GPS, the alignment.
@@ -154,6 +159,9 @@ Layout compute(const QVector<PhotoIn> &photos, const QString &jobDirectory, int 
         c.row = p.row;
         c.name = p.name;
         c.takenAt = p.takenAt;
+        c.rtkFlag = exif[i].rtkFlag;
+        c.accuracyXy = exif[i].accuracyXy;
+        c.accuracyZ = exif[i].accuracyZ;
         if (p.hasGps) {
             QPointF q(p.longitude, p.latitude);
             if (toCrs.transform(q)) {
@@ -247,9 +255,14 @@ Layout compute(const QVector<PhotoIn> &photos, const QString &jobDirectory, int 
     Summary &s = out.summary;
     double sx = 0, sy = 0, sz = 0;
     int nz = 0;
+    std::vector<double> accuracyXy, accuracyZ;
     for (const Camera &c : out.cameras) {
         ++s.photos;
         s.withGps += c.hasGps;
+        s.rtkFixed += c.rtkFlag == 50;
+        s.rtkFloat += c.rtkFlag == 34;
+        if (std::isfinite(c.accuracyXy)) accuracyXy.push_back(c.accuracyXy);
+        if (std::isfinite(c.accuracyZ)) accuracyZ.push_back(c.accuracyZ);
         if (aligned) (c.aligned ? s.aligned : s.notAligned) += 1;
         if (c.hasError()) {
             ++s.compared;
@@ -269,6 +282,8 @@ Layout compute(const QVector<PhotoIn> &photos, const QString &jobDirectory, int 
         if (nz) s.rmseZ = std::sqrt(sz / nz);
         s.rmse = std::isfinite(s.rmseZ) ? std::sqrt(s.rmseXY * s.rmseXY + s.rmseZ * s.rmseZ) : s.rmseXY;
     }
+    s.accuracyXy = median(accuracyXy);
+    s.accuracyZ = median(accuracyZ);
     if (!out.background.isNull()) out.extent = out.extent.isNull() ? out.backgroundRect : out.extent.united(out.backgroundRect);
     if (out.extent.isNull()) out.error = QStringLiteral("У снимков нет GPS-координат, а выравнивания ещё не было: схему не на чем построить");
     return out;

@@ -89,6 +89,51 @@ private slots:
         QCOMPARE(meta.dateTime, QStringLiteral("2026:09:21 11:00:00"));
         QVERIFY(!meta.hasGps);
     }
+    // DJI flight data in XMP: heights, gimbal and drone attitude, the RTK solution and its σ.
+    void readsDjiXmp()
+    {
+        QTemporaryDir tmp;
+        const QString path = tmp.filePath(QStringLiteral("DJI_0001.JPG"));
+        QVERIFY(writeJpeg(path, withGpsExif() + xmpSegment(djiRtkXmp()), 64, 48));
+        const ImageMetadata m = ExifReader::read(path);
+        QVERIFY(m.valid && m.hasGps);
+        auto near = [](double a, double b) { return std::abs(a - b) < 1e-9; };
+        QVERIFY(near(m.relativeAltitude, 80.2));
+        QVERIFY(near(m.absoluteAltitude, 120.53));
+        QVERIFY(near(m.gimbalYaw, -87.3) && near(m.yaw, -87.3));
+        QVERIFY(near(m.pitch, -89.9));
+        QVERIFY(near(m.gimbalRoll, 0));
+        QVERIFY(near(m.flightYaw, -88.1) && near(m.flightPitch, -3.2) && near(m.flightRoll, 1.4));
+        QCOMPARE(m.rtkFlag, 50);
+        QVERIFY(near(m.accuracyXy, 0.01445));   // the larger of latitude and longitude
+        QVERIFY(near(m.accuracyZ, 0.02531));
+    }
+    // Elements instead of attributes; the accuracy of other cameras (Camera:GPS…Accuracy);
+    // without the gimbal's yaw the drone's heading is the photo's.
+    void readsXmpElementsAndCameraAccuracy()
+    {
+        QTemporaryDir tmp;
+        const QString path = tmp.filePath(QStringLiteral("IMG_0001.JPG"));
+        const QByteArray xml(
+            "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">"
+            "<rdf:Description xmlns:Camera=\"http://pix4d.com/camera/1.0/\" xmlns:drone-dji=\"http://www.dji.com/drone-dji/1.0/\">"
+            "<drone-dji:FlightYawDegree> 45.5 </drone-dji:FlightYawDegree>"
+            "<Camera:GPSXYAccuracy>1.5</Camera:GPSXYAccuracy><Camera:GPSZAccuracy>3</Camera:GPSZAccuracy>"
+            "</rdf:Description></rdf:RDF></x:xmpmeta>");
+        QVERIFY(writeJpeg(path, xmpSegment(xml)));
+        const ImageMetadata m = ExifReader::read(path);
+        QVERIFY(m.valid && !m.hasGps);
+        QVERIFY(std::abs(m.yaw - 45.5) < 1e-9 && std::isnan(m.gimbalYaw));
+        QVERIFY(std::isnan(m.pitch) && std::isnan(m.relativeAltitude));
+        QCOMPARE(m.rtkFlag, -1);
+        QVERIFY(std::abs(m.accuracyXy - 1.5) < 1e-9 && std::abs(m.accuracyZ - 3) < 1e-9);
+        // No XMP: nothing invented.
+        const QString plain = tmp.filePath(QStringLiteral("plain.jpg"));
+        QVERIFY(writeJpegWithGps(plain));
+        const ImageMetadata p = ExifReader::read(plain);
+        QCOMPARE(p.rtkFlag, -1);
+        QVERIFY(std::isnan(p.accuracyXy) && std::isnan(p.flightYaw) && std::isnan(p.absoluteAltitude));
+    }
     void readsCyrillicPath()
     {
         QTemporaryDir tmp;

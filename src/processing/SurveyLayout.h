@@ -36,6 +36,8 @@ struct Camera
     double x = 0, y = 0, z = qQNaN();               // position after the alignment
     QPolygonF footprint;                             // on the ground; empty if unknown
     bool footprintAligned = false;                   // from the reconstruction (else from EXIF)
+    int rtkFlag = -1;                                // XMP (ExifReader): 50 RTK fixed, 34 float; −1 absent
+    double accuracyXy = qQNaN(), accuracyZ = qQNaN();   // σ of the GPS position from XMP, metres
     bool hasError() const { return hasGps && aligned; }
     double dx() const { return x - gpsX; }
     double dy() const { return y - gpsY; }
@@ -47,6 +49,8 @@ struct Summary
     int photos = 0, withGps = 0, aligned = 0, notAligned = 0;
     int compared = 0;                                // aligned with GPS
     double rmseX = qQNaN(), rmseY = qQNaN(), rmseZ = qQNaN(), rmseXY = qQNaN(), rmse = qQNaN();   // metres
+    int rtkFixed = 0, rtkFloat = 0;                  // photos by their XMP RTK status
+    double accuracyXy = qQNaN(), accuracyZ = qQNaN();   // median σ of the photos that state one, metres
 };
 
 struct Layout

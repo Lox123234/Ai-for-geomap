@@ -1,4 +1,5 @@
 #include "ProjectManager.h"
+#include "ExifReader.h"
 #include "ProjectFormat.h"
 #include "ThumbnailCache.h"
 #include <QDateTime>
@@ -434,6 +435,46 @@ void ProjectManager::selectPhoto(int index)
     if (index < -1 || index >= photoCount() || index == m_selectedIndex) return;
     m_selectedIndex = index;
     emit selectionChanged();
+}
+
+QVariantMap ProjectManager::flightInfo(int row) const
+{
+    QVariantMap info{{"height", QString()}, {"gimbal", QString()}, {"drone", QString()}, {"gnss", QString()}, {"rtk", -1}};
+    if (!hasProject() || row < 0 || row >= photoCount()) return info;
+    const ImageMetadata m = ExifReader::read(QDir(m_projectPath).filePath(m_photos.at(row).file));
+    const QLocale ru(QLocale::Russian);
+    auto number = [&ru](double v, int decimals) { return ru.toString(v, 'f', decimals); };
+    auto degrees = [&](double v) { return number(v, 1) + QStringLiteral("°"); };
+    auto sigma = [&](double v) { return v < 1 ? number(v * 100, 1) + QStringLiteral(" см") : number(v, 2) + QStringLiteral(" м"); };
+    QStringList height, gimbal, drone;
+    if (std::isfinite(m.relativeAltitude)) height << QStringLiteral("%1 м над взлётом").arg(number(m.relativeAltitude, 1));
+    if (std::isfinite(m.absoluteAltitude)) height << QStringLiteral("%1 м абс.").arg(number(m.absoluteAltitude, 1));
+    if (std::isfinite(m.pitch)) gimbal << QStringLiteral("наклон %1").arg(degrees(m.pitch));
+    if (std::isfinite(m.gimbalYaw)) gimbal << QStringLiteral("курс %1").arg(degrees(m.gimbalYaw));
+    if (std::isfinite(m.gimbalRoll) && std::abs(m.gimbalRoll) >= 0.05) gimbal << QStringLiteral("крен %1").arg(degrees(m.gimbalRoll));
+    if (std::isfinite(m.flightYaw)) drone << QStringLiteral("курс %1").arg(degrees(m.flightYaw));
+    if (std::isfinite(m.flightPitch)) drone << QStringLiteral("тангаж %1").arg(degrees(m.flightPitch));
+    if (std::isfinite(m.flightRoll)) drone << QStringLiteral("крен %1").arg(degrees(m.flightRoll));
+    QString gnss;
+    switch (m.rtkFlag) {   // DJI RtkFlag
+    case -1: break;
+    case 50: gnss = QStringLiteral("RTK fixed"); break;
+    case 34: gnss = QStringLiteral("RTK float"); break;
+    case 16: gnss = QStringLiteral("без RTK"); break;
+    case 0: gnss = QStringLiteral("нет решения"); break;
+    default: gnss = QStringLiteral("RTK, код %1").arg(m.rtkFlag);
+    }
+    if (std::isfinite(m.accuracyXy)) {
+        const QString s = QStringLiteral("σ %1").arg(sigma(m.accuracyXy))
+                          + (std::isfinite(m.accuracyZ) ? QStringLiteral(" / %1").arg(sigma(m.accuracyZ)) : QString());
+        gnss = gnss.isEmpty() ? s : gnss + QStringLiteral(" · ") + s;
+    }
+    info["height"] = height.join(QStringLiteral(" · "));
+    info["gimbal"] = gimbal.join(QStringLiteral(", "));
+    info["drone"] = drone.join(QStringLiteral(", "));
+    info["gnss"] = gnss;
+    info["rtk"] = m.rtkFlag;
+    return info;
 }
 
 bool ProjectManager::removeSelectedPhoto()

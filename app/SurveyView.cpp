@@ -217,7 +217,10 @@ QVariantMap SurveyView::summary() const
     m.insert(QStringLiteral("job"), m_layout->job);
     m.insert(QStringLiteral("crs"), m_layout->crsLabel);
     m.insert(QStringLiteral("background"), m_layout->backgroundName);
-    const std::pair<const char *, double> rmse[] = {{"rmseX", s.rmseX}, {"rmseY", s.rmseY}, {"rmseZ", s.rmseZ}, {"rmseXY", s.rmseXY}, {"rmse", s.rmse}};
+    m.insert(QStringLiteral("rtkFixed"), s.rtkFixed);
+    m.insert(QStringLiteral("rtkFloat"), s.rtkFloat);
+    const std::pair<const char *, double> rmse[] = {{"rmseX", s.rmseX}, {"rmseY", s.rmseY}, {"rmseZ", s.rmseZ}, {"rmseXY", s.rmseXY}, {"rmse", s.rmse},
+                                                    {"accuracyXy", s.accuracyXy}, {"accuracyZ", s.accuracyZ}};
     for (const auto &[key, v] : rmse)
         if (std::isfinite(v)) m.insert(QString::fromLatin1(key), v);
     return m;

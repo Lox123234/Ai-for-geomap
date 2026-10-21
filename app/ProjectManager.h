@@ -70,6 +70,9 @@ public:
     Q_INVOKABLE void cancelImport();
     Q_INVOKABLE void selectPhoto(int index);
     Q_INVOKABLE bool removeSelectedPhoto();
+    // Flight data of a photo from its XMP (read from the file), as short texts for the photo's
+    // properties: {height, gimbal, drone, gnss, rtk (DJI flag, −1 none)}; empty texts when absent.
+    Q_INVOKABLE QVariantMap flightInfo(int row) const;
     // A list read through a QML property stays bound to it: every element access calls
     // geoPoints() again (O(n) each). Loops must take this detached copy instead.
     Q_INVOKABLE QVariantList geoPointsSnapshot() const { return geoPoints(); }

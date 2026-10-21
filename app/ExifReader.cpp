@@ -5,6 +5,7 @@
 #include <QByteArray>
 #include <QSet>
 #include <QtEndian>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -166,20 +167,38 @@ ImageMetadata ExifReader::read(const QString &path)
     TiffView exif(extractExif(path, &xmp));
     if (exif.good()) exif.parse(meta);
     if (!xmp.isEmpty()) {
-        // drone-dji:Name="value" (attribute) or <drone-dji:Name>value</drone-dji:Name> (element).
+        // prefix:Name="value" (attribute) or <prefix:Name>value</prefix:Name> (element).
         const QString text = QString::fromUtf8(xmp);
-        auto value = [&text](const char *name) {
-            const QString n = QString::fromLatin1(name);
-            QRegularExpressionMatch m = QRegularExpression(QStringLiteral("drone-dji:%1=\"([-+0-9.eE]+)\"").arg(n)).match(text);
-            if (!m.hasMatch()) m = QRegularExpression(QStringLiteral("<drone-dji:%1>\\s*([-+0-9.eE]+)\\s*<").arg(n)).match(text);
+        auto tagged = [&text](const char *qualified) {
+            const QString n = QRegularExpression::escape(QString::fromLatin1(qualified));
+            QRegularExpressionMatch m = QRegularExpression(QStringLiteral("%1=\"\\s*([-+0-9.eE]+)\\s*\"").arg(n)).match(text);
+            if (!m.hasMatch()) m = QRegularExpression(QStringLiteral("<%1>\\s*([-+0-9.eE]+)\\s*<").arg(n)).match(text);
             bool ok = false;
             const double v = m.hasMatch() ? m.captured(1).toDouble(&ok) : NAN;
             return ok && std::isfinite(v) ? v : NAN;
         };
+        auto value = [&tagged](const char *name) { return tagged(QByteArray("drone-dji:").append(name).constData()); };
         meta.relativeAltitude = value("RelativeAltitude");
-        meta.yaw = value("GimbalYawDegree");
-        if (!std::isfinite(meta.yaw)) meta.yaw = value("FlightYawDegree");
+        meta.absoluteAltitude = value("AbsoluteAltitude");
+        meta.gimbalYaw = value("GimbalYawDegree");
+        meta.gimbalRoll = value("GimbalRollDegree");
+        meta.flightYaw = value("FlightYawDegree");
+        meta.flightPitch = value("FlightPitchDegree");
+        meta.flightRoll = value("FlightRollDegree");
+        meta.yaw = std::isfinite(meta.gimbalYaw) ? meta.gimbalYaw : meta.flightYaw;
         meta.pitch = value("GimbalPitchDegree");
+        const double flag = value("RtkFlag");
+        if (std::isfinite(flag) && flag >= 0 && flag < 1000) meta.rtkFlag = int(flag);
+        const double lat = value("RtkStdLat"), lon = value("RtkStdLon");
+        if (std::isfinite(lat) || std::isfinite(lon)) {
+            meta.accuracyXy = std::isfinite(lat) && std::isfinite(lon) ? std::max(lat, lon) : std::isfinite(lat) ? lat : lon;
+            meta.accuracyZ = value("RtkStdHgt");
+        } else {
+            meta.accuracyXy = tagged("Camera:GPSXYAccuracy");
+            meta.accuracyZ = tagged("Camera:GPSZAccuracy");
+        }
+        if (!(meta.accuracyXy >= 0)) meta.accuracyXy = NAN;
+        if (!(meta.accuracyZ >= 0)) meta.accuracyZ = NAN;
     }
     return meta;
 }

@@ -42,6 +42,7 @@
 #include "Scene3DService.h"
 #include "ThumbnailProvider.h"
 #include "View3DItem.h"
+#include "SurveyLayout.h"
 #include "SurveyView.h"
 #include "TextureEditService.h"
 #include "WorkspaceState.h"
@@ -1438,6 +1439,48 @@ private slots:
         QTRY_COMPARE(toggle->property("text").toString(), QStringLiteral("Отключить снимок"));
         s->projects.selectPhoto(0);
         QTRY_VERIFY2(!line->property("value").toString().contains(QStringLiteral("нечёткий")), qPrintable(line->property("value").toString()));
+    }
+
+    // A DJI RTK photo: its flight data (XMP) in the photo's properties and the RTK summary of the
+    // survey scheme.
+    void flightDataOfAPhoto()
+    {
+        QTemporaryDir tmp, files;
+        auto s = open();
+        QVERIFY(s->projects.createProject(QUrl::fromLocalFile(tmp.path()), QStringLiteral("RTK UI")));
+        const QString photo = files.filePath(QStringLiteral("DJI_0001.JPG"));
+        QVERIFY(TestImages::writeJpeg(photo, TestImages::withGpsExif() + TestImages::xmpSegment(TestImages::djiRtkXmp()), 64, 48));
+        s->projects.importFiles({QUrl::fromLocalFile(photo)});
+        QTRY_VERIFY_WITH_TIMEOUT(!s->projects.busy() && s->projects.photoCount() == 1, 10000);
+        const QVariantMap info = s->projects.flightInfo(0);
+        QCOMPARE(info.value("height").toString(), QStringLiteral("80,2 м над взлётом · 120,5 м абс."));
+        QVERIFY2(info.value("gimbal").toString().startsWith(QStringLiteral("наклон ")) && info.value("gimbal").toString().contains(QStringLiteral("курс ")),
+                 qPrintable(info.value("gimbal").toString()));
+        QVERIFY(!info.value("gimbal").toString().contains(QStringLiteral("крен")));   // 0°: not shown
+        QVERIFY(info.value("drone").toString().contains(QStringLiteral("тангаж ")));
+        QCOMPARE(info.value("gnss").toString(), QStringLiteral("RTK fixed · σ 1,4 см / 2,5 см"));
+        QCOMPARE(info.value("rtk").toInt(), 50);
+        QVERIFY(s->projects.flightInfo(5).value("gnss").toString().isEmpty());   // no such photo
+
+        s->projects.selectPhoto(0);
+        QQuickItem *flight = s->findItem(QStringLiteral("photoFlight"));
+        QQuickItem *gnss = s->findItem(QStringLiteral("photoGnss"));
+        QVERIFY(flight && gnss);
+        QTRY_VERIFY(flight->isVisible());
+        QCOMPARE(gnss->property("value").toString(), QStringLiteral("RTK fixed · σ 1,4 см / 2,5 см"));
+
+        surveylayout::PhotoIn in;
+        in.row = 0;
+        in.name = QStringLiteral("DJI_0001.JPG");
+        in.path = QDir(s->projects.projectPath()).filePath(s->projects.photoModel()->photos().first().file);
+        in.hasGps = true;
+        in.latitude = s->projects.photoModel()->photos().first().latitude;
+        in.longitude = s->projects.photoModel()->photos().first().longitude;
+        const surveylayout::Layout layout = surveylayout::compute({in}, QString(), 0);
+        QVERIFY2(layout.ok(), qPrintable(layout.error));
+        QCOMPARE(layout.summary.rtkFixed, 1);
+        QCOMPARE(layout.summary.rtkFloat, 0);
+        QVERIFY(std::abs(layout.summary.accuracyXy - 0.01445) < 1e-9 && std::abs(layout.summary.accuracyZ - 0.02531) < 1e-9);
     }
 
     // GEOMAP_UI_PROJECT=<project with processing results>: the real project in the window,

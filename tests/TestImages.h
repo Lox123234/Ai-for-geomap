@@ -59,6 +59,29 @@ inline QByteArray app1Segment(const QByteArray &tiff)
 }
 inline QByteArray withGpsExif() { return app1Segment(gpsTiff()); }
 
+// JPEG APP1 segment with an XMP packet.
+inline QByteArray xmpSegment(const QByteArray &xml)
+{
+    const QByteArray app1 = QByteArray("http://ns.adobe.com/xap/1.0/\0", 29) + xml;
+    QByteArray marker = QByteArray::fromHex("ffe1");
+    const quint16 size = quint16(app1.size() + 2);
+    marker.append(char(size >> 8)); marker.append(char(size & 0xff));
+    return marker + app1;
+}
+
+// The XMP of a DJI Phantom 4 RTK photo: flight data as attributes, RTK fixed.
+inline QByteArray djiRtkXmp()
+{
+    return QByteArray(
+        "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n"
+        "<rdf:Description rdf:about=\"DJI Meta Data\" xmlns:drone-dji=\"http://www.dji.com/drone-dji/1.0/\"\n"
+        " drone-dji:AbsoluteAltitude=\"+120.53\"\n drone-dji:RelativeAltitude=\"+80.20\"\n"
+        " drone-dji:GimbalRollDegree=\"+0.00\"\n drone-dji:GimbalYawDegree=\"-87.30\"\n drone-dji:GimbalPitchDegree=\"-89.90\"\n"
+        " drone-dji:FlightRollDegree=\"+1.40\"\n drone-dji:FlightYawDegree=\"-88.10\"\n drone-dji:FlightPitchDegree=\"-3.20\"\n"
+        " drone-dji:RtkFlag=\"50\"\n drone-dji:RtkStdLon=\"0.01262\"\n drone-dji:RtkStdLat=\"0.01445\"\n drone-dji:RtkStdHgt=\"0.02531\"/>\n"
+        "</rdf:RDF></x:xmpmeta>");
+}
+
 // Writes a real JPEG and inserts `segment` right after the SOI marker.
 inline bool writeJpeg(const QString &fileName, const QByteArray &segment, int width = 16, int height = 12)
 {

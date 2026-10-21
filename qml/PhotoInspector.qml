@@ -70,6 +70,26 @@ Item {
                         ? inspector.coord(projects.selectedPhoto.latitude) + "\n" + inspector.coord(projects.selectedPhoto.longitude)
                         : "Не обнаружены"
                 }
+                ColumnLayout {
+                    objectName: "photoFlight"
+                    // Read from the photo's XMP whenever the selection changes.
+                    readonly property var info: projects.selectedIndex >= 0 ? projects.flightInfo(projects.selectedIndex) : ({})
+                    visible: !!(info.height || info.gimbal || info.drone || info.gnss)
+                    Layout.fillWidth: true
+                    spacing: 12
+                    DetailLine { visible: !!parent.info.height; field: "Высота"; value: parent.info.height || "" }
+                    DetailLine { visible: !!parent.info.gimbal; field: "Подвес"; value: parent.info.gimbal || "" }
+                    DetailLine { visible: !!parent.info.drone; field: "Дрон"; value: parent.info.drone || "" }
+                    DetailLine {
+                        objectName: "photoGnss"
+                        visible: !!parent.info.gnss
+                        field: "ГНСС"
+                        value: parent.info.gnss || ""
+                        ToolTip.visible: gnssHover.hovered; ToolTip.delay: 400
+                        ToolTip.text: "Из XMP снимка: решение и σ положения (в плане / по высоте). OpenDroneMap учитывает её при выравнивании"
+                        HoverHandler { id: gnssHover }
+                    }
+                }
                 DetailLine {
                     objectName: "photoQualityLine"
                     field: "Качество"

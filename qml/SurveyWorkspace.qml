@@ -11,6 +11,7 @@ Item {
     property var host
 
     function fmt(v, d) { return v === undefined ? "—" : Number(v).toLocaleString(Qt.locale("ru_RU"), 'f', d === undefined ? 2 : d) }
+    function sigma(v) { return v === undefined ? "—" : v < 1 ? fmt(v * 100, 1) + " см" : fmt(v, 1) + " м" }
 
     RowLayout {
         anchors.fill: parent
@@ -189,6 +190,24 @@ Item {
                           : "Снимков " + view.summary.photos + " · с GPS " + view.summary.withGps
                             + (view.shownJob.length > 0 ? "\nВыровнено " + view.summary.aligned + (view.summary.notAligned > 0 ? " · не выровнено " + view.summary.notAligned : "") : "\nВыравнивания ещё не было")
                     color: Theme.text; font.pixelSize: 12
+                }
+                Label {
+                    objectName: "surveyGnss"
+                    readonly property int rtk: view.summary.photos === undefined ? 0 : view.summary.rtkFixed + view.summary.rtkFloat
+                    Layout.fillWidth: true; wrapMode: Text.Wrap
+                    visible: rtk > 0 || view.summary.accuracyXy !== undefined
+                    text: (rtk > 0 ? "RTK fixed " + view.summary.rtkFixed + (view.summary.rtkFloat > 0 ? " · float " + view.summary.rtkFloat : "")
+                                     + " из " + view.summary.photos
+                                   : "Точность GPS")
+                          + (view.summary.accuracyXy !== undefined
+                             ? "\nσ " + workspace.sigma(view.summary.accuracyXy) + " в плане"
+                               + (view.summary.accuracyZ !== undefined ? " · " + workspace.sigma(view.summary.accuracyZ) + " по высоте" : "")
+                             : "")
+                    color: rtk > 0 && view.summary.rtkFixed === view.summary.photos ? Theme.good : Theme.text
+                    font.pixelSize: 12
+                    ToolTip.visible: gnssHover.hovered; ToolTip.delay: 400
+                    ToolTip.text: "Из XMP снимков (медиана). OpenDroneMap учитывает эту точность при выравнивании"
+                    HoverHandler { id: gnssHover }
                 }
                 GridLayout {
                     visible: view.summary.rmseXY !== undefined
