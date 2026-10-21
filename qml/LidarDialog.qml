@@ -74,7 +74,18 @@ Dialog {
                         Layout.fillWidth: true
                         spacing: 2
                         Label { text: modelData.name; color: Theme.text; font.pixelSize: 13; font.weight: Font.DemiBold; elide: Text.ElideMiddle; Layout.fillWidth: true }
-                        Label { text: modelData.summary; color: Theme.muted; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideRight }
+                        Label {
+                            text: modelData.summary + (modelData.density.length ? " · " + modelData.density : "")
+                            color: Theme.muted; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideRight
+                        }
+                        Label {
+                            visible: modelData.sparse
+                            text: "Редкое облако — модели выйдут грубыми (ячейка " + modelData.resolution.toLocaleString(Qt.locale("ru_RU"), 'f', modelData.resolution < 1 ? 2 : 0) + " м)"
+                            color: Theme.warn; font.pixelSize: 11
+                            ToolTip.visible: sparseHover.hovered; ToolTip.delay: 400
+                            ToolTip.text: "Меньше одной точки на м²: так бывает у облака выравнивания снимков. У LiDAR — десятки точек на м²"
+                            HoverHandler { id: sparseHover }
+                        }
                         Label {
                             text: modelData.crs + " · " + modelData.heights
                             color: Theme.faint; font.pixelSize: 10; Layout.fillWidth: true; elide: Text.ElideRight

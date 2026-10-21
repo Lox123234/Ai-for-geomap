@@ -1356,6 +1356,8 @@ private slots:
                      || c.value(QStringLiteral("summary")).toString().contains(QStringLiteral("3 721 точек")),
                  qPrintable(c.value(QStringLiteral("summary")).toString()));
         QVERIFY(c.value(QStringLiteral("crs")).toString().contains(QStringLiteral("32615")));
+        QCOMPARE(c.value(QStringLiteral("density")).toString(), QStringLiteral("4,13 т/м²"));   // 3721 points on 30 × 30 m
+        QVERIFY(!c.value(QStringLiteral("sparse")).toBool());
         QVERIFY(!s->lidar.importPaths({las}).isEmpty());   // already there
 
         QSignalSpy finished(&s->lidar, &LidarService::finished);

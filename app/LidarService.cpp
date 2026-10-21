@@ -133,6 +133,8 @@ QVariantList LidarService::clouds() const
         for (int k : c.info.classes)
             if (k != 0 && k != 1) classes << lidar::classTitle(k);
         const Crs crs = Crs::fromWkt(c.info.crsWkt);
+        const double area = c.info.extent.width() * c.info.extent.height();
+        const double density = area > 0 ? double(c.info.points) / area : 0;
         list << QVariantMap{{QStringLiteral("index"), i},
                             {QStringLiteral("name"), c.name},
                             {QStringLiteral("path"), QDir::toNativeSeparators(c.info.path)},
@@ -144,7 +146,11 @@ QVariantList LidarService::clouds() const
                             {QStringLiteral("hasGround"), c.info.classes.contains(2)},
                             {QStringLiteral("dsm"), c.dsm},
                             {QStringLiteral("dtm"), c.dtm},
-                            {QStringLiteral("resolution"), lidar::suggestedResolution(c.info)}};
+                            {QStringLiteral("resolution"), lidar::suggestedResolution(c.info)},
+                            {QStringLiteral("density"), density > 0 ? QStringLiteral("%1 т/м²").arg(ru.toString(density, 'f', density < 10 ? 2 : 0)) : QString()},
+                            // Fewer than one point per square metre: a cloud of photogrammetry's alignment, not
+                            // LiDAR — its models come out coarse (cells of metres).
+                            {QStringLiteral("sparse"), density > 0 && density < 1}};
     }
     return list;
 }
