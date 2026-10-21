@@ -33,13 +33,13 @@ private:
     QSet<QString> m_disabled;
 };
 
-// Chunks of the project (chunks.json), as in Metashape: named sets of the project's photos, each
+// Chunks of the project (chunks.json): named sets of the project's photos, each
 // processed by its own jobs. One chunk holding every photo when the file is absent (projects
 // before 0.5.4). A photo may be in several chunks (a split keeps overlaps); every photo is in at
 // least one, new photos go to the active chunk. Split: a grid over the photo positions with
 // overlap, or by flights (pauses between shots). Merge: the photos into a new chunk, and the
 // newest orthophotos/DSM/DTM of the chunks into one mosaic (mosaic::build) under mosaics/.
-// A photo can be switched off in a chunk (Metashape's disabled camera): it stays in the chunk and
+// A photo can be switched off in a chunk: it stays in the chunk and
 // on its views but does not go into the chunk's processing.
 class ChunkService : public QObject
 {

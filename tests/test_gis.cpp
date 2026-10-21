@@ -472,7 +472,7 @@ private slots:
             if (l.id == id) QCOMPARE(l.style.red, 3);
     }
 
-    // Georeferencing by links, as ArcMap does: a known transformation is recovered from its links
+    // Georeferencing by links: a known transformation is recovered from its links
     // with near-zero residuals, a wrong link stands out by its residual, too few links or links on
     // one line are refused, and the warped GeoTIFF puts every pixel where the transformation says.
     void georeferenceByLinks()
@@ -535,7 +535,7 @@ private slots:
             const QPointF q = f.forward.map(QPointF(333, 222)), e = homography(QPointF(333, 222));
             QVERIFY(std::hypot(q.x() - e.x(), q.y() - e.y()) < 1e-5);
         }
-        // The affine fit cannot follow the perspective: a residual of metres, as ArcMap shows.
+        // The affine fit cannot follow the perspective: a residual of metres.
         QVERIFY(fit(persp, Method::Affine).rmse > 1);
         const Transform corners = Transform::fromCorners(QSizeF(400, 300), QPolygonF({homography({0, 0}), homography({400, 0}), homography({400, 300}),
                                                                                        homography({0, 300})}));

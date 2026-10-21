@@ -63,7 +63,7 @@ Item {
                 FlatButton { text: "Удалить объект"; compact: true; implicitHeight: 24; caution: true; enabled: gis.hasSelection
                              onClicked: canvas.host.runCommand("edit.delete") }
                 Item { Layout.fillWidth: true }
-                // Background map, as in Metashape: none, a street map or satellite imagery, or a file.
+                // Background map: none, a street map or satellite imagery, or a file.
                 ComboBox {
                     id: basemapBox
                     objectName: "basemapBox"

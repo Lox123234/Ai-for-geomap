@@ -405,7 +405,7 @@ void GeorefService::loaded(const std::shared_ptr<Loaded> &l, int generation)
         if (atGps) m_map->setView(gps, m_map->resolution());
     }
     if (!m_initial.isValid()) {
-        // ArcMap's "Fit to display": in the middle of the view, over 60 % of it.
+        // Fit to the view: in its middle, over 60 % of it.
         const QSizeF v = m_map->viewSize();
         const double s = qMin(0.6 * v.width() / m_full.width(), 0.6 * v.height() / m_full.height()) * m_map->resolution();
         const QPointF c = atGps ? gps : m_map->center();
@@ -535,7 +535,7 @@ void GeorefService::mapClicked(const QPointF &mapPoint)
                            : QStringLiteral("Связь %1 · %2").arg(m_links.size()).arg(fitText().section('\n', 0, 0)));
         return;
     }
-    // ArcMap: the first click on the image shown on the map, the second where it belongs.
+    // The first click on the image shown on the map, the second where it belongs.
     if (m_showImage) {
         const std::optional<QPointF> p = imagePointAt(mapPoint);
         if (p && inImage(*p)) {
@@ -619,7 +619,7 @@ void GeorefService::refit()
             if (a.ok()) t = a.forward;
         }
         if (!t.isValid() && on.size() >= 2) {
-            // Two links: shift, turn and scale (the image keeps its shape), as ArcMap does.
+            // Two links: shift, turn and scale (the image keeps its shape).
             auto z = [](const QPointF &p) { return std::complex<double>(p.x(), -p.y()); };
             const std::complex<double> z1 = z(on[0].image), z2 = z(on[1].image), w1(on[0].map.x(), on[0].map.y()), w2(on[1].map.x(), on[1].map.y());
             if (std::abs(z2 - z1) > 1e-9) {
@@ -741,7 +741,7 @@ QString GeorefService::loadLinks(const QUrl &url)
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return QStringLiteral("Файл не открывается: %1").arg(QDir::toNativeSeparators(path));
     QVector<georef::Link> read;
-    bool down = false;   // y in rows (down) rather than ArcMap's −row
+    bool down = false;   // y in rows (down) rather than −row
     for (const QByteArray &raw : f.readAll().split('\n')) {
         const QString line = QString::fromUtf8(raw).trimmed();
         if (line.isEmpty() || line.startsWith('#')) continue;
@@ -914,7 +914,7 @@ void GeorefService::paintOverlay(QPainter *painter, const MapService &map) const
     painter->setBrush(Qt::NoBrush);
     painter->drawPolygon(outline);
     // Links: the point of the image where the transformation puts it (green), where it should be
-    // (red), the blue line between them — as ArcMap draws them.
+    // (red), the blue line between them.
     auto cross = [&](const QPointF &p, const QColor &c, double r) {
         QPen pen(QColor(0, 0, 0, 160), 4);
         pen.setCosmetic(true);

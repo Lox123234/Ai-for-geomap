@@ -5,8 +5,8 @@
 #include <QVector>
 #include <QtNumeric>
 
-// Sharpness of photos (Обработка → Оценка качества снимков), as Estimate Image Quality in
-// Metashape: how sharp the most focused part of a photo is. The no-reference blur metric of
+// Sharpness of photos (Обработка → Оценка качества снимков): how sharp the most focused part of
+// a photo is. The no-reference blur metric of
 // Crété-Roffet et al. (2007, "The blur effect"): the share of the image's own gradient that a
 // further 9-pixel blur does not remove, on 8 × 6 tiles of the photo halved until its long side is
 // at most MaxSide pixels; the photo's value is the 90th percentile of its tiles with contrast
@@ -17,7 +17,7 @@
 namespace imagequality {
 
 constexpr int MaxSide = 3000;
-constexpr double Threshold = 0.5;   // quality below: blurred (Metashape's recommendation)
+constexpr double Threshold = 0.5;   // quality below: blurred (the usual threshold)
 
 struct Result
 {

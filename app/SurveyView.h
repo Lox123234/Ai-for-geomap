@@ -11,7 +11,7 @@
 #include <QVariantMap>
 #include <memory>
 
-// «Схема съёмки» (the GPS tab): the survey as Agisoft Metashape's Reference view shows it — every
+// «Схема съёмки» (the GPS tab): the survey at a glance — every
 // photo where its GPS put it and where the alignment of a job placed it, the error between them
 // (a vector, exaggerated; its colour the error in height), the photos' footprints on the ground,
 // the flight path in capture order, the control and check points with their errors, over the

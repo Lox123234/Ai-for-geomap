@@ -1058,7 +1058,7 @@ private slots:
         QTRY_COMPARE(s->scene3d.layerCount(), 0);
     }
 
-    // Инструменты → Привязка изображения по точкам, as ArcMap: the image beside the map, a link by
+    // Инструменты → Привязка изображения по точкам: the image beside the map, a link by
     // a click on the image and a click on the map (or first on the image shown on the map), the
     // RMS error and the worst link, a link switched off and typed in, Esc, the GeoTIFF on the map,
     // the links back when the image is opened again.
@@ -1143,7 +1143,7 @@ private slots:
         QVERIFY(s->georef.pending());
         s->map.keyPressed(Qt::Key_Escape);
         QVERIFY(!s->georef.pending());
-        // ArcMap's way: the first click on the image shown on the map, the second where it belongs.
+        // The first click on the image shown on the map, the second where it belongs.
         mapClick(truth(QPointF(300, 100)));
         QVERIFY(s->georef.pending());
         const QPointF onMap = *s->georef.pendingPoint();

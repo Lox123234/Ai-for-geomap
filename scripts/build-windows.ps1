@@ -281,7 +281,8 @@ try {
     # Documentation for "Справка": docs\*.md plus README, CHANGELOG and the license.
     $docs = Join-Path $out 'docs'
     New-Item -ItemType Directory -Force -Path $docs | Out-Null
-    Copy-Item (Join-Path $root 'docs\*.md') $docs -Force
+    # FEATURE_MATRIX.md is the developers' record of requirements, not for the program.
+    Copy-Item (Join-Path $root 'docs\*.md') $docs -Exclude 'FEATURE_MATRIX.md' -Force
     foreach ($file in 'README.md', 'CHANGELOG.md', 'LICENSE') { Copy-Item (Join-Path $root $file) $docs -Force }
 
     if (!$NoOdm) {

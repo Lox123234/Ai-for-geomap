@@ -11,7 +11,7 @@
 class ChunkService;
 class ProjectManager;
 
-// Обработка → Оценка качества снимков, as Estimate Image Quality in Metashape: the sharpness of
+// Обработка → Оценка качества снимков: the sharpness of
 // the photos (imagequality::measure, in the background, several at a time), kept by photo id in
 // <project>/quality.json with the file's size and time; the quality of each against the sharpest
 // photos of the project; blurred photos switched off in the active chunk (ChunkService).

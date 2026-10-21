@@ -16,8 +16,8 @@
 class QNetworkAccessManager;
 class QNetworkReply;
 
-// Online basemaps (XYZ tiles in Web Mercator) under the map, like the satellite and street maps of
-// Agisoft Metashape. Tiles are downloaded only as a view needs them (no area is fetched ahead:
+// Online basemaps (XYZ tiles in Web Mercator) under the map: satellite and street maps. Tiles
+// are downloaded only as a view needs them (no area is fetched ahead:
 // the tile servers' usage policies forbid it), at most a few at a time, with an identifying
 // User-Agent, and kept in a disk cache; the provider's attribution is always shown on the map.
 namespace webtiles {

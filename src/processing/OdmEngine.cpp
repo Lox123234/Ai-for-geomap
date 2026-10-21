@@ -1356,7 +1356,7 @@ QVariantMap OdmEngine::parseQualityStats(const QByteArray &statsJson)
     const int components = rec.value("components").toInt();
     if (components > 1)
         warnings << QStringLiteral("Реконструкция состоит из %1 несвязанных частей: между группами снимков мало перекрытия.").arg(components);
-    // Feature detection and matching (Metashape's "Match Photos"): points found and used per photo.
+    // Feature detection and matching: points found and used per photo.
     const QJsonObject features = s.value("features_statistics").toObject();
     const int detected = features.value("detected_features").toObject().value("median").toInt();
     const int used = features.value("reconstructed_features").toObject().value("median").toInt();

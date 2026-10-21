@@ -9,7 +9,7 @@
 #include <QVector>
 #include <functional>
 
-// Georeferencing of an image by control point links, as ArcMap's Georeferencing toolbar does: each
+// Georeferencing of an image by control point links: each
 // link joins a pixel of the image to a point of the map; a transformation is fitted to the links by
 // least squares; the residual of every link (map units) and the inverse residual (pixels) and the
 // RMS error tell how well the links agree; the image is then warped into a GeoTIFF of the map's CRS.

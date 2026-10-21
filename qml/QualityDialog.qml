@@ -75,7 +75,7 @@ Dialog {
                     valueFromText: function(t) { return Math.round(Number.fromLocaleString(Qt.locale("ru_RU"), t) * 100) }
                     onValueModified: photoQuality.threshold = value / 100
                     ToolTip.visible: hovered; ToolTip.delay: 500
-                    ToolTip.text: "Ниже порога — снимок нечёткий. Metashape советует 0,5"
+                    ToolTip.text: "Ниже порога — снимок нечёткий. Обычно 0,5"
                 }
             }
             FlatButton {

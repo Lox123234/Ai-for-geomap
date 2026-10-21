@@ -5,7 +5,7 @@ import GeoMapAI.Survey
 
 // «Схема съёмки» (the GPS tab): where the photos were taken and where the alignment placed them,
 // their errors, footprints and flight path, the control points (SurveyView), with a toolbar on
-// top and the summary, the cameras and the points on the right — as Metashape's Reference pane.
+// top and the summary, the cameras and the points on the right.
 Item {
     id: workspace
     property var host

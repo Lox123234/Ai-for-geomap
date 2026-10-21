@@ -4,8 +4,7 @@ import QtQuick.Dialogs
 import QtQuick.Layouts
 
 // The right panel of the georeferencing: the accuracy, the transformation, the links with their
-// errors, the selected link's coordinates, link files and the GeoTIFF — ArcMap's Link Table and
-// Georeferencing toolbar in one short column.
+// errors, the selected link's coordinates, link files and the GeoTIFF, in one short column.
 Rectangle {
     id: panel
     property var host
@@ -37,7 +36,7 @@ Rectangle {
         title: "Сохранить связи"
         fileMode: FileDialog.SaveFile
         defaultSuffix: "txt"
-        nameFilters: ["Связи ArcMap (*.txt)", "Все файлы (*)"]
+        nameFilters: ["Связи (*.txt)", "Все файлы (*)"]
         onAccepted: { var e = georef.saveLinks(selectedFile); if (e.length) panel.host.showNotice(e) }
     }
     AppFileDialog {
@@ -291,9 +290,9 @@ Rectangle {
                     spacing: 6
                     FlatButton { compact: true; visible: georef.pending; text: "Отменить точку"; onClicked: georef.cancelPending() }
                     FlatButton { compact: true; text: "Загрузить…"; onClicked: loadLinksDialog.open()
-                                 ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Связи из файла (ArcMap, txt)" }
+                                 ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Связи из файла (txt)" }
                     FlatButton { compact: true; text: "Сохранить…"; enabled: georef.linkCount > 0; onClicked: saveLinksDialog.open()
-                                 ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Связи в файл (формат ArcMap)" }
+                                 ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Связи в файл (txt)" }
                     FlatButton { compact: true; caution: true; text: "Очистить"; enabled: georef.linkCount > 0; onClicked: georef.clearLinks() }
                 }
 

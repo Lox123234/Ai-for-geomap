@@ -5,7 +5,7 @@ import GeoMapAI.Georef
 
 // The image pane of the georeferencing (Инструменты → Привязка изображения по точкам): the image
 // with the points "from" of the links; the map is beside it and the link table in the right panel
-// (GeorefPanel.qml) — as the georeferencer of ArcMap and QGIS.
+// (GeorefPanel.qml).
 Item {
     id: pane
     property var host

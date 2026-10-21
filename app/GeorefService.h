@@ -15,7 +15,7 @@
 class ProjectManager;
 class ProcessingService;
 
-// Georeferencing of an image by control point links, as ArcMap's Georeferencing toolbar: the image
+// Georeferencing of an image by control point links: the image
 // (a photo of the project, a scan of a map, an orthophoto that lies off) is shown on the map where
 // it is first placed — by the footprint of the photo (alignment, else GPS and EXIF), by its own
 // georeferencing, else in the middle of the view; a link is a click on the image (in the image
@@ -117,7 +117,7 @@ public:
     Q_INVOKABLE void applyNow();            // the map follows the links (with auto adjust off)
     Q_INVOKABLE void zoomToImage();
     Q_INVOKABLE void zoomToLink(int index);
-    // ArcMap's link file: tab-separated "x y X Y" per link, x, y in pixels with y up (−row).
+    // Link file: tab-separated "x y X Y" per link, x, y in pixels with y up (−row).
     Q_INVOKABLE QString saveLinks(const QUrl &url);
     Q_INVOKABLE QString loadLinks(const QUrl &url);
     // Warps the image by the fitted transformation into <project>/analysis/<name>_привязка.tif
