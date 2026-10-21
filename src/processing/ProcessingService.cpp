@@ -277,17 +277,19 @@ void ProcessingService::setProject(const QString &directory, const PhotoModel *p
     m_project = dir;
     m_chunk.clear();
     m_chunkPhotos.clear();
+    m_chunkDisabled = 0;
     m_firstChunk = true;
     loadJobs();
     m_model.setJobs(m_jobs);
     emit jobsChanged();
 }
 
-void ProcessingService::setChunk(const QString &id, const QStringList &photoIds, bool firstChunk)
+void ProcessingService::setChunk(const QString &id, const QStringList &photoIds, bool firstChunk, int disabled)
 {
     m_chunk = id;
     m_chunkPhotos = QSet<QString>(photoIds.cbegin(), photoIds.cend());
     m_firstChunk = firstChunk;
+    m_chunkDisabled = disabled;
 }
 
 bool ProcessingService::jobInChunk(const ProcessingJob &job, const QString &chunk, bool firstChunk)
@@ -471,6 +473,8 @@ ProcessingService::Check ProcessingService::runPreflight(const QString &profileI
             c.errors << error;
         }
     }
+    if (!m_chunk.isEmpty() && m_chunkDisabled > 0)
+        c.notes << QStringLiteral("Отключено снимков: %1 — в обработку не идут").arg(m_chunkDisabled);
 
     const QStorageInfo storage(m_project);
     c.free = storage.isValid() ? storage.bytesAvailable() : -1;

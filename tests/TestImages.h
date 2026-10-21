@@ -78,4 +78,50 @@ inline bool writeJpegWithGps(const QString &fileName, int width = 16, int height
     return writeJpeg(fileName, withGpsExif(), width, height);
 }
 
+// A scene with hard edges, like roofs and fields from above: 400 rectangles of random colours on
+// a grey ground (fixed seed).
+inline QImage texturedScene(int width, int height, quint32 seed = 1)
+{
+    QImage image(width, height, QImage::Format_RGB32);
+    image.fill(QColor(110, 120, 100));
+    auto next = [&seed] {
+        seed = seed * 1664525u + 1013904223u;
+        return seed >> 8;
+    };
+    for (int i = 0; i < 400; ++i) {
+        const int w = 8 + int(next() % quint32(width / 10)), h = 8 + int(next() % quint32(height / 10));
+        const int x0 = int(next() % quint32(width)), y0 = int(next() % quint32(height));
+        const int g = int(next() % 256);
+        const QRgb c = qRgb(g, qBound(0, g + int(next() % 40) - 20, 255), qBound(0, g - 15, 255));
+        for (int y = y0; y < qMin(height, y0 + h); ++y) {
+            QRgb *line = reinterpret_cast<QRgb *>(image.scanLine(y));
+            for (int x = x0; x < qMin(width, x0 + w); ++x) line[x] = c;
+        }
+    }
+    return image;
+}
+
+// Horizontal motion blur over `length` pixels: a moving average along the rows.
+inline QImage motionBlur(const QImage &source, int length)
+{
+    const QImage in = source.convertToFormat(QImage::Format_RGB32);
+    QImage out(in.size(), QImage::Format_RGB32);
+    const int r = length / 2, w = in.width();
+    for (int y = 0; y < in.height(); ++y) {
+        const QRgb *src = reinterpret_cast<const QRgb *>(in.constScanLine(y));
+        QRgb *dst = reinterpret_cast<QRgb *>(out.scanLine(y));
+        int sum[3] = {0, 0, 0};
+        for (int k = -r; k <= r; ++k) {
+            const QRgb p = src[qBound(0, k, w - 1)];
+            sum[0] += qRed(p); sum[1] += qGreen(p); sum[2] += qBlue(p);
+        }
+        for (int x = 0; x < w; ++x) {
+            dst[x] = qRgb(sum[0] / (2 * r + 1), sum[1] / (2 * r + 1), sum[2] / (2 * r + 1));
+            const QRgb add = src[qMin(w - 1, x + r + 1)], drop = src[qMax(0, x - r)];
+            sum[0] += qRed(add) - qRed(drop); sum[1] += qGreen(add) - qGreen(drop); sum[2] += qBlue(add) - qBlue(drop);
+        }
+    }
+    return out;
+}
+
 } // namespace TestImages

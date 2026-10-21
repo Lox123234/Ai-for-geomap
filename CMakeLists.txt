@@ -35,6 +35,8 @@ qt_add_library(GeoMapCore STATIC
     src/import/ImportJob.cpp
     src/import/ThumbnailCache.h
     src/import/ThumbnailCache.cpp
+    src/import/ImageQuality.h
+    src/import/ImageQuality.cpp
     app/ProjectManager.h
     app/ProjectManager.cpp
     app/PhotoModel.h
@@ -45,6 +47,8 @@ qt_add_library(GeoMapCore STATIC
     app/SurveyControl.cpp
     app/ChunkService.h
     app/ChunkService.cpp
+    app/PhotoQualityService.h
+    app/PhotoQualityService.cpp
     app/ExifReader.h
     app/ExifReader.cpp
     src/processing/ProcessingTypes.h
@@ -211,7 +215,7 @@ set(GEOMAP_QML_FILES
     qml/RasterCalcDialog.qml qml/AiModelsDialog.qml qml/MarkersDialog.qml qml/DemEditorDialog.qml qml/CloudEditorDialog.qml
     qml/ProjectSettingsDialog.qml qml/SaveAsDialog.qml qml/ProjectCheckDialog.qml qml/SurveyDialog.qml qml/BasemapDialog.qml qml/BatchDialog.qml qml/ChunksDialog.qml
     qml/AppFileDialog.qml qml/AppFolderDialog.qml qml/SurveyWorkspace.qml
-    qml/GeorefWorkspace.qml qml/GeorefPanel.qml qml/LidarDialog.qml qml/OptimizeDialog.qml qml/TextureEditorDialog.qml)
+    qml/GeorefWorkspace.qml qml/GeorefPanel.qml qml/LidarDialog.qml qml/OptimizeDialog.qml qml/TextureEditorDialog.qml qml/QualityDialog.qml)
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 foreach(file IN LISTS GEOMAP_QML_FILES)
     get_filename_component(name ${file} NAME)

@@ -90,8 +90,9 @@ public:
     void setProject(const QString &directory, const PhotoModel *photos);
     QString projectDirectory() const { return m_project; }
     // The chunk new jobs process (ChunkService): its id and photo ids; jobs written before
-    // chunks existed (no chunk) belong to the first chunk. An empty id: all photos.
-    void setChunk(const QString &id, const QStringList &photoIds, bool firstChunk);
+    // chunks existed (no chunk) belong to the first chunk. An empty id: all photos. photoIds
+    // without the chunk's switched-off photos (their number: disabled).
+    void setChunk(const QString &id, const QStringList &photoIds, bool firstChunk, int disabled = 0);
     QString chunk() const { return m_chunk; }
     bool jobInChunk(const ProcessingJob &job) const;
     static bool jobInChunk(const ProcessingJob &job, const QString &chunk, bool firstChunk);
@@ -228,6 +229,7 @@ private:
     const PhotoModel *m_photos = nullptr;
     QString m_chunk;                  // "" = every photo of the project
     QSet<QString> m_chunkPhotos;
+    int m_chunkDisabled = 0;
     bool m_firstChunk = true;
     QVector<ProcessingJob> m_jobs;    // newest first
     QStringList m_queue;              // ids waiting to run, oldest first

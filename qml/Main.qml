@@ -199,6 +199,7 @@ ApplicationWindow {
         case "view.grid": case "view.legend": case "tool.marker": case "tool.demEditor": return map
         case "proc.trueOrthophoto": return has && !processing.trueOrthoBusy
         case "proc.overlap": return has && !gis.analysisBusy && (projects.photoCount > 0 || processing.jobCount > 0)
+        case "proc.quality": return has && chunks.activePhotoCount > 0
         // Terrain analysis needs the map (and a DEM on it, which the tools and dialog check).
         case "tool.profile": case "tool.volume": case "analysis.longProfile": case "analysis.cutFill":
         case "view.slope": case "view.aspect": case "view.contours": case "analysis.terrain":
@@ -447,6 +448,7 @@ ApplicationWindow {
         "proc.align": function() { window.openProcessing("align") },
         "proc.match": function() { window.openProcessing("align") },
         "proc.optimize": function() { optimizeDialog.open() },
+        "proc.quality": function() { qualityDialog.open() },
         "tool.textureEditor": function() { textureEditorDialog.open() },
         "proc.report": function() {
             var e = reports.build("")
@@ -1104,6 +1106,7 @@ ApplicationWindow {
     }
     LidarDialog { id: lidarDialog; host: window }
     OptimizeDialog { id: optimizeDialog; host: window }
+    QualityDialog { id: qualityDialog; host: window }
     TextureEditorDialog { id: textureEditorDialog; host: window }
     Connections {
         target: reports
@@ -2608,6 +2611,7 @@ ApplicationWindow {
                         delegate: Rectangle {
                             required property int photoRow   // the project's row (selection)
                             required property url photoThumb
+                            required property bool photoEnabled
                             width: 132; height: 90
                             radius: 7; color: "#202b37"; clip: true
                             border.color: photoRow === projects.selectedIndex ? "#6ac9ff" : "#3a4554"
@@ -2616,6 +2620,13 @@ ApplicationWindow {
                                 anchors.fill: parent; anchors.margins: 3
                                 source: photoThumb; sourceSize.width: 264; sourceSize.height: 180
                                 fillMode: Image.PreserveAspectCrop; asynchronous: true
+                                opacity: photoEnabled ? 1 : 0.35
+                            }
+                            Label {
+                                visible: !photoEnabled
+                                anchors.centerIn: parent
+                                text: "выкл."
+                                color: Theme.text; font.pixelSize: 12; font.weight: Font.DemiBold
                             }
                             MouseArea { anchors.fill: parent; onClicked: projects.selectPhoto(photoRow) }
                         }

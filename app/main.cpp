@@ -24,6 +24,7 @@
 #include "MapView.h"
 #include "OdmEngine.h"
 #include "PhotoMasks.h"
+#include "PhotoQualityService.h"
 #include "SurveyControl.h"
 #include "Platform.h"
 #include "ProcessingService.h"
@@ -84,6 +85,8 @@ int main(int argc, char *argv[])
                      });
     // Chunks: sets of the project's photos processed by their own jobs (chunks.json).
     ChunkService chunks(&projects, &processing);
+    // Sharpness of the photos (quality.json); blurred ones switched off in the active chunk.
+    PhotoQualityService photoQuality(&projects, &chunks);
     // GDAL/OGR and PROJ; data folders next to the executable in deployed builds.
     GisEnvironment::initialize(QCoreApplication::applicationDirPath());
     // Tiles of online basemaps, shared by all projects.
@@ -149,6 +152,9 @@ int main(int argc, char *argv[])
     QObject::connect(&reports, &ReportService::finished, &appLog, [&appLog](bool ok, const QString &message) {
         appLog.add(ok ? AppLog::Info : AppLog::Error, QStringLiteral("Отчёт"), message);
     });
+    QObject::connect(&photoQuality, &PhotoQualityService::finished, &appLog, [&appLog](bool ok, const QString &message) {
+        appLog.add(ok ? AppLog::Info : AppLog::Error, QStringLiteral("Качество снимков"), message);
+    });
     QObject::connect(&lidar, &LidarService::finished, &appLog, [&appLog](bool ok, const QString &message) {
         appLog.add(ok ? AppLog::Info : AppLog::Error, QStringLiteral("LiDAR"), message);
     });
@@ -177,6 +183,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("reports", &reports);
     engine.rootContext()->setContextProperty("textures", &textures);
     engine.rootContext()->setContextProperty("chunks", &chunks);
+    engine.rootContext()->setContextProperty("photoQuality", &photoQuality);
     engine.rootContext()->setContextProperty("commands", &commands);
     engine.rootContext()->setContextProperty("workspace", &workspace);
     engine.rootContext()->setContextProperty("appLog", &appLog);

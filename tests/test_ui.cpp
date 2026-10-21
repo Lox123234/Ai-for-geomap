@@ -30,6 +30,7 @@
 #include "MapView.h"
 #include "MockEngine.h"
 #include "PhotoMasks.h"
+#include "PhotoQualityService.h"
 #include "ProcessingService.h"
 #include "SurveyControl.h"
 #include "TestImages.h"
@@ -58,6 +59,7 @@ struct Session
     ProjectManager projects;
     ProcessingService processing{new MockEngine(record)};
     ChunkService chunks{&projects, &processing};
+    PhotoQualityService photoQuality{&projects, &chunks};
     ai::AiService aiModels;
     MapService map;
     PhotoMasks photoMasks{&aiModels};
@@ -119,6 +121,7 @@ struct Session
         c->setContextProperty("reports", &reports);
         c->setContextProperty("textures", &textures);
         c->setContextProperty("chunks", &chunks);
+        c->setContextProperty("photoQuality", &photoQuality);
         c->setContextProperty("commands", &commands);
         c->setContextProperty("workspace", &workspace);
         c->setContextProperty("appLog", &log);
@@ -266,7 +269,7 @@ private slots:
         QObject *processingMenu = nullptr;
         for (QObject *m : menus) if (m->property("title").toString().contains(QStringLiteral("Обработка"))) processingMenu = m;
         QVERIFY(processingMenu);
-        QCOMPARE(processingMenu->property("count").toInt(), 29);   // 23 commands + 6 separators
+        QCOMPARE(processingMenu->property("count").toInt(), 30);   // 24 commands + 6 separators
         QMetaObject::invokeMethod(processingMenu, "open");
         QTRY_VERIFY(processingMenu->property("opened").toBool());
         s->shot(QStringLiteral("ui-06-menu-processing.png"));
@@ -1375,6 +1378,66 @@ private slots:
         QCOMPARE(again.count(), 1);
         QCOMPARE(QDir::cleanPath(again.clouds().first().toMap().value(QStringLiteral("dsm")).toString()), QDir::cleanPath(dsm));
         QMetaObject::invokeMethod(dialog, "close");
+    }
+
+    // Обработка → Оценка качества снимков: the window finds the blurred photo and switches it off
+    // in the chunk; the photo's properties show it and switch it on again.
+    void photoQualityInTheWindow()
+    {
+        QTemporaryDir tmp, files;
+        auto s = open();
+        QVERIFY(s->projects.createProject(QUrl::fromLocalFile(tmp.path()), QStringLiteral("Качество UI")));
+        QList<QUrl> urls;
+        for (int i = 0; i < 4; ++i) {
+            QImage scene = TestImages::texturedScene(800, 600, quint32(i + 1));
+            if (i == 2) scene = TestImages::motionBlur(scene, 15);
+            const QString f = files.filePath(QStringLiteral("DJI_%1.JPG").arg(i, 4, 10, QLatin1Char('0')));
+            QVERIFY(scene.save(f, "JPG", 92));
+            urls << QUrl::fromLocalFile(f);
+        }
+        s->projects.importFiles(urls);
+        QTRY_VERIFY_WITH_TIMEOUT(!s->projects.busy() && s->projects.photoCount() == 4, 20000);
+        QVERIFY(s->enabled(QStringLiteral("proc.quality")));
+        QVERIFY(s->run(QStringLiteral("proc.quality")));
+        QObject *dialog = s->window->findChild<QObject *>(QStringLiteral("qualityDialog"));
+        QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        QQuickItem *estimate = s->findItem(QStringLiteral("qualityEstimate"));
+        QVERIFY(estimate);
+        QCOMPARE(estimate->property("text").toString(), QStringLiteral("Оценить"));
+        QMetaObject::invokeMethod(estimate, "clicked");
+        QTRY_VERIFY_WITH_TIMEOUT(s->photoQuality.measured() == 4 && !s->photoQuality.busy(), 30000);
+        QQuickItem *blurred = s->findItem(QStringLiteral("qualityBlurred"));
+        QVERIFY(blurred);
+        QTRY_COMPARE(blurred->property("text").toString(), QStringLiteral("1"));
+        QTRY_COMPARE(estimate->property("text").toString(), QStringLiteral("Оценить заново"));
+        const QString worst = s->photoQuality.photos().first().toMap().value("id").toString();
+        QCOMPARE(s->projects.photoModel()->photos().at(2).id, worst);
+        s->shot(QStringLiteral("ui-14-quality.png"));
+
+        QQuickItem *disable = s->findItem(QStringLiteral("qualityDisable"));
+        QVERIFY(disable);
+        QTRY_VERIFY(disable->property("enabled").toBool());
+        QCOMPARE(disable->property("text").toString(), QStringLiteral("Отключить нечёткие (1)"));
+        QMetaObject::invokeMethod(disable, "clicked");
+        QTRY_COMPARE(s->chunks.activeDisabledCount(), 1);
+        QVERIFY(!s->chunks.photoEnabled(worst));
+        QTRY_VERIFY(!disable->property("enabled").toBool());
+        QMetaObject::invokeMethod(dialog, "close");
+
+        // The photo's properties: its quality, off, and on again.
+        s->projects.selectPhoto(2);
+        QQuickItem *line = s->findItem(QStringLiteral("photoQualityLine"));
+        QVERIFY(line);
+        QTRY_VERIFY2(line->property("value").toString().endsWith(QStringLiteral("· нечёткий · отключён")), qPrintable(line->property("value").toString()));
+        QQuickItem *toggle = s->findItem(QStringLiteral("photoToggle"));
+        QVERIFY(toggle);
+        QCOMPARE(toggle->property("text").toString(), QStringLiteral("Включить снимок"));
+        QMetaObject::invokeMethod(toggle, "clicked");
+        QTRY_VERIFY(s->chunks.photoEnabled(worst));
+        QTRY_COMPARE(toggle->property("text").toString(), QStringLiteral("Отключить снимок"));
+        s->projects.selectPhoto(0);
+        QTRY_VERIFY2(!line->property("value").toString().contains(QStringLiteral("нечёткий")), qPrintable(line->property("value").toString()));
     }
 
     // GEOMAP_UI_PROJECT=<project with processing results>: the real project in the window,

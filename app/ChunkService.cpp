@@ -44,12 +44,30 @@ QString kindTitle(const QString &kind)
 
 // ------------------------------------------------------------------ photos of the active chunk
 
-void ChunkPhotoModel::setPhotos(const QStringList &ids)
+void ChunkPhotoModel::setPhotos(const QStringList &ids, const QStringList &disabled)
 {
-    QSet<QString> set(ids.cbegin(), ids.cend());
-    if (set == m_ids) return;
-    m_ids = std::move(set);
-    invalidateFilter();
+    QSet<QString> set(ids.cbegin(), ids.cend()), off(disabled.cbegin(), disabled.cend());
+    if (set != m_ids) {
+        m_ids = std::move(set);
+        invalidateFilter();
+    }
+    if (off != m_disabled) {
+        m_disabled = std::move(off);
+        if (rowCount() > 0) emit dataChanged(index(0, 0), index(rowCount() - 1, 0), {EnabledRole});
+    }
+}
+
+QVariant ChunkPhotoModel::data(const QModelIndex &index, int role) const
+{
+    if (role == EnabledRole) return !m_disabled.contains(QSortFilterProxyModel::data(index, PhotoModel::IdRole).toString());
+    return QSortFilterProxyModel::data(index, role);
+}
+
+QHash<int, QByteArray> ChunkPhotoModel::roleNames() const
+{
+    QHash<int, QByteArray> names = QSortFilterProxyModel::roleNames();
+    names.insert(EnabledRole, "photoEnabled");
+    return names;
 }
 
 bool ChunkPhotoModel::filterAcceptsRow(int sourceRow, const QModelIndex &sourceParent) const
@@ -108,6 +126,12 @@ int ChunkService::activePhotoCount() const
     return c ? int(c->photos.size()) : 0;
 }
 
+int ChunkService::activeDisabledCount() const
+{
+    const Chunk *c = chunk(m_active);
+    return c ? int(c->disabled.size()) : 0;
+}
+
 bool ChunkService::jobInChunk(const ProcessingJob &job, const QString &chunkId) const
 {
     return ProcessingService::jobInChunk(job, chunkId, !m_chunks.isEmpty() && m_chunks.first().id == chunkId);
@@ -136,8 +160,8 @@ QVariantList ChunkService::chunksForQml() const
             }
         for (const QString &id : c.photos)
             if (const Photo *p = byId.value(id)) gps += p->hasGps ? 1 : 0;
-        list << QVariantMap{{"id", c.id}, {"name", c.name}, {"photos", int(c.photos.size())}, {"gps", gps}, {"jobs", jobCount},
-                            {"completed", done}, {"active", c.id == m_active}, {"split", !c.cell.isEmpty()}};
+        list << QVariantMap{{"id", c.id}, {"name", c.name}, {"photos", int(c.photos.size())}, {"disabled", int(c.disabled.size())},
+                            {"gps", gps}, {"jobs", jobCount}, {"completed", done}, {"active", c.id == m_active}, {"split", !c.cell.isEmpty()}};
     }
     return list;
 }
@@ -162,6 +186,7 @@ void ChunkService::load()
                     ids.insert(c.id);
                     c.name = o.value("name").toString(c.id);
                     for (const QJsonValue &p : o.value("photos").toArray()) c.photos << p.toString();
+                    for (const QJsonValue &p : o.value("disabled").toArray()) c.disabled << p.toString();
                     for (const QJsonValue &p : o.value("cell").toArray()) {
                         const QJsonArray xy = p.toArray();
                         if (xy.size() == 2) c.cell << QPointF(xy.at(0).toDouble(), xy.at(1).toDouble());
@@ -212,6 +237,13 @@ void ChunkService::sync()
             c.photos = kept;
             modified = true;
         }
+        QStringList off;
+        for (const QString &id : std::as_const(c.disabled))
+            if (seen.contains(id) && !off.contains(id)) off << id;
+        if (off != c.disabled) {
+            c.disabled = off;
+            modified = true;
+        }
         assigned.unite(seen);
     }
     // New photos (imported, or of a project before chunks) join the active chunk.
@@ -233,6 +265,7 @@ bool ChunkService::save()
     QJsonArray chunks;
     for (const Chunk &c : std::as_const(m_chunks)) {
         QJsonObject o{{"id", c.id}, {"name", c.name}, {"photos", QJsonArray::fromStringList(c.photos)}, {"created", c.created}};
+        if (!c.disabled.isEmpty()) o.insert("disabled", QJsonArray::fromStringList(c.disabled));
         if (!c.cell.isEmpty()) {
             QJsonArray cell;
             for (const QPointF &p : c.cell) cell.append(QJsonArray{p.x(), p.y()});
@@ -256,9 +289,12 @@ bool ChunkService::save()
 void ChunkService::publish()
 {
     const Chunk *c = chunk(m_active);
-    const QStringList photos = c ? c->photos : QStringList();
-    m_photoModel.setPhotos(photos);
-    if (m_processing) m_processing->setChunk(c ? c->id : QString(), photos, c && m_chunks.first().id == c->id);
+    const QStringList photos = c ? c->photos : QStringList(), disabled = c ? c->disabled : QStringList();
+    m_photoModel.setPhotos(photos, disabled);
+    QStringList processed;
+    for (const QString &id : photos)
+        if (!disabled.contains(id)) processed << id;
+    if (m_processing) m_processing->setChunk(c ? c->id : QString(), processed, c && m_chunks.first().id == c->id, int(disabled.size()));
 }
 
 QString ChunkService::newId() const
@@ -376,6 +412,7 @@ QString ChunkService::removePhoto(const QString &chunkId, const QString &photoId
         if (other.id != chunkId && other.photos.contains(photoId)) elsewhere = true;
     if (!elsewhere) return QStringLiteral("Снимок есть только в этом блоке: сначала добавьте его в другой блок или удалите из проекта.");
     c->photos.removeAll(photoId);
+    c->disabled.removeAll(photoId);
     save();
     publish();
     emit changed();
@@ -392,6 +429,32 @@ QString ChunkService::addPhoto(const QString &chunkId, const QString &photoId)
     sync();   // keeps the project's order
     emit changed();
     return {};
+}
+
+QString ChunkService::setPhotosEnabled(const QStringList &photoIds, bool enabled)
+{
+    Chunk *c = find(m_active);
+    if (!c) return QStringLiteral("Нет активного блока.");
+    bool modified = false;
+    for (const QString &id : photoIds) {
+        if (!c->photos.contains(id)) continue;
+        if (enabled) modified = c->disabled.removeAll(id) > 0 || modified;
+        else if (!c->disabled.contains(id)) {
+            c->disabled << id;
+            modified = true;
+        }
+    }
+    if (!modified) return {};
+    if (!save()) return QStringLiteral("Не удалось сохранить блоки проекта (chunks.json).");
+    publish();
+    emit changed();
+    return {};
+}
+
+bool ChunkService::photoEnabled(const QString &photoId) const
+{
+    const Chunk *c = chunk(m_active);
+    return !c || !c->disabled.contains(photoId);
 }
 
 // ------------------------------------------------------------------ split
@@ -540,12 +603,15 @@ QVariantMap ChunkService::split(const QString &id, const QVariantMap &options)
     QString error;
     const QVector<Part> list = parts(*source, options, &notes, &noPosition, &skipped, &error);
     if (!error.isEmpty()) return {{"ok", false}, {"error", error}, {"notes", notes}};
+    const QStringList disabled = source->disabled;   // before m_chunks grows
     QStringList created;
     for (const Part &p : list) {
         Chunk c;
         c.id = newId();
         c.name = uniqueName(p.name);
         c.photos = p.photos;
+        for (const QString &id : disabled)
+            if (p.photos.contains(id)) c.disabled << id;
         c.cell = p.cell;
         c.created = now();
         m_chunks << c;
@@ -566,7 +632,7 @@ QString ChunkService::mergePhotos(const QStringList &ids, const QString &name)
         emit errorOccurred(QStringLiteral("Выберите хотя бы два блока."));
         return {};
     }
-    QSet<QString> photos;
+    QSet<QString> photos, enabled;
     QStringList names;
     for (const QString &id : ids) {
         const Chunk *c = chunk(id);
@@ -575,12 +641,16 @@ QString ChunkService::mergePhotos(const QStringList &ids, const QString &name)
             return {};
         }
         photos.unite(QSet<QString>(c->photos.cbegin(), c->photos.cend()));
+        for (const QString &p : c->photos)
+            if (!c->disabled.contains(p)) enabled.insert(p);
         names << c->name;
     }
     Chunk merged;
     merged.id = newId();
     merged.name = uniqueName(name.trimmed().isEmpty() ? QStringLiteral("Объединённый блок") : name.trimmed());
     merged.photos = QStringList(photos.cbegin(), photos.cend());
+    for (const QString &p : std::as_const(merged.photos))   // off where it was off in every chunk
+        if (!enabled.contains(p)) merged.disabled << p;
     merged.created = now();
     m_chunks << merged;
     m_active = merged.id;

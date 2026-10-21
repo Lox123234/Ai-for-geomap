@@ -55,11 +55,15 @@ Rectangle {
             delegate: Rectangle {
                 id: photoItem
                 required property int photoRow   // the project's row (selection)
+                required property string photoId
                 required property string photoName
                 required property url photoThumb
                 required property bool photoHasGps
                 required property int photoWidth
                 required property int photoHeight
+                required property bool photoEnabled   // goes into the chunk's processing
+                // Re-evaluated whenever photoQuality changes (its notify signal).
+                readonly property real quality: photoQuality.measured >= 0 ? photoQuality.qualityOf(photoId) : -1
                 width: photoList.width - 10
                 x: 5
                 height: 50
@@ -72,6 +76,7 @@ Rectangle {
                     anchors.fill: parent
                     anchors.margins: 4
                     spacing: 8
+                    opacity: photoItem.photoEnabled ? 1 : 0.45
                     Rectangle {
                         implicitWidth: 60; implicitHeight: 42; radius: 3; color: Theme.field; clip: true
                         Image {
@@ -98,13 +103,36 @@ Rectangle {
                             color: photoItem.photoHasGps ? Theme.good : Theme.faint; font.pixelSize: 10
                         }
                     }
+                    Label {
+                        visible: !photoItem.photoEnabled || photoItem.quality >= 0
+                        text: photoItem.photoEnabled ? photoItem.quality.toLocaleString(Qt.locale("ru_RU"), 'f', 2) : "выкл."
+                        color: !photoItem.photoEnabled ? Theme.faint
+                             : photoItem.quality < photoQuality.threshold ? Theme.bad
+                             : photoItem.quality < photoQuality.threshold + 0.15 ? Theme.warn : Theme.muted
+                        font.pixelSize: 10; font.weight: Font.DemiBold
+                        Layout.rightMargin: 2
+                        ToolTip.visible: qualityHover.hovered; ToolTip.delay: 400
+                        ToolTip.text: photoItem.photoEnabled ? "Качество (резкость)" : "Отключён: в обработку не идёт"
+                        HoverHandler { id: qualityHover }
+                    }
                 }
                 MouseArea {
                     id: photoMouse
                     anchors.fill: parent
                     hoverEnabled: true
-                    onClicked: projects.selectPhoto(photoItem.photoRow)
-                    onDoubleClicked: { projects.selectPhoto(photoItem.photoRow); panel.host.runCommand("view.photo") }
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    onClicked: (mouse) => {
+                        projects.selectPhoto(photoItem.photoRow)
+                        if (mouse.button === Qt.RightButton) {
+                            photoMenu.photoId = photoItem.photoId
+                            photoMenu.photoOn = photoItem.photoEnabled
+                            photoMenu.popup()
+                        }
+                    }
+                    onDoubleClicked: (mouse) => {
+                        if (mouse.button !== Qt.LeftButton) return
+                        projects.selectPhoto(photoItem.photoRow); panel.host.runCommand("view.photo")
+                    }
                 }
             }
             Label {
@@ -120,8 +148,30 @@ Rectangle {
             Layout.fillWidth: true
             Layout.margins: 8
             Label { text: "С GPS"; color: Theme.muted; font.pixelSize: 11 }
-            Item { Layout.fillWidth: true }
             Label { text: projects.gpsCount + " / " + projects.photoCount; color: Theme.good; font.pixelSize: 11; font.bold: true }
+            Item { Layout.fillWidth: true }
+            Label { visible: chunks.activeDisabledCount > 0; text: "Отключено"; color: Theme.muted; font.pixelSize: 11 }
+            Label { visible: chunks.activeDisabledCount > 0; text: chunks.activeDisabledCount; color: Theme.warn; font.pixelSize: 11; font.bold: true }
+        }
+    }
+
+    Menu {
+        id: photoMenu
+        property string photoId: ""
+        property bool photoOn: true
+        MenuItem {
+            text: photoMenu.photoOn ? "Отключить снимок" : "Включить снимок"
+            implicitHeight: 26
+            onTriggered: {
+                var e = chunks.setPhotosEnabled([photoMenu.photoId], !photoMenu.photoOn)
+                if (e.length) panel.host.showError(e)
+            }
+        }
+        MenuItem {
+            text: commands.title("proc.quality")
+            implicitHeight: 26
+            enabled: panel.host && panel.host.commandEnabled("proc.quality")
+            onTriggered: panel.host.runCommand("proc.quality")
         }
     }
 }

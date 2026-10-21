@@ -15,6 +15,8 @@ Item {
         return (b / 1073741824).toFixed(2) + " GB"
     }
     function coord(x) { return Number(x).toFixed(6) + "°" }
+    // Re-evaluated on every change of the chunks (their notify signal).
+    readonly property bool photoOn: projects.selectedIndex < 0 || chunks.activeDisabledCount < 0 || chunks.photoEnabled(projects.selectedPhoto.id || "")
 
     component DetailLine: ColumnLayout {
         id: detailLine
@@ -68,6 +70,14 @@ Item {
                         ? inspector.coord(projects.selectedPhoto.latitude) + "\n" + inspector.coord(projects.selectedPhoto.longitude)
                         : "Не обнаружены"
                 }
+                DetailLine {
+                    objectName: "photoQualityLine"
+                    field: "Качество"
+                    readonly property real q: projects.selectedIndex >= 0 && photoQuality.measured >= 0 ? photoQuality.qualityOf(projects.selectedPhoto.id || "") : -1
+                    value: projects.selectedIndex < 0 ? "—"
+                         : (q < 0 ? "не оценено" : q.toLocaleString(Qt.locale("ru_RU"), 'f', 2) + (q < photoQuality.threshold ? " · нечёткий" : ""))
+                           + (inspector.photoOn ? "" : " · отключён")
+                }
                 Item { implicitHeight: 4 }
             }
         }
@@ -80,6 +90,18 @@ Item {
                 text: commands.title("project.reveal")
                 enabled: inspector.host && inspector.host.commandEnabled("project.reveal")
                 onClicked: inspector.host.runCommand("project.reveal")
+            }
+            FlatButton {
+                objectName: "photoToggle"
+                Layout.fillWidth: true; compact: true
+                text: inspector.photoOn ? "Отключить снимок" : "Включить снимок"
+                enabled: projects.selectedIndex >= 0
+                onClicked: {
+                    var e = chunks.setPhotosEnabled([projects.selectedPhoto.id], !inspector.photoOn)
+                    if (e.length && inspector.host) inspector.host.showError(e)
+                }
+                ToolTip.visible: hovered; ToolTip.delay: 500
+                ToolTip.text: inspector.photoOn ? "Снимок останется в проекте, но не пойдёт в обработку блока" : "Вернуть снимок в обработку блока"
             }
             FlatButton {
                 Layout.fillWidth: true; compact: true; caution: true

@@ -18,6 +18,7 @@
 #include "MockEngine.h"
 #include "Mosaic.h"
 #include "PhotoModel.h"
+#include "PhotoQualityService.h"
 #include "ProcessingService.h"
 #include "ProcessingTypes.h"
 #include "ProjectManager.h"
@@ -534,6 +535,152 @@ private slots:
         const Pixel p71 = sample(path, E + 71, N - 60), p79 = sample(path, E + 79, N - 60);
         QVERIFY2(p71.v[0] > 150, qPrintable(QStringLiteral("%1 %2").arg(p71.v[0]).arg(p71.v[2])));
         QVERIFY2(p79.v[2] > 150, qPrintable(QStringLiteral("%1 %2").arg(p79.v[0]).arg(p79.v[2])));
+    }
+
+    // Switched-off photos stay in the chunk and its photo list but not in its processing; kept in
+    // chunks.json, by a split and by a merge.
+    void switchedOffPhotos()
+    {
+        QTemporaryDir tmp;
+        const QString dir = tmp.filePath(QStringLiteral("p"));
+        QVERIFY(makeProject(dir, gridShots()));
+        ProjectManager projects;
+        auto record = std::make_shared<MockEngine::Record>();
+        auto *engine = new MockEngine(record);
+        ProcessingService processing(engine);
+        processing.setDiskReserveBytes(0);
+        QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &processing,
+                         [&](const QString &d) { processing.setProject(d, projects.photoModel()); });
+        ChunkService chunks(&projects, &processing);
+        QVERIFY(projects.openProject(QUrl::fromLocalFile(dir)));
+        processing.checkEnvironment();
+        QTRY_VERIFY(processing.engineAvailable());
+
+        QCOMPARE(chunks.setPhotosEnabled({QStringLiteral("p00"), QStringLiteral("p33"), QStringLiteral("none")}, false), QString());
+        QCOMPARE(chunks.activeDisabledCount(), 2);
+        QVERIFY(!chunks.photoEnabled(QStringLiteral("p00")) && chunks.photoEnabled(QStringLiteral("p01")));
+        QCOMPARE(chunks.photoModel()->rowCount(), 16);   // still listed
+        QCOMPARE(chunks.photoModel()->roleNames().value(ChunkPhotoModel::EnabledRole), QByteArray("photoEnabled"));
+        QVERIFY(!chunks.photoModel()->index(0, 0).data(ChunkPhotoModel::EnabledRole).toBool());
+        QVERIFY(chunks.photoModel()->index(1, 0).data(ChunkPhotoModel::EnabledRole).toBool());
+        const QVariantMap check = processing.preflight(QStringLiteral("fast"));
+        QCOMPARE(check.value("images").toInt(), 14);
+        QVERIFY(check.value("notes").toStringList().join('|').contains(QStringLiteral("Отключено снимков: 2")));
+        const QString id = processing.startJob(QStringLiteral("fast"));
+        QVERIFY(!id.isEmpty());
+        QCOMPARE(processing.job(id).images.size(), 14);
+        QVERIFY(!processing.job(id).images.contains(QStringLiteral("photos/p00.jpg")));
+        QTRY_COMPARE(record->started.size(), 1);
+        engine->finish(JobOutcome::Failed, 1, QStringLiteral("x"));
+        QTRY_VERIFY(!processing.active());
+
+        // A split keeps them off in the parts; a merge where they were off everywhere.
+        const QStringList parts = chunks.split(QStringLiteral("c1"), {{"mode", "grid"}, {"rows", 1}, {"cols", 2}, {"overlap", 0}})
+                                      .value("created").toStringList();
+        QCOMPARE(parts.size(), 2);
+        QCOMPARE(chunks.chunk(parts[0])->disabled, QStringList{QStringLiteral("p00")});
+        QCOMPARE(chunks.chunk(parts[1])->disabled, QStringList{QStringLiteral("p33")});
+        const QString merged = chunks.mergePhotos(parts);
+        QCOMPARE(chunks.active(), merged);
+        QCOMPARE(chunks.activeDisabledCount(), 2);
+        QCOMPARE(chunks.setPhotosEnabled({QStringLiteral("p00")}, true), QString());
+        QCOMPARE(chunks.activeDisabledCount(), 1);
+        QCOMPARE(processing.preflight(QStringLiteral("fast")).value("images").toInt(), 15);
+        // Leaving a chunk, the photo is no longer listed as off there.
+        QCOMPARE(chunks.removePhoto(merged, QStringLiteral("p33")), QString());
+        QCOMPARE(chunks.activeDisabledCount(), 0);
+
+        ProjectManager again;
+        ChunkService reread(&again, nullptr);
+        projects.closeProject();
+        QVERIFY(again.openProject(QUrl::fromLocalFile(dir)));
+        QCOMPARE(reread.chunk(QStringLiteral("c1"))->disabled, (QStringList{QStringLiteral("p00"), QStringLiteral("p33")}));
+        QCOMPARE(reread.chunk(parts[1])->disabled, QStringList{QStringLiteral("p33")});
+        QVERIFY(reread.chunk(merged)->disabled.isEmpty());
+    }
+
+    // Обработка → Оценка качества снимков on real pictures: two of six blurred, found, switched off,
+    // kept in quality.json; a changed file is measured again; the estimate can be stopped.
+    void qualityOfThePhotos()
+    {
+        QTemporaryDir tmp;
+        const QString dir = tmp.filePath(QStringLiteral("p"));
+        const QVector<Shot> shots = gridShots().mid(0, 6);
+        QVERIFY(makeProject(dir, shots));
+        auto write = [&](int i, int blur) {
+            QImage scene = TestImages::texturedScene(800, 600, quint32(i + 1));
+            if (blur > 0) scene = TestImages::motionBlur(scene, blur);
+            return scene.save(QStringLiteral("%1/photos/%2.jpg").arg(dir, shots[i].id), "JPG", 92);
+        };
+        for (int i = 0; i < shots.size(); ++i) QVERIFY(write(i, i == 1 || i == 4 ? 15 : 0));
+        const QString b1 = shots[1].id, b2 = shots[4].id, sharp = shots[0].id;
+
+        ProjectManager projects;
+        ChunkService chunks(&projects, nullptr);
+        PhotoQualityService quality(&projects, &chunks);
+        QVERIFY(projects.openProject(QUrl::fromLocalFile(dir)));
+        QCOMPARE(quality.measured(), 0);
+        QCOMPARE(quality.qualityOf(sharp), -1.0);
+        QSignalSpy finished(&quality, &PhotoQualityService::finished);
+        QCOMPARE(quality.estimate(), QString());
+        QVERIFY(quality.busy());
+        QTRY_VERIFY_WITH_TIMEOUT(!quality.busy(), 30000);
+        QCOMPARE(quality.done(), 6);
+        QCOMPARE(quality.measured(), 6);
+        QCOMPARE(quality.blurred(), 2);
+        QCOMPARE(finished.count(), 1);
+        QVERIFY(finished.first().at(0).toBool());
+        QCOMPARE(finished.first().at(1).toString(), QStringLiteral("Оценено снимков: 6 · нечётких: 2"));
+        const QVariantList rows = quality.photos();   // worst first
+        QCOMPARE(rows.size(), 6);
+        const QStringList worst{rows[0].toMap().value("id").toString(), rows[1].toMap().value("id").toString()};
+        QVERIFY2(worst.contains(b1) && worst.contains(b2), qPrintable(worst.join(' ')));
+        QVERIFY(rows[0].toMap().value("blurred").toBool() && !rows[2].toMap().value("blurred").toBool());
+        QVERIFY(quality.qualityOf(sharp) >= 0.8);
+        QVERIFY(quality.qualityOf(b1) < 0.5);
+        QCOMPARE(quality.estimate(), QStringLiteral("Все снимки блока уже оценены"));
+
+        // A photo replaced by a blurred one: only it is measured again.
+        QVERIFY(write(0, 15));
+        QCOMPARE(quality.estimate(), QString());
+        QCOMPARE(quality.total(), 1);
+        QTRY_VERIFY_WITH_TIMEOUT(!quality.busy(), 30000);
+        QCOMPARE(quality.blurred(), 3);
+
+        // Off in the chunk, and on again.
+        QCOMPARE(quality.blurredEnabled(), 3);
+        QCOMPARE(quality.disableBlurred(), QString());
+        QCOMPARE(chunks.activeDisabledCount(), 3);
+        QVERIFY(!chunks.photoEnabled(b1));
+        QCOMPARE(quality.blurredEnabled(), 0);
+        QCOMPARE(quality.blurred(), 3);
+        QVERIFY(!quality.photos().first().toMap().value("enabled").toBool());
+        QCOMPARE(quality.enableAll(), QString());
+        QCOMPARE(chunks.activeDisabledCount(), 0);
+        quality.setThreshold(0.123);
+        QCOMPARE(quality.threshold(), 0.12);
+
+        // Stopped right away: the photos not started are skipped, the values so far are kept.
+        finished.clear();
+        QCOMPARE(quality.estimate(true), QString());
+        quality.cancel();
+        QTRY_VERIFY_WITH_TIMEOUT(!quality.busy(), 30000);
+        QCOMPARE(quality.done(), 6);
+        QCOMPARE(finished.count(), 1);
+        QVERIFY2(finished.first().at(1).toString().startsWith(QStringLiteral("Оценка остановлена")), qPrintable(finished.first().at(1).toString()));
+        QCOMPARE(quality.measured(), 6);
+
+        // Back with the project.
+        const double q = quality.qualityOf(b2);
+        ProjectManager again;
+        ChunkService chunks2(&again, nullptr);
+        PhotoQualityService reread(&again, &chunks2);
+        projects.closeProject();
+        QCOMPARE(quality.measured(), 0);
+        QVERIFY(again.openProject(QUrl::fromLocalFile(dir)));
+        QCOMPARE(reread.measured(), 6);
+        QCOMPARE(reread.threshold(), 0.12);
+        QVERIFY(qAbs(reread.qualityOf(b2) - q) < 1e-9);
     }
 };
 
