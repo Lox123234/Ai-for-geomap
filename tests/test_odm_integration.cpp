@@ -9,6 +9,7 @@
 #include <QtTest>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QDeadlineTimer>
 #include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -171,7 +172,13 @@ private:
         timer.start();
         const QString id = m_service->startJob(profile, {}, options);
         if (id.isEmpty()) return {};
-        const bool done = finished.wait(timeoutHours * 3600 * 1000);
+        // Its own end: another job may still be finishing ahead of it in the queue.
+        QDeadlineTimer deadline(qint64(timeoutHours) * 3600 * 1000);
+        bool done = false;
+        while (!done && !deadline.hasExpired()) {
+            finished.wait(10000);
+            for (const QList<QVariant> &f : std::as_const(finished)) done = done || f.value(0).toString() == id;
+        }
         disconnect(connection);
         const ProcessingJob job = m_service->job(id);
         qInfo("Job %s (%s): %s in %lld s; stages: %s", qUtf8Printable(id), qUtf8Printable(profile), qUtf8Printable(jobStateText(job.state)),
@@ -346,7 +353,10 @@ sys.path.insert(0, sys.argv[3])
 import numpy as np
 from opensfm import dataset, features
 data = dataset.DataSet(sys.argv[1])
-rec = data.load_reconstruction()[0]
+# after ODM's alignment reconstruction.json is in UTM: the local frame of OpenSfM is the topocentric copy
+import os
+topo = os.path.join(sys.argv[1], 'reconstruction.topocentric.json')
+rec = data.load_reconstruction('reconstruction.topocentric.json' if os.path.exists(topo) else None)[0]
 tm = data.load_tracks_manager()
 ref = data.load_reference()
 best = []
@@ -395,7 +405,6 @@ open(sys.argv[2], "w").write(json.dumps(out))
         QCOMPARE(survey.controlCount(), int(points.size()));
 
         QSignalSpy optimized(m_service.get(), &ProcessingService::optimizeFinished);
-        QSignalSpy finished(m_service.get(), &ProcessingService::jobFinished);
         QElapsedTimer timer;
         timer.start();
         QCOMPARE(m_service->optimizeCameras(id, true), QString());
@@ -403,14 +412,15 @@ open(sys.argv[2], "w").write(json.dumps(out))
         const QString summary = optimized.first().at(2).toString();
         qInfo("Optimised in %lld s: %s", timer.elapsed() / 1000, qUtf8Printable(summary));
         QVERIFY2(optimized.first().at(1).toBool(), qUtf8Printable(summary));
+        // The job is built again from the new poses (awaited first: the next test must not start
+        // while it runs, whatever the numbers below say).
+        QTRY_VERIFY_WITH_TIMEOUT(!isActive(m_service->job(id).state), 3600 * 1000);
         // "опорные точки 2,000 → 0,0xx м": the cameras followed the control points.
         const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("опорные точки ([0-9,]+) → ([0-9,]+) м")).match(summary);
         QVERIFY2(m.hasMatch(), qUtf8Printable(summary));
         const double before = QLocale(QLocale::Russian).toDouble(m.captured(1)), after = QLocale(QLocale::Russian).toDouble(m.captured(2));
-        QVERIFY2(before > 1.5 && after < 0.2, qUtf8Printable(summary));
+        QVERIFY2(before > 1.5 && before < 2.5 && after < 0.2, qUtf8Printable(summary));
         QVERIFY(QFileInfo::exists(QDir(m_service->jobDirectory(id)).filePath(QStringLiteral("geomap/optimize/reconstruction.json"))));   // the old poses kept
-        // The job is built again from the new poses.
-        QVERIFY(finished.wait(3600 * 1000));
         const ProcessingJob job = m_service->job(id);
         qInfo("Rebuilt %s: %s in %lld s", qUtf8Printable(id), qUtf8Printable(jobStateText(job.state)), timer.elapsed() / 1000);
         QVERIFY2(job.state == JobState::Completed, qUtf8Printable(job.message));
