@@ -70,7 +70,7 @@ Dialog {
                     from: 5; to: 95; stepSize: 5
                     value: Math.round(photoQuality.threshold * 100)
                     editable: true
-                    implicitWidth: 104; implicitHeight: 30; font.pixelSize: 12
+                    implicitWidth: 136; implicitHeight: 30; font.pixelSize: 12
                     textFromValue: function(v) { return (v / 100).toLocaleString(Qt.locale("ru_RU"), 'f', 2) }
                     valueFromText: function(t) { return Math.round(Number.fromLocaleString(Qt.locale("ru_RU"), t) * 100) }
                     onValueModified: photoQuality.threshold = value / 100
