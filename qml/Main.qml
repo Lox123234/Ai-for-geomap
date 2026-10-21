@@ -1622,9 +1622,28 @@ ApplicationWindow {
                                 cursorShape: enabled ? Qt.CrossCursor : Qt.ArrowCursor
                                 property real nx: (mouseX - (preview.width - preview.paintedWidth) / 2) / Math.max(1, preview.paintedWidth)
                                 property real ny: (mouseY - (preview.height - preview.paintedHeight) / 2) / Math.max(1, preview.paintedHeight)
+                                // Mask mode: a drag draws a rectangle (the area excluded, with Shift given back).
+                                property point dragFrom: Qt.point(-1, -1)
+                                property bool dragging: false
+                                onPressed: function(mouse) {
+                                    dragging = false
+                                    dragFrom = window.maskMode && mouse.button === Qt.LeftButton ? Qt.point(mouseX, mouseY) : Qt.point(-1, -1)
+                                }
+                                onPositionChanged: function(mouse) {
+                                    if (dragFrom.x >= 0 && !dragging && Math.hypot(mouseX - dragFrom.x, mouseY - dragFrom.y) * window.imageZoom > 6) dragging = true
+                                }
+                                onReleased: function(mouse) {
+                                    if (!dragging) return
+                                    var ox = (preview.width - preview.paintedWidth) / 2, oy = (preview.height - preview.paintedHeight) / 2
+                                    var e = photoMasks.maskRect(projects.selectedPhoto.file || "",
+                                                                (dragFrom.x - ox) / Math.max(1, preview.paintedWidth), (dragFrom.y - oy) / Math.max(1, preview.paintedHeight),
+                                                                nx, ny, (mouse.modifiers & Qt.ShiftModifier) !== 0)
+                                    if (e.length > 0) window.flash(e)
+                                }
                                 onClicked: function(mouse) {
                                     var file = projects.selectedPhoto.file || ""
                                     if (window.maskMode) {
+                                        if (dragging) return   // the rectangle was applied on release
                                         var e = photoMasks.segmentAt(file, nx, ny, (mouse.modifiers & Qt.ShiftModifier) !== 0)
                                         if (e.length > 0) window.flash(e)
                                         return
@@ -1644,6 +1663,15 @@ ApplicationWindow {
                                     if (window.gcpPoint === "") { window.flash("Выберите точку в панели справа"); return }
                                     survey.setObservation(window.gcpPoint, file, nx, ny)
                                 }
+                            }
+                            Rectangle {
+                                objectName: "maskRubberBand"
+                                visible: photoMouse.dragging && photoMouse.pressed
+                                x: Math.min(photoMouse.dragFrom.x, photoMouse.mouseX)
+                                y: Math.min(photoMouse.dragFrom.y, photoMouse.mouseY)
+                                width: Math.abs(photoMouse.mouseX - photoMouse.dragFrom.x)
+                                height: Math.abs(photoMouse.mouseY - photoMouse.dragFrom.y)
+                                color: "#40F03C46"; border.color: "#F03C46"; border.width: 1.5 / window.imageZoom
                             }
                             // Ground control points on this photo: placed (filled) and where the
                             // newest reconstruction expects the others (hollow).
@@ -1718,7 +1746,7 @@ ApplicationWindow {
                                 }
                                 Label {
                                     Layout.preferredWidth: 300; wrapMode: Text.Wrap
-                                    text: "Щелчок — исключить объект, Shift+щелчок — вернуть"
+                                    text: "Щелчок — объект, рамка — область\nShift — вернуть в обработку"
                                     color: Theme.text; font.pixelSize: 11
                                 }
                                 Label {
@@ -1730,8 +1758,20 @@ ApplicationWindow {
                                     spacing: 6
                                     FlatButton {
                                         text: "Снять маску"; compact: true; caution: true
-                                        enabled: photoMasks.revision >= 0 && photoMasks.hasMask(projects.selectedPhoto.file || "")
+                                        enabled: !photoMasks.busy && photoMasks.revision >= 0 && photoMasks.hasMask(projects.selectedPhoto.file || "")
                                         onClicked: photoMasks.clearMask(projects.selectedPhoto.file || "")
+                                    }
+                                    FlatButton {
+                                        objectName: "maskToAll"
+                                        text: "На все снимки"; compact: true
+                                        enabled: !photoMasks.busy && chunks.activePhotoCount > 1 && photoMasks.revision >= 0
+                                                 && photoMasks.hasMask(projects.selectedPhoto.file || "")
+                                        onClicked: {
+                                            var e = photoMasks.copyToPhotos(projects.selectedPhoto.file || "", chunks.activePhotoFiles())
+                                            if (e.length > 0) window.flash(e)
+                                        }
+                                        ToolTip.visible: hovered; ToolTip.delay: 500
+                                        ToolTip.text: "Добавить исключённые области ко всем снимкам блока того же размера — например, шасси в кадре"
                                     }
                                     FlatButton { text: "Готово"; compact: true; onClicked: window.maskMode = false }
                                 }

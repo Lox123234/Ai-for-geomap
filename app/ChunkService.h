@@ -98,6 +98,7 @@ public:
     // Photos of the active chunk on (processed) or off. "" or the reason.
     Q_INVOKABLE QString setPhotosEnabled(const QStringList &photoIds, bool enabled);
     Q_INVOKABLE bool photoEnabled(const QString &photoId) const;   // in the active chunk
+    Q_INVOKABLE QStringList activePhotoFiles() const;               // "photos/<id>.jpg" of the active chunk
     // options: mode "grid" (rows, cols, overlap in %) or "flights" (gapMinutes); minPhotos (3).
     // {ok, error, parts:[{name, photos}], noPosition, skipped, notes}
     Q_INVOKABLE QVariantMap splitPreview(const QString &id, const QVariantMap &options) const;

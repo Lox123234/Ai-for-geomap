@@ -17,6 +17,7 @@
 #include "GisEnvironment.h"
 #include "MockEngine.h"
 #include "Mosaic.h"
+#include "PhotoMasks.h"
 #include "PhotoModel.h"
 #include "PhotoQualityService.h"
 #include "ProcessingService.h"
@@ -597,6 +598,65 @@ private slots:
         QCOMPARE(reread.chunk(QStringLiteral("c1"))->disabled, (QStringList{QStringLiteral("p00"), QStringLiteral("p33")}));
         QCOMPARE(reread.chunk(parts[1])->disabled, QStringList{QStringLiteral("p33")});
         QVERIFY(reread.chunk(merged)->disabled.isEmpty());
+    }
+
+    // Masks by a rectangle, and the excluded areas of one photo added to every photo of the chunk
+    // of the same size (a part of the drone in every frame).
+    void masksByRectangleAndOnEveryPhoto()
+    {
+        QTemporaryDir tmp;
+        const QString dir = tmp.filePath(QStringLiteral("p"));
+        const QVector<Shot> shots = gridShots().mid(0, 4);
+        QVERIFY(makeProject(dir, shots));
+        for (int i = 0; i < shots.size(); ++i) {   // 160 × 120; the last one upright, 120 × 160
+            QImage photo(i == 3 ? 120 : 160, i == 3 ? 160 : 120, QImage::Format_RGB32);
+            photo.fill(QColor(90, 120, 80));
+            QVERIFY(photo.save(QStringLiteral("%1/photos/%2.jpg").arg(dir, shots[i].id), "JPG"));
+        }
+        ProjectManager projects;
+        ChunkService chunks(&projects, nullptr);
+        PhotoMasks masks(nullptr);
+        QObject::connect(&projects, &ProjectManager::projectDirectoryChanged, &masks, &PhotoMasks::setProject);
+        QVERIFY(projects.openProject(QUrl::fromLocalFile(dir)));
+        const QStringList files = chunks.activePhotoFiles();
+        QCOMPARE(files.size(), 4);
+        QCOMPARE(files.first(), QStringLiteral("photos/p00.jpg"));
+        auto maskAt = [&](const QString &file, int x, int y) {
+            return QImage(QDir(dir).filePath(PhotoMasks::maskFile(file))).convertToFormat(QImage::Format_Grayscale8).pixelColor(x, y).red();
+        };
+
+        // The bottom right quarter out, then its corner back.
+        QCOMPARE(masks.maskRect(files[0], 1.0, 1.0, 0.5, 0.5), QString());
+        QVERIFY(masks.hasMask(files[0]));
+        QCOMPARE(maskAt(files[0], 100, 80), 0);
+        QCOMPARE(maskAt(files[0], 79, 59), 255);
+        QCOMPARE(maskAt(files[0], 159, 119), 0);
+        QCOMPARE(masks.maskRect(files[0], 0.75, 0.75, 1.0, 1.0, true), QString());
+        QCOMPARE(maskAt(files[0], 150, 110), 255);
+        QCOMPARE(maskAt(files[0], 100, 80), 0);
+        QVERIFY(!masks.maskRect(files[0], 0.2, 0.2, 0.2, 0.6).isEmpty());   // no area
+
+        // On every photo of the same size.
+        QSignalSpy finished(&masks, &PhotoMasks::finished);
+        QCOMPARE(masks.copyToPhotos(files[0], files), QString());
+        QVERIFY(masks.busy());
+        QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 30000);
+        QVERIFY(finished.first().at(0).toBool());
+        QCOMPARE(finished.first().at(1).toString(), QStringLiteral("Маска добавлена к 2 сн. · другой размер: 1"));
+        QVERIFY(!masks.busy());
+        for (int i : {1, 2}) {
+            QVERIFY(masks.hasMask(files[i]));
+            QCOMPARE(maskAt(files[i], 100, 80), 0);
+            QCOMPARE(maskAt(files[i], 150, 110), 255);
+            QCOMPARE(maskAt(files[i], 10, 10), 255);
+        }
+        QVERIFY(!masks.hasMask(files[3]));
+        QVERIFY(!masks.copyToPhotos(files[3], files).isEmpty());   // it has no mask
+
+        // Everything given back: no mask at all.
+        QCOMPARE(masks.maskRect(files[1], 0, 0, 1, 1, true), QString());
+        QVERIFY(!masks.hasMask(files[1]));
+        QCOMPARE(masks.maskCount(), 2);
     }
 
     // Обработка → Оценка качества снимков on real pictures: two of six blurred, found, switched off,

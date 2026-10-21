@@ -457,6 +457,17 @@ bool ChunkService::photoEnabled(const QString &photoId) const
     return !c || !c->disabled.contains(photoId);
 }
 
+QStringList ChunkService::activePhotoFiles() const
+{
+    const Chunk *c = chunk(m_active);
+    if (!c || !m_projects) return {};
+    const QSet<QString> ids(c->photos.cbegin(), c->photos.cend());
+    QStringList files;
+    for (const Photo &p : m_projects->photoModel()->photos())
+        if (ids.contains(p.id)) files << p.file;
+    return files;
+}
+
 // ------------------------------------------------------------------ split
 
 QVector<ChunkService::Part> ChunkService::parts(const Chunk &source, const QVariantMap &options, QStringList *notes, int *noPosition,

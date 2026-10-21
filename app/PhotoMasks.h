@@ -4,14 +4,17 @@
 #include <QObject>
 #include <QString>
 #include <QUrl>
+#include <atomic>
+#include <memory>
 
 namespace ai { class AiService; }
 
 // Masks of the project's photos for the reconstruction: <project>/photos/<photo>_mask.png, white
 // where the photo is used, black where it is not (sky, moving cars, people, glare on water).
 // OpenDroneMap reads a mask with that name next to its photo; jobs receive them with the photos.
-// An area is excluded or given back by a click with the AI selection (SAM) on the photo as it is
-// displayed (EXIF orientation applied, like OpenCV in the engine).
+// An area is excluded or given back by a click with the AI selection (SAM) or by a rectangle, on
+// the photo as it is displayed (EXIF orientation applied, like OpenCV in the engine); the
+// excluded areas of one photo can be added to many (a part of the drone in every frame).
 class PhotoMasks final : public QObject
 {
     Q_OBJECT
@@ -21,6 +24,7 @@ class PhotoMasks final : public QObject
 
 public:
     PhotoMasks(ai::AiService *ai, QObject *parent = nullptr);
+    ~PhotoMasks() override;
     void setProject(const QString &directory);
 
     bool busy() const { return m_busy; }
@@ -35,6 +39,11 @@ public:
     // Click at (nx, ny) in [0, 1] of the displayed photo: the object under it excluded, or given
     // back with `include`. "" when started, else the reason; finished() tells the result.
     Q_INVOKABLE QString segmentAt(const QString &photoFile, double nx, double ny, bool include = false);
+    // The rectangle between two corners in [0, 1] of the displayed photo excluded, or given back. "" or the reason.
+    Q_INVOKABLE QString maskRect(const QString &photoFile, double x0, double y0, double x1, double y1, bool include = false);
+    // The excluded areas of the photo added to the masks of `photoFiles` of the same size (in the
+    // background; finished() tells how many). "" when started, else the reason.
+    Q_INVOKABLE QString copyToPhotos(const QString &photoFile, const QStringList &photoFiles);
     Q_INVOKABLE void clearMask(const QString &photoFile);
     // Combines `objectMask` (255 = the object) into the photo's mask; for tests and tools.
     bool applyMask(const QString &photoFile, const QImage &objectMask, bool include, QString *error);
@@ -44,7 +53,6 @@ signals:
     void finished(bool ok, const QString &message);
 
 private:
-    void writeOverlay(const QString &photoFile, const QImage &mask) const;
     ai::AiService *m_ai;
     QString m_project;
     bool m_busy = false;
@@ -52,4 +60,5 @@ private:
     int m_revision = 0;
     QString m_encodedPhoto;   // the photo the shared segmenter holds
     int m_generation = 0;
+    std::shared_ptr<std::atomic_bool> m_copyCancel;   // copyToPhotos running
 };
