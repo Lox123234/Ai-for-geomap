@@ -30,42 +30,51 @@ Item {
                     anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                     anchors.leftMargin: 10; anchors.rightMargin: 8
                     spacing: 6
-                    Label { text: "Выравнивание"; color: Theme.muted; font.pixelSize: 11; height: 28; verticalAlignment: Text.AlignVCenter }
                     ComboBox {
                         id: jobBox
                         objectName: "surveyJob"
                         width: 250
                         implicitHeight: 28
                         enabled: view.jobs.length > 0
-                        model: view.jobs.length > 0 ? view.jobs : [{ id: "", title: "ещё не было — только GPS" }]
+                        model: view.jobs.length > 0 ? view.jobs : [{ id: "", title: "Выравнивания нет — только GPS" }]
                         textRole: "title"; valueRole: "id"
                         currentIndex: Math.max(0, indexOfValue(view.shownJob))
                         onActivated: view.jobId = currentValue
                         font.pixelSize: 12
+                        ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Выравнивание, с которым сравнивается GPS"
                     }
-                    Rectangle { width: 1; height: 28; color: Theme.line }
-                    Repeater {
-                        model: [{ t: "Подложка", p: "showBackground" }, { t: "Охваты", p: "showFootprints" },
-                                { t: "Маршрут", p: "showPath" }, { t: "Подписи", p: "showLabels" }]
-                        delegate: FlatButton {
-                            required property var modelData
-                            compact: true
-                            checkable: true
-                            checked: view[modelData.p]
-                            emphasis: checked
-                            text: modelData.t
-                            onToggled: view[modelData.p] = checked
+                    // What the scheme shows: one menu instead of a row of switches.
+                    FlatButton {
+                        objectName: "surveyShow"
+                        compact: true
+                        text: "Показать ▾"
+                        onClicked: showMenu.popup(this, 0, height)
+                        Menu {
+                            id: showMenu
+                            Instantiator {
+                                model: [{ t: "Подложка", p: "showBackground" }, { t: "Охваты снимков", p: "showFootprints" },
+                                        { t: "Маршрут", p: "showPath" }, { t: "Подписи", p: "showLabels" },
+                                        { t: "Ошибки: авто", v: 0 }, { t: "Ошибки ×1", v: 1 }, { t: "Ошибки ×10", v: 10 },
+                                        { t: "Ошибки ×100", v: 100 }, { t: "Ошибки ×1000", v: 1000 }]
+                                delegate: MenuItem {
+                                    id: showItem
+                                    required property var modelData
+                                    readonly property bool isSwitch: modelData.p !== undefined
+                                    function isOn() { return isSwitch ? view[modelData.p] : view.errorScale === modelData.v }
+                                    text: modelData.t
+                                    checkable: true
+                                    checked: isOn()
+                                    implicitHeight: 26
+                                    onTriggered: {
+                                        if (isSwitch) view[modelData.p] = !view[modelData.p]
+                                        else view.errorScale = modelData.v
+                                        checked = Qt.binding(showItem.isOn)   // the click toggled it by itself
+                                    }
+                                }
+                                onObjectAdded: (index, object) => showMenu.insertItem(index, object)
+                                onObjectRemoved: (index, object) => showMenu.removeItem(object)
+                            }
                         }
-                    }
-                    ComboBox {
-                        id: scaleBox
-                        implicitHeight: 28
-                        width: 130
-                        model: [{ t: "Ошибки: авто", v: 0 }, { t: "Ошибки ×1", v: 1 }, { t: "Ошибки ×10", v: 10 },
-                                { t: "Ошибки ×100", v: 100 }, { t: "Ошибки ×1000", v: 1000 }]
-                        textRole: "t"; valueRole: "v"
-                        onActivated: view.errorScale = currentValue
-                        font.pixelSize: 12
                     }
                     Rectangle { width: 1; height: 28; color: Theme.line }
                     FlatButton {
@@ -82,12 +91,13 @@ Item {
                                       ? "Щелчок по схеме — опорная точка, высота по модели"
                                       : "Сначала выровняйте снимки"
                     }
-                    FlatButton { compact: true; text: "Отметить на снимках"; enabled: survey.controlCount + survey.checkCount > 0
+                    FlatButton { compact: true; text: "Отметить на снимках"; visible: survey.controlCount + survey.checkCount > 0
                                  onClicked: workspace.host.runCommand("project.gcpTag") }
                     FlatButton {
                         objectName: "surveyGeoref"
                         compact: true; text: "Привязать снимок"
-                        enabled: projects.selectedIndex >= 0 && gis.crsDefined && !georef.busy
+                        visible: projects.selectedIndex >= 0
+                        enabled: gis.crsDefined && !georef.busy
                         onClicked: workspace.host.runCommand("tool.georeferencePhoto")
                         ToolTip.visible: hovered; ToolTip.delay: 500
                         ToolTip.text: projects.selectedIndex >= 0 ? "Выровнять выбранный снимок по точкам на карте" : "Сначала выберите снимок"

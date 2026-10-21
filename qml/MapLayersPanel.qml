@@ -33,15 +33,12 @@ Item {
             Layout.bottomMargin: 4
             spacing: 3
             Label {
-                Layout.fillWidth: true; wrapMode: Text.Wrap
-                text: "CRS карты: " + gis.crsLabel
-                color: gis.crsDefined ? Theme.text : Theme.warn; font.pixelSize: 11
-            }
-            Label {
-                Layout.fillWidth: true; wrapMode: Text.Wrap
-                visible: gis.crsNote.length > 0
-                text: "Выбрана " + gis.crsNote
-                color: Theme.faint; font.pixelSize: 10
+                Layout.fillWidth: true; elide: Text.ElideRight
+                text: gis.crsLabel
+                color: gis.crsDefined ? Theme.muted : Theme.warn; font.pixelSize: 11
+                ToolTip.visible: crsHover.hovered; ToolTip.delay: 400
+                ToolTip.text: "Система координат карты" + (gis.crsNote.length > 0 ? ": выбрана " + gis.crsNote : "")
+                HoverHandler { id: crsHover }
             }
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap
@@ -67,6 +64,7 @@ Item {
                 required property bool layerVisible
                 required property string status
                 required property string summary
+                required property string brief
                 required property bool needsCrs
                 required property bool loading
                 required property color layerColor
@@ -136,11 +134,14 @@ Item {
                         }
                     }
                     Label {
-                        Layout.fillWidth: true; wrapMode: Text.Wrap
+                        Layout.fillWidth: true; elide: Text.ElideRight
                         Layout.leftMargin: 25
-                        visible: layerRow.summary.length > 0
-                        text: layerRow.summary
+                        visible: layerRow.brief.length > 0
+                        text: layerRow.brief
                         color: Theme.muted; font.pixelSize: 10
+                        ToolTip.visible: briefHover.hovered && layerRow.summary !== layerRow.brief; ToolTip.delay: 500
+                        ToolTip.text: layerRow.summary
+                        HoverHandler { id: briefHover }
                     }
                     Label {
                         Layout.fillWidth: true; wrapMode: Text.Wrap

@@ -19,13 +19,12 @@ Rectangle {
                 anchors.fill: parent
                 anchors.leftMargin: 10; anchors.rightMargin: 4
                 spacing: 2
-                SectionTitle { text: "ФОТОГРАФИИ" }
-                Label { text: chunks.activePhotoCount.toString(); color: Theme.faint; font.pixelSize: 10; Layout.leftMargin: 4 }
-                // The active chunk, when the project has several.
+                SectionTitle { visible: chunks.count <= 1; text: "ФОТОГРАФИИ" }
+                // The active chunk, when the project has several (in place of the title).
                 ComboBox {
                     objectName: "chunkBox"
                     visible: chunks.count > 1
-                    Layout.preferredWidth: 130; implicitHeight: 24
+                    Layout.fillWidth: true; Layout.maximumWidth: 200; implicitHeight: 24
                     font.pixelSize: 11
                     textRole: "name"; valueRole: "id"
                     model: chunks.chunks
@@ -37,7 +36,8 @@ Rectangle {
                     ToolTip.visible: hovered; ToolTip.delay: 500
                     ToolTip.text: "Активный блок: его снимки показываются и обрабатываются"
                 }
-                Item { Layout.fillWidth: true }
+                Label { text: chunks.activePhotoCount.toString(); color: Theme.faint; font.pixelSize: 10; Layout.leftMargin: 4 }
+                Item { Layout.fillWidth: true; visible: chunks.count <= 1 }
                 ToolIconButton { commandId: "import.photos"; host: panel.host; implicitWidth: 26; implicitHeight: 26 }
                 ToolIconButton { commandId: "import.folder"; host: panel.host; implicitWidth: 26; implicitHeight: 26 }
             }

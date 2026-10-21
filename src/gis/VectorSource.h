@@ -45,6 +45,7 @@ struct VectorData
     static VectorData load(const QString &path, const QString &layer, const Crs &crsOverride, const Crs &mapCrs,
                            int maxFeatures = 200000);
     QString summary() const;     // "полигонов: 12, линий: 3, точек: 5 · EPSG:4326"
+    QString brief() const;       // for a list: "полигонов: 12, точек: 5"
 };
 
 // Writes features (map CRS) with OGR: GeoJSON (always WGS 84 lon/lat, RFC 7946),

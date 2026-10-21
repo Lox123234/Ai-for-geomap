@@ -1497,14 +1497,10 @@ ApplicationWindow {
                             ViewTab { commandId: "view.processing" }
                             ViewTab { commandId: "view.gps" }
                             Item { Layout.fillWidth: true }
+                            // Only what the view itself does not show: a map without a CRS.
                             Label {
-                                text: !projects.hasProject ? "" : window.activeView === 0 ? (projects.photoCount ? "ПРОСМОТР ФОТОГРАФИЙ" : "ПУСТОЙ ПРОЕКТ")
-                                    : window.activeView === 1 ? "СХЕМА СЪЁМКИ · GPS И ВЫРАВНИВАНИЕ"
-                                    : window.activeView === 3 && window.georefShown ? "ПРИВЯЗКА · " + gis.crsLabel.toUpperCase()
-                                    : window.activeView === 3 ? "КАРТА · " + (gis.crsDefined ? gis.crsLabel.toUpperCase() : "CRS НЕ ЗАДАН")
-                                    : window.activeView === 4 ? "3D-СЦЕНА · " + scene3d.status.toUpperCase()
-                                    : "ФОТОГРАММЕТРИЯ · " + processing.engineName.toUpperCase()
-                                color: Theme.muted; font.pixelSize: 10; font.letterSpacing: 0.7
+                                text: projects.hasProject && window.activeView === 3 && !gis.crsDefined ? "CRS НЕ ЗАДАН" : ""
+                                color: Theme.warn; font.pixelSize: 10; font.letterSpacing: 0.7
                                 elide: Text.ElideRight
                                 Layout.maximumWidth: centerArea.width * 0.45
                             }
@@ -2046,17 +2042,13 @@ ApplicationWindow {
                                                         text: profileCard.modelData.description
                                                         wrapMode: Text.Wrap; color: "#b7c6d8"; font.pixelSize: 11
                                                     }
-                                                    Label {
-                                                        Layout.fillWidth: true
-                                                        visible: profileCard.chosen
-                                                        text: profileCard.modelData.arguments
-                                                        wrapMode: Text.WrapAnywhere; color: window.muted; font.pixelSize: 10; font.family: "Consolas"
-                                                    }
                                                 }
                                                 MouseArea {
                                                     id: profileMouse
                                                     anchors.fill: parent
                                                     hoverEnabled: true
+                                                    ToolTip.visible: containsMouse && profileCard.modelData.arguments.length > 0; ToolTip.delay: 800
+                                                    ToolTip.text: "Параметры ODM: " + profileCard.modelData.arguments
                                                     onClicked: {
                                                         window.profileId = profileCard.modelData.id
                                                         window.refreshPreflight()
@@ -2141,23 +2133,24 @@ ApplicationWindow {
                                                     }
                                                 }
                                             }
+                                            // Free-form ODM options, for experienced users: inside the settings.
+                                            Label { text: "Свои параметры ODM"; color: "#c9d6e4"; font.pixelSize: 11; Layout.topMargin: 8 }
+                                            TextField {
+                                                id: extraOptionsField
+                                                Layout.fillWidth: true
+                                                placeholderText: "например: --dsm --orthophoto-resolution 3"
+                                                selectByMouse: true
+                                                color: window.white
+                                                placeholderTextColor: "#66768a"
+                                                font.family: "Consolas"; font.pixelSize: 12
+                                                background: Rectangle { color: "#121b26"; radius: 7; border.color: "#405066" }
+                                                onTextChanged: preflightTimer.restart()
+                                            }
                                             FlatButton {
                                                 text: "Сбросить параметры"; compact: true
                                                 enabled: Object.keys(window.optionValues).length > 0
                                                 onClicked: { window.optionValues = ({}); preflightTimer.restart() }
                                             }
-                                        }
-                                        Label { text: "Параметры ODM для опытных (необязательно)"; color: window.muted; font.pixelSize: 11; Layout.topMargin: 4 }
-                                        TextField {
-                                            id: extraOptionsField
-                                            Layout.fillWidth: true
-                                            placeholderText: "например: --dsm --orthophoto-resolution 3"
-                                            selectByMouse: true
-                                            color: window.white
-                                            placeholderTextColor: "#66768a"
-                                            font.family: "Consolas"; font.pixelSize: 12
-                                            background: Rectangle { color: "#121b26"; radius: 7; border.color: "#405066" }
-                                            onTextChanged: preflightTimer.restart()
                                         }
 
                                         // Pre-flight check of the current project for the chosen profile.
@@ -2176,15 +2169,18 @@ ApplicationWindow {
                                                 spacing: 4
                                                 Label {
                                                     Layout.fillWidth: true; wrapMode: Text.Wrap
-                                                    text: "Снимков в задании: " + window.preflightResult.images
-                                                        + " (с GPS: " + window.preflightResult.withGps + "), " + window.preflightResult.inputText
+                                                    text: "Снимков: " + window.preflightResult.images + " · " + window.preflightResult.inputText
+                                                        + (window.preflightResult.withGps < window.preflightResult.images
+                                                           ? " · с GPS: " + window.preflightResult.withGps : "")
                                                     color: window.white; font.pixelSize: 11
                                                 }
                                                 Label {
                                                     Layout.fillWidth: true; wrapMode: Text.Wrap
-                                                    text: "Место на диске проекта: нужно около " + window.preflightResult.neededText
-                                                        + ", свободно " + window.preflightResult.freeText
+                                                    text: "Место: около " + window.preflightResult.neededText + " из " + window.preflightResult.freeText
                                                     color: window.muted; font.pixelSize: 11
+                                                    ToolTip.visible: placeHover.hovered && (window.preflightResult.arguments || "").length > 0; ToolTip.delay: 600
+                                                    ToolTip.text: "Параметры ODM: " + (window.preflightResult.arguments || "")
+                                                    HoverHandler { id: placeHover }
                                                 }
                                                 Repeater {
                                                     model: window.preflightResult.errors || []
@@ -2210,12 +2206,7 @@ ApplicationWindow {
                                                         text: "ℹ " + modelData; wrapMode: Text.Wrap; color: "#9fd3f5"; font.pixelSize: 11
                                                     }
                                                 }
-                                                Label {
-                                                    Layout.fillWidth: true; wrapMode: Text.WrapAnywhere
-                                                    visible: (window.preflightResult.arguments || "").length > 0
-                                                    text: "Параметры ODM: " + (window.preflightResult.arguments || "")
-                                                    color: "#6f7f92"; font.pixelSize: 10; font.family: "Consolas"
-                                                }
+
                                             }
                                         }
                                     }
@@ -2313,7 +2304,7 @@ ApplicationWindow {
                                                 Layout.fillWidth: true
                                                 spacing: 3
                                                 Label {
-                                                    text: jobRow.profileTitle + " · " + Qt.formatDateTime(jobRow.createdAt, "dd.MM.yyyy hh:mm") + " · " + jobRow.jobId
+                                                    text: jobRow.profileTitle + " · " + Qt.formatDateTime(jobRow.createdAt, "dd.MM hh:mm")
                                                           + (chunks.count > 1 ? " · " + chunks.nameOf(jobRow.chunkId) : "")
                                                     color: window.white; font.pixelSize: 11; font.bold: true
                                                     Layout.fillWidth: true; elide: Text.ElideRight
@@ -2518,9 +2509,12 @@ ApplicationWindow {
                                                                 color: window.white; font.pixelSize: 12; font.bold: true
                                                             }
                                                             Label {
-                                                                Layout.fillWidth: true; elide: Text.ElideMiddle
-                                                                text: outputRow.modelData.details + "  ·  " + outputRow.modelData.file
+                                                                Layout.fillWidth: true; elide: Text.ElideRight
+                                                                text: outputRow.modelData.details
                                                                 color: window.muted; font.pixelSize: 10
+                                                                ToolTip.visible: fileHover.hovered; ToolTip.delay: 600
+                                                                ToolTip.text: outputRow.modelData.file
+                                                                HoverHandler { id: fileHover }
                                                             }
                                                         }
                                                         FlatButton {
@@ -2678,7 +2672,8 @@ ApplicationWindow {
             // Right: properties of the active view
             Rectangle {
                 id: rightPanel
-                visible: window.showRight
+                // The survey scheme and the processing have their own summary column.
+                visible: window.showRight && window.activeView !== 1 && window.activeView !== 2
                 SplitView.preferredWidth: Theme.rightWidth
                 SplitView.minimumWidth: 240
                 SplitView.maximumWidth: 600

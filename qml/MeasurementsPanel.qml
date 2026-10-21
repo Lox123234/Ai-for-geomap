@@ -36,7 +36,7 @@ Item {
             Layout.margins: 10
             visible: gis.measurements.length === 0
             wrapMode: Text.Wrap
-            text: "Измерений нет — измерьте на карте и нажмите «Сохранить»"
+            text: "Пока пусто"
             color: Theme.faint; font.pixelSize: 11
         }
         ListView {

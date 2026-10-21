@@ -371,6 +371,9 @@ QVariant LayerListModel::data(const QModelIndex &index, int role) const
     case SummaryRole:
         if (l.type == MapLayer::Raster) return l.rasterInfo.valid ? l.rasterInfo.summary() : QString();
         return l.vector.valid ? l.vector.summary() : QString();
+    case BriefRole:
+        if (l.type == MapLayer::Raster) return l.rasterInfo.valid ? l.rasterInfo.brief() : QString();
+        return l.vector.valid ? l.vector.brief() : QString();
     case NeedsCrsRole: return l.needsCrs;
     case LoadingRole: return l.loading;
     case ColorRole: return l.color;
@@ -389,7 +392,7 @@ QVariant LayerListModel::data(const QModelIndex &index, int role) const
 QHash<int, QByteArray> LayerListModel::roleNames() const
 {
     return {{IdRole, "layerId"}, {NameRole, "name"}, {TypeRole, "layerType"}, {VisibleRole, "layerVisible"},
-            {OpacityRole, "layerOpacity"}, {StatusRole, "status"}, {CrsRole, "crs"}, {SummaryRole, "summary"},
+            {OpacityRole, "layerOpacity"}, {StatusRole, "status"}, {CrsRole, "crs"}, {SummaryRole, "summary"}, {BriefRole, "brief"},
             {NeedsCrsRole, "needsCrs"}, {LoadingRole, "loading"}, {ColorRole, "layerColor"}, {LegendRole, "legend"},
             {StyleRole, "rasterStyle"}, {BandsRole, "bands"}};
 }

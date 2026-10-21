@@ -118,6 +118,25 @@ QString RasterInfo::summary() const
     return parts.join(QStringLiteral(", "));
 }
 
+QString RasterInfo::brief() const
+{
+    if (!valid) return error;
+    const QLocale ru(QLocale::Russian);
+    QStringList parts;
+    const double metres = hasGeoTransform && crs.isProjected() && crs.metersPerUnit() > 0 ? pixelSizeX * crs.metersPerUnit() : 0;
+    if (metres >= 1)
+        parts << QStringLiteral("%1 м/пикс").arg(ru.toString(metres, 'f', 1));
+    else if (metres > 0)
+        parts << QStringLiteral("%1 см/пикс").arg(ru.toString(metres * 100.0, 'f', 1));
+    else if (hasGeoTransform && crs.isGeographic())
+        parts << QStringLiteral("%1°/пикс").arg(ru.toString(pixelSizeX, 'g', 3));
+    else
+        parts << QStringLiteral("%1×%2").arg(width).arg(height);
+    if (!crs.isValid()) parts << QStringLiteral("CRS не задан");
+    if (!hasGeoTransform) parts << QStringLiteral("без геопривязки");
+    return parts.join(QStringLiteral(" · "));
+}
+
 // ----------------------------------------------------------------- RasterStyle
 
 RasterStyle RasterStyle::automatic(const RasterInfo &info, const QVector<QPair<double, double>> &bandRanges)

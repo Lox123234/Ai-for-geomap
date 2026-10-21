@@ -61,10 +61,34 @@ Item {
                     ToolIconButton { commandId: "tool.scale"; host: workspace.host; implicitWidth: 30; implicitHeight: 30 }
                     ToolIconButton { commandId: "tool.ruler"; host: workspace.host; implicitWidth: 30; implicitHeight: 30 }
                     BarSeparator {}
-                    BarCommand { commandId: "view.top"; label: "Сверху" }
-                    BarCommand { commandId: "view.front"; label: "С юга" }
-                    BarCommand { commandId: "view.side"; label: "С запада" }
-                    BarCommand { commandId: "view.iso"; label: "Изометрия" }
+                    // The predefined views in one menu.
+                    ToolButton {
+                        objectName: "views3d"
+                        text: "Ракурс ▾"
+                        font.pixelSize: 11
+                        implicitHeight: 28
+                        leftPadding: 8; rightPadding: 8
+                        focusPolicy: Qt.NoFocus
+                        palette.buttonText: Theme.text
+                        onClicked: viewsMenu.popup(this, 0, height)
+                        background: Rectangle { radius: 4; color: parent.hovered ? Theme.hover : "transparent" }
+                        Menu {
+                            id: viewsMenu
+                            Instantiator {
+                                model: [{ id: "view.top", t: "Сверху" }, { id: "view.front", t: "С юга" },
+                                        { id: "view.side", t: "С запада" }, { id: "view.iso", t: "Изометрия" }]
+                                delegate: MenuItem {
+                                    required property var modelData
+                                    text: modelData.t
+                                    implicitHeight: 26
+                                    enabled: workspace.host.commandEnabled(modelData.id)
+                                    onTriggered: workspace.host.runCommand(modelData.id)
+                                }
+                                onObjectAdded: (index, object) => viewsMenu.insertItem(index, object)
+                                onObjectRemoved: (index, object) => viewsMenu.removeItem(object)
+                            }
+                        }
+                    }
                     BarCommand { commandId: "view.reset"; label: "Показать всё" }
                     BarSeparator {}
                     BarCommand { commandId: "view.projection"; label: scene3d.orthographic ? "Ортография" : "Перспектива" }

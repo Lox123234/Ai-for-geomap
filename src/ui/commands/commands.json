@@ -311,11 +311,11 @@
     {"group": "Проекты", "items": ["file.new", "file.open", "file.save"]},
     {"group": "Источники", "items": ["import.photos", "import.folder", "import.data"]},
     {"group": "История", "items": ["edit.undo", "edit.redo"]},
-    {"group": "Навигация", "items": ["tool.select", "tool.pan", "tool.rotate", "tool.scale"]},
-    {"group": "Измерения", "items": ["tool.ruler", "tool.area", "tool.height", "tool.slope", "tool.profile"]},
-    {"group": "Геометрия", "items": ["tool.point", "tool.line", "tool.polygon", "tool.marker", "analysis.ai"]},
+    {"group": "Навигация", "views": ["map"], "items": ["tool.select", "tool.pan"]},
+    {"group": "Измерения", "views": ["map"], "items": ["tool.ruler", "tool.area", "tool.height", "tool.slope", "tool.profile"]},
+    {"group": "Геометрия", "views": ["map"], "items": ["tool.point", "tool.line", "tool.polygon", "tool.marker", "analysis.ai"]},
     {"group": "Обработка", "items": ["proc.setup", "proc.start", "proc.stop"]},
-    {"group": "Просмотр", "items": ["view.photo", "view.map", "view.3d", "view.dem"]},
-    {"group": "Дополнительно", "items": ["export.map", "edit.preferences"]}
+    {"group": "Просмотр", "views": ["map"], "items": ["view.dem"]},
+    {"group": "Дополнительно", "items": ["edit.preferences"]}
   ]
 }

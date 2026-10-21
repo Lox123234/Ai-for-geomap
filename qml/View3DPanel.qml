@@ -98,23 +98,18 @@ Item {
                             background: Rectangle { radius: 3; color: parent.hovered ? Theme.hover : "transparent" }
                         }
                     }
+                    // One short line; the kind, the whole note and the file in the tooltip (errors in full).
                     Label {
+                        readonly property bool problem: row.modelData.error.length > 0
                         Layout.fillWidth: true; Layout.leftMargin: 25
-                        text: row.modelData.kindTitle
-                        color: Theme.faint; font.pixelSize: 10
-                    }
-                    Label {
-                        Layout.fillWidth: true; Layout.leftMargin: 25
-                        wrapMode: Text.Wrap
-                        text: (row.modelData.loading ? "⏳ " : row.modelData.error.length > 0 ? "⚠ " : "") + row.modelData.info
-                        color: row.modelData.error.length > 0 ? Theme.bad : row.modelData.loading ? "#9fc3f0" : Theme.muted
+                        wrapMode: problem ? Text.Wrap : Text.NoWrap
+                        elide: problem ? Text.ElideNone : Text.ElideRight
+                        text: (row.modelData.loading ? "⏳ " : problem ? "⚠ " : "") + row.modelData.info.split(". ")[0]
+                        color: problem ? Theme.bad : row.modelData.loading ? "#9fc3f0" : Theme.muted
                         font.pixelSize: 10
-                    }
-                    Label {
-                        Layout.fillWidth: true; Layout.leftMargin: 25
-                        text: row.modelData.source
-                        elide: Text.ElideMiddle
-                        color: Theme.faint; font.pixelSize: 9
+                        ToolTip.visible: infoHover.hovered; ToolTip.delay: 500
+                        ToolTip.text: row.modelData.kindTitle + "\n" + row.modelData.info + (row.modelData.source ? "\n" + row.modelData.source : "")
+                        HoverHandler { id: infoHover }
                     }
                 }
             }

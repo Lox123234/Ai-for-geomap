@@ -34,6 +34,7 @@ struct RasterInfo
 
     static RasterInfo read(const QString &path);
     QString summary() const;     // "2493×2453, 4 канала (Byte), 5,0 см/пикс, EPSG:32615"
+    QString brief() const;       // for a list: "5,0 см/пикс", or what is wrong ("CRS не задан")
 };
 
 // How a raster is drawn: three bands as RGB, or one band through a colour ramp

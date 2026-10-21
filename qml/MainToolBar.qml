@@ -2,10 +2,12 @@ import QtQuick
 import QtQuick.Controls
 
 // The main toolbar: command groups of the registry separated by thin lines. Every button is a
-// ToolIconButton bound to a command id; the active view or tool is highlighted.
+// ToolIconButton bound to a command id; the active view or tool is highlighted. A group with
+// "views" shows only in those views (the map's drawing tools only on the map).
 Rectangle {
     id: bar
     property var host
+    readonly property string view: !host ? "" : ["photo", "gps", "processing", "map", "3d"][host.activeView] || ""
     implicitHeight: Theme.toolbarHeight
     color: Theme.toolbar
     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line }
@@ -27,6 +29,7 @@ Rectangle {
                     id: group
                     required property var modelData
                     required property int index
+                    visible: !modelData.views || modelData.views.indexOf(bar.view) >= 0
                     height: groups.height
                     spacing: 2
                     Item {

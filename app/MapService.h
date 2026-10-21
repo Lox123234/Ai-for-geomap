@@ -67,7 +67,7 @@ class LayerListModel final : public QAbstractListModel
 public:
     enum Roles {
         IdRole = Qt::UserRole + 1, NameRole, TypeRole, VisibleRole, OpacityRole, StatusRole, CrsRole,
-        SummaryRole, NeedsCrsRole, LoadingRole, ColorRole, LegendRole, StyleRole, BandsRole
+        SummaryRole, NeedsCrsRole, LoadingRole, ColorRole, LegendRole, StyleRole, BandsRole, BriefRole
     };
     explicit LayerListModel(MapService *service);
     int rowCount(const QModelIndex &parent = {}) const override;

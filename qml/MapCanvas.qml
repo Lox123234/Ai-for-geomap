@@ -56,11 +56,9 @@ Item {
                 anchors.fill: parent
                 anchors.leftMargin: 10; anchors.rightMargin: 8
                 spacing: 6
-                Label { text: "Инструмент:"; color: Theme.faint; font.pixelSize: 11 }
-                Label { text: canvas.toolTitles[gis.tool] || gis.tool; color: Theme.text; font.pixelSize: 11; font.bold: true }
-                Rectangle { implicitWidth: 1; implicitHeight: 18; color: Theme.line; Layout.leftMargin: 6; Layout.rightMargin: 6 }
+                // The active tool shows on the toolbar; here only what applies now.
                 FlatButton { text: "Все слои"; compact: true; implicitHeight: 24; enabled: gis.crsDefined; onClicked: gis.zoomToAll() }
-                FlatButton { text: "Удалить объект"; compact: true; implicitHeight: 24; caution: true; enabled: gis.hasSelection
+                FlatButton { text: "Удалить объект"; compact: true; implicitHeight: 24; caution: true; visible: gis.hasSelection
                              onClicked: canvas.host.runCommand("edit.delete") }
                 Item { Layout.fillWidth: true }
                 // Background map: none, a street map or satellite imagery, or a file.
@@ -94,7 +92,7 @@ Item {
                 FlatButton { text: "Экспорт карты…"; compact: true; implicitHeight: 24
                              enabled: canvas.host && canvas.host.commandEnabled("export.map"); onClicked: canvas.host.runCommand("export.map") }
                 FlatButton { text: "Экспорт объектов…"; compact: true; implicitHeight: 24
-                             enabled: canvas.host && canvas.host.commandEnabled("export.drawings"); onClicked: canvas.host.runCommand("export.drawings") }
+                             visible: canvas.host && canvas.host.commandEnabled("export.drawings"); onClicked: canvas.host.runCommand("export.drawings") }
             }
         }
         Item {

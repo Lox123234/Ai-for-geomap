@@ -237,6 +237,16 @@ QString VectorData::summary() const
     return text;
 }
 
+QString VectorData::brief() const
+{
+    if (!valid) return error;
+    QStringList parts;
+    if (polygons) parts << QStringLiteral("полигонов: %1").arg(polygons);
+    if (lines) parts << QStringLiteral("линий: %1").arg(lines);
+    if (points) parts << QStringLiteral("точек: %1").arg(points);
+    return parts.isEmpty() ? QStringLiteral("объектов нет") : parts.join(QStringLiteral(", "));
+}
+
 bool writeVectorFile(const QString &path, const QString &layerName, const QVector<VectorFeature> &features,
                      const Crs &mapCrs, QString *error)
 {
